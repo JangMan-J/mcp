@@ -162,13 +162,13 @@ it("exports observed baseline transcripts to MCP_CONFORMANCE_TRANSCRIPTS without
     expect(server.message).toEqual({ jsonrpc: "2.0", id: client.message.id, result: { tools: [], resultType: "complete" } });
     // A delivery to a non-pending id is not observed, so it is not in the transcript.
     expect(JSON.stringify(t.frames)).not.toContain("never");
-    expect(t.incomplete.length).toBeGreaterThan(0);
+    expect(t.incomplete).toBeUndefined();
 
     rmSync(out, { recursive: true, force: true });
-    await runSynthetic({ ...coreFixture, id: "ops/provider" });
+    await runSynthetic({ ...coreFixture, id: "ops/provider", server: { capabilities: {} }, script: [{ do: "call", as: "c1", op: "tools.list", args: [] }], expect: { outcome: { c1: { kind: "capability-absent" } }, wire: { totalRequests: 0 } } });
     const provider = JSON.parse(readFileSync(join(out, "ops__provider.transcript.json"), "utf8"));
-    expect(provider).toMatchObject({ fixture: "ops/provider", frames: [] });
-    expect(provider.incomplete[0]).toContain("not observed");
+    expect(provider).toMatchObject({ fixture: "ops/provider", frames: [], zeroWire: true });
+    expect(provider.incomplete).toBeUndefined();
   } finally {
     if (prev === undefined) delete process.env["MCP_CONFORMANCE_TRANSCRIPTS"];
     else process.env["MCP_CONFORMANCE_TRANSCRIPTS"] = prev;

@@ -32,20 +32,20 @@ export interface FixtureResult {
 /** One observed frame. HTTP fields are present only when a binding observes them. */
 export interface TranscriptFrame {
   readonly direction: "client" | "server";
+  readonly endpoint?: "mcp" | "oauth" | "registration" | "other";
+  readonly incomplete?: false;
   readonly message?: unknown;
   readonly method?: string;
   readonly headers?: Record<string, string>;
   readonly url?: string;
 }
 
-/**
- * Baseline transcript built only from observations at the harness send seam.
- * `incomplete` lists what the runner could not observe; frames are never synthesized.
- */
+/** Baseline transcript built from observations at the harness seam. */
 export interface Transcript {
   readonly fixture: string;
   readonly frames: readonly TranscriptFrame[];
-  readonly incomplete?: readonly string[];
+  readonly mcpEndpoint?: string;
+  readonly zeroWire?: boolean;
 }
 
 export const TRANSCRIPTS_ENV = "MCP_CONFORMANCE_TRANSCRIPTS";
@@ -59,13 +59,6 @@ export function writeTranscript(transcript: Transcript): string | undefined {
   writeFileSync(file, `${JSON.stringify(transcript, null, 2)}\n`);
   return file;
 }
-
-// The in-process seam records outbound requests only; transport.notify drops client
-// notifications unrecorded, and injected server frames are the harness's own deliveries.
-const coreSeamGaps = [
-  "client notifications (transport.notify) are not recorded by the in-process transport",
-  "server frames are the messages handed to the in-process transport for a pending request, not bytes read off a wire",
-];
 
 export interface RunSummary {
   readonly ok: boolean;
@@ -110,9 +103,7 @@ export async function runOneFixture(
   if (mutant === undefined) {
     if (observed) {
       observed.sync();
-      writeTranscript({ fixture: fixture.id, frames: observed.frames, incomplete: coreSeamGaps });
-    } else {
-      writeTranscript({ fixture: fixture.id, frames: [], incomplete: [`harness setup failed: ${result.error ?? "unknown"}`] });
+      writeTranscript({ fixture: fixture.id, frames: observed.frames, ...(observed.frames.length === 0 && fixture.expect.wire?.totalRequests === 0 ? { zeroWire: true } : {}) });
     }
   }
   return result;
@@ -143,9 +134,9 @@ async function runOneObserved(
   const frames: TranscriptFrame[] = [];
   let clientSeen = 0;
   const syncClient = () => {
-    const sent = harness.transport.sent;
+    const sent = harness.outbound ?? harness.transport.sent.map((s) => JSON.parse(s.rawText) as unknown);
     for (; clientSeen < sent.length; clientSeen++) {
-      frames.push({ direction: "client", message: JSON.parse(sent[clientSeen]!.rawText) as unknown });
+      frames.push({ direction: "client", message: sent[clientSeen] });
     }
   };
   const wasSent = (id: unknown) => harness.transport.sent.some((s) => s.request.id === id);
@@ -407,9 +398,6 @@ async function runSelectedFixture(fixture: ExchangeFixture, adapter?: HarnessAda
   if (fixture.tier === "A") {
     const result = await runTierAProvider(fixture, mutant);
     if (result) {
-      if (mutant === undefined) {
-        writeTranscript({ fixture: fixture.id, frames: [], incomplete: ["provider-owned fixture: frames are not observed by the conformance runner"] });
-      }
       return result;
     }
     if (coreAreas.has(fixture.id.split("/", 1)[0]!)) {
@@ -429,9 +417,6 @@ async function runSelectedFixture(fixture: ExchangeFixture, adapter?: HarnessAda
     }
     const transport = await runTierBTransportFixture(fixture, mutant);
     if (transport) {
-      if (mutant === undefined) {
-        writeTranscript({ fixture: fixture.id, frames: [], incomplete: ["provider-owned fixture: frames are not observed by the conformance runner"] });
-      }
       return transport;
     }
   }

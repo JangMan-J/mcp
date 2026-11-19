@@ -1,9 +1,14 @@
 import { AssertionError } from "node:assert/strict";
 import type { ExchangeFixture } from "@mcp-client/fixtures";
-import type { FixtureResult } from "./run.js";
+import { writeTranscript, type FixtureResult, type TranscriptFrame } from "./run.js";
 
-async function loadOptionalConformance(specifier: string): Promise<{ runExchange: (fixture: unknown, mutant?: string) => Promise<void> }> {
-  return (await import(specifier)) as { runExchange: (fixture: unknown, mutant?: string) => Promise<void> };
+type Observation = void | { frames: readonly TranscriptFrame[]; mcpEndpoint?: string; zeroWire?: boolean };
+function record(fixture: ExchangeFixture, mutant: string | undefined, obs: Observation) {
+  if (mutant === undefined && obs) writeTranscript({ fixture: fixture.id, ...obs });
+}
+
+async function loadOptionalConformance(specifier: string): Promise<{ runExchange: (fixture: unknown, mutant?: string) => Promise<Observation> }> {
+  return (await import(specifier)) as { runExchange: (fixture: unknown, mutant?: string) => Promise<Observation> };
 }
 
 const isObservationMismatch = (error: unknown): boolean =>
@@ -31,7 +36,7 @@ export async function runTierAProvider(fixture: ExchangeFixture, mutant?: string
       if (fixture.id.startsWith(prefix)) {
         isMismatch = isObservationMismatch;
         const { runExchange } = await loadOptionalConformance(specifier);
-        await runExchange(fixture, mutant);
+        record(fixture, mutant, await runExchange(fixture, mutant));
         return { ...result, ok: true };
       }
     }
@@ -40,7 +45,7 @@ export async function runTierAProvider(fixture: ExchangeFixture, mutant?: string
       case "consent": {
         const { runExchange } = await import("@mcp-client/auth/conformance");
         isMismatch = (error) => error instanceof AssertionError;
-        await runExchange(fixture, mutant);
+        record(fixture, mutant, await runExchange(fixture, mutant));
         break;
       }
       case "mrtr":
@@ -49,13 +54,13 @@ export async function runTierAProvider(fixture: ExchangeFixture, mutant?: string
       case "cache": {
         const { runExchange, MrtrObservationMismatch } = await import("@mcp-client/mrtr-cache/conformance");
         isMismatch = (error) => error instanceof MrtrObservationMismatch;
-        await runExchange(fixture, mutant);
+        record(fixture, mutant, await runExchange(fixture, mutant));
         break;
       }
       case "ops": {
         const { runExchange, OpsObservationMismatch } = await import("@mcp-client/ops/conformance");
         isMismatch = (error) => error instanceof OpsObservationMismatch;
-        await runExchange(fixture, mutant);
+        record(fixture, mutant, await runExchange(fixture, mutant));
         break;
       }
       default:

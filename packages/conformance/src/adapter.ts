@@ -53,6 +53,7 @@ export interface HarnessInstance {
   readonly client: LifecycleClient;
   readonly transport: InprocTransport;
   readonly clock: HarnessClock;
+  readonly outbound?: unknown[];
   call(method: string, params: Record<string, unknown>, opts?: RequestOptions): ClientRequest<unknown>;
   outcomeJson(outcome: Outcome<unknown>): Record<string, unknown>;
   /** S1.1: push a server notification onto the exchange of request `id` (even after it settled). */
@@ -218,6 +219,7 @@ export function createCoreAdapter(): HarnessAdapter {
         ...(setup.mutant === "cross-talk-responses" ? { crossTalkResponses: true } : {}),
       };
       const transport = new InprocTransport(mutantFlags);
+      const outbound: unknown[] = [];
       const queues = new Map<string, NotificationQueue<JsonRpcNotification>>();
       const keyOf = (id: RequestId) => `${typeof id}:${String(id)}`;
 
@@ -228,6 +230,7 @@ export function createCoreAdapter(): HarnessAdapter {
           if (setup.mutant === "omit-protocol-version") {
             msg = stripMeta(msg, "io.modelcontextprotocol/protocolVersion");
           }
+          outbound.push(msg);
           const inner = transport.start(msg, ctx);
           // S1.1: a per-exchange queue lets fixtures inject server notifications for any request.
           const queue = new NotificationQueue<JsonRpcNotification>();
@@ -252,7 +255,7 @@ export function createCoreAdapter(): HarnessAdapter {
             }),
           };
         },
-        notify: (m, c) => transport.notify(m, c),
+        notify: (m, c) => { outbound.push(m); return transport.notify(m, c); },
         close: (o) => {
           for (const q of queues.values()) q.close();
           return transport.close(o);
@@ -292,6 +295,7 @@ export function createCoreAdapter(): HarnessAdapter {
         client,
         transport,
         clock,
+        outbound,
         call(method, params, opts) {
           if (mutantFlags.sendCancelWhenAbortedBeforeSend && opts?.signal?.aborted) {
             wrappedTransport.start(
