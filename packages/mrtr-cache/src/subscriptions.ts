@@ -53,6 +53,8 @@ export interface ListenOptions {
   ackTimeoutMs?: number;
   listenIdleMs?: number;
   maxResourceUris?: number;
+  /** Local cap on concurrent (non-ended) listen streams (LIM-SUB-1). Default 8. */
+  maxListenStreams?: number;
   maxAttemptsPerMinute?: number;
   reconnect?: "never" | "on-abrupt";
   diagnostic?: Diagnostic;
@@ -312,6 +314,8 @@ export class SubscriptionManager {
         throw RangeError("too many subscription URIs");
       filter.resourceSubscriptions = [...new Set(f.resourceUris)];
     }
+    if (this.listeners.size >= (this.options.maxListenStreams ?? 8))
+      throw RangeError("too many concurrent listen streams");
     return new Listener(this, this.options, filter);
   }
   route(n: JsonRpcNotification, streamId?: RequestId) {
