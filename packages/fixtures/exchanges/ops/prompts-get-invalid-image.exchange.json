@@ -45,5 +45,7 @@
       }
     }
   },
-  "mutants": []
+  "mutants": [
+    "accept-invalid-media"
+  ]
 }

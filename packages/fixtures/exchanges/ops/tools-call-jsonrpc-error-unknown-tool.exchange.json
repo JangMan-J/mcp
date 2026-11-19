@@ -38,5 +38,7 @@
       }
     }
   },
-  "mutants": []
+  "mutants": [
+    "jsonrpc-error-to-isError"
+  ]
 }

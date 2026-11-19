@@ -43,5 +43,7 @@
       }
     }
   },
-  "mutants": []
+  "mutants": [
+    "isError-as-ok"
+  ]
 }

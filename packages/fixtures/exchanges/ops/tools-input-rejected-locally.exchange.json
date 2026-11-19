@@ -65,5 +65,8 @@
       ]
     }
   },
-  "mutants": []
+  "mutants": [
+    "skip-input-validation",
+    "permissive-validator"
+  ]
 }

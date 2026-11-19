@@ -66,5 +66,7 @@
       "totalRequests": 3
     }
   },
-  "mutants": []
+  "mutants": [
+    "stop-after-first-page"
+  ]
 }

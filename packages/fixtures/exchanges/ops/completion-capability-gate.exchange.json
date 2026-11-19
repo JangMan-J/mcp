@@ -46,5 +46,7 @@
       "totalRequests": 0
     }
   },
-  "mutants": []
+  "mutants": [
+    "ignore-capability-gate"
+  ]
 }

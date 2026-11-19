@@ -53,5 +53,7 @@
       }
     }
   },
-  "mutants": []
+  "mutants": [
+    "permissive-validator"
+  ]
 }

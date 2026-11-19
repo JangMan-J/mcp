@@ -100,5 +100,8 @@
       "totalRequests": 2
     }
   },
-  "mutants": []
+  "mutants": [
+    "permissive-validator",
+    "ignore-prefixItems"
+  ]
 }

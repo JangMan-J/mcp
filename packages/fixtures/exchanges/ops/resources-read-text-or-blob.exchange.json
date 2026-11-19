@@ -66,5 +66,7 @@
       }
     }
   },
-  "mutants": []
+  "mutants": [
+    "accept-text-and-blob"
+  ]
 }

@@ -45,5 +45,7 @@
       "totalRequests": 2
     }
   },
-  "mutants": []
+  "mutants": [
+    "restart-on-invalid-cursor"
+  ]
 }

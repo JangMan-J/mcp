@@ -90,5 +90,8 @@
       }
     }
   },
-  "mutants": []
+  "mutants": [
+    "permissive-validator",
+    "ignore-strict-output"
+  ]
 }

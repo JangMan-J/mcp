@@ -58,5 +58,7 @@
       }
     }
   },
-  "mutants": []
+  "mutants": [
+    "drop-tool-arguments"
+  ]
 }

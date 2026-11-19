@@ -37,5 +37,7 @@
       }
     }
   },
-  "mutants": []
+  "mutants": [
+    "error-to-protocol-violation"
+  ]
 }

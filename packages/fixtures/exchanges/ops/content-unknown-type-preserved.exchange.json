@@ -49,5 +49,7 @@
       }
     }
   },
-  "mutants": []
+  "mutants": [
+    "drop-unknown-blocks"
+  ]
 }

@@ -164,10 +164,11 @@ export class ToolsApi {
         outputValidation = out.ok ? "valid" : out.reason;
         if (!out.ok) warnings.push(`tool '${name}' outputSchema: ${out.message}`);
       }
-      this.compiled.set(name, c);
       const nameWarnings: string[] = [];
       if (!NAME_RE.test(name)) nameWarnings.push("name-not-1-128-of-[A-Za-z0-9_.-]");
+      // Duplicates are kept and flagged (OPS-TOOLS-4); the first entry's schemas stay in force.
       if (tools.some((t) => t.name === name)) nameWarnings.push("duplicate-name");
+      else this.compiled.set(name, c);
       tools.push({
         name,
         tool: raw,

@@ -55,5 +55,7 @@
       }
     }
   },
-  "mutants": []
+  "mutants": [
+    "accept-invalid-base64"
+  ]
 }

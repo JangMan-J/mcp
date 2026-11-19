@@ -79,5 +79,8 @@
       "totalRequests": 2
     }
   },
-  "mutants": []
+  "mutants": [
+    "ignore-dialect",
+    "allow-unvalidated-default"
+  ]
 }

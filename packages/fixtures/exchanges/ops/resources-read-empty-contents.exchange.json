@@ -36,5 +36,7 @@
       }
     }
   },
-  "mutants": []
+  "mutants": [
+    "empty-is-not-found"
+  ]
 }

@@ -202,5 +202,7 @@
       }
     }
   },
-  "mutants": []
+  "mutants": [
+    "no-completion-truncation"
+  ]
 }

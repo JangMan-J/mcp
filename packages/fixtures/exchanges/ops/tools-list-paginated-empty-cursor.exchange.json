@@ -64,5 +64,7 @@
       }
     }
   },
-  "mutants": []
+  "mutants": [
+    "empty-cursor-is-end"
+  ]
 }

@@ -41,5 +41,7 @@
       }
     }
   },
-  "mutants": []
+  "mutants": [
+    "skip-blob-check"
+  ]
 }

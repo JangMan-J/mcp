@@ -57,5 +57,8 @@
       "totalRequests": 1
     }
   },
-  "mutants": []
+  "mutants": [
+    "sort-list",
+    "drop-list-hints"
+  ]
 }

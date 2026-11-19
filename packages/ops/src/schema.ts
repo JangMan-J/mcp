@@ -158,7 +158,9 @@ function bound(schema: unknown, b: SchemaBounds): void {
   const bytes = new TextEncoder().encode(JSON.stringify(schema) ?? "").length;
   if (bytes > b.maxBytes) throw new SchemaError("invalid-schema", `schema exceeds ${b.maxBytes} bytes`);
   let count = 0;
+  // Depth counts nested objects and arrays only; scalar leaves do not add a level.
   const walk = (v: unknown, depth: number): void => {
+    if (typeof v !== "object" || v === null) return;
     if (depth > b.maxDepth) throw new SchemaError("invalid-schema", `schema depth exceeds ${b.maxDepth}`);
     if (Array.isArray(v)) {
       for (const x of v) walk(x, depth + 1);

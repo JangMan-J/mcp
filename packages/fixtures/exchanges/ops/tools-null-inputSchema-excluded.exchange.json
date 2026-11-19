@@ -47,5 +47,7 @@
       }
     }
   },
-  "mutants": []
+  "mutants": [
+    "keep-null-inputSchema"
+  ]
 }

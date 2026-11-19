@@ -41,5 +41,7 @@
       }
     }
   },
-  "mutants": []
+  "mutants": [
+    "no-not-found-refinement"
+  ]
 }

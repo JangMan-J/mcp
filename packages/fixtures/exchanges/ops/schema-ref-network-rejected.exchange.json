@@ -50,5 +50,8 @@
       "totalRequests": 1
     }
   },
-  "mutants": []
+  "mutants": [
+    "ignore-external-ref",
+    "permissive-validator"
+  ]
 }

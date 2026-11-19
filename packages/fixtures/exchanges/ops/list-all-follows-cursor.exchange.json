@@ -58,5 +58,8 @@
       }
     }
   },
-  "mutants": []
+  "mutants": [
+    "stop-after-first-page",
+    "rewrite-cursor"
+  ]
 }

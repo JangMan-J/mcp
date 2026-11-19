@@ -100,5 +100,8 @@
       }
     }
   },
-  "mutants": []
+  "mutants": [
+    "no-32601-mapping",
+    "no-32602-invalid-arguments"
+  ]
 }
