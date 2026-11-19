@@ -1,0 +1,16 @@
+{
+  "id":"ext/apps/ordinary-tool", "tier":"A", "binding":"any", "pin":"ext-page", "source":["W/extensions/apps/overview.md#How MCP Apps work"],
+  "requirements":["EXT-apps-5","EXT-CAP-3","EXT-REMOVE-apps"], "mutants":["apps-bypass-consent","apps-strip-tool-meta"],
+  "server":{"capabilities":{"tools":{}}},
+  "script":[
+    {"do":"call","as":"unregistered","method":"tools/list"},
+    {"server":"result","for":"unregistered","result":{"tools":[{"name":"view","inputSchema":{"type":"object"},"_meta":{"ui":{"resourceUri":"ui://example/view"},"extra":42}}]}},
+    {"do":"call","as":"ordinary","method":"tools/call","params":{"name":"view"}},
+    {"server":"result","for":"ordinary","result":{"content":[{"type":"text","text":"ordinary result"}]}},
+    {"do":"call","as":"denied","method":"apps/call","params":{"name":"view","decision":"decline"}},
+    {"do":"call","as":"missing","method":"apps/call","params":{"name":"view"}},
+    {"do":"call","as":"accepted","method":"apps/call","params":{"name":"view","decision":"accept"}},
+    {"server":"result","for":"accepted","result":{"content":[{"type":"text","text":"ordinary result"}]}}
+  ],
+  "expect":{"outcome":{"unregistered":{"ui":{"resourceUri":"ui://example/view"},"extra":42},"ordinary":{"content":[{"type":"text","text":"ordinary result"}]},"accepted":{"content":[{"type":"text","text":"ordinary result"}],"prompts":["tool-call@example"]},"denied":{"kind":"local-error","prompts":["tool-call@example"]},"missing":{"kind":"local-error","prompts":[]}},"wire":{"count":{"tools/list":1,"tools/call":2}}}
+}

@@ -1,0 +1,17 @@
+{
+  "id":"ext/apps/resource-and-policy", "tier":"A", "binding":"any", "pin":"ext-page", "source":["W/extensions/apps/overview.md#How MCP Apps work"],
+  "requirements":["EXT-apps-1","EXT-apps-2","EXT-apps-3","EXT-apps-4","EXT-apps-6","EXT-apps-7"],
+  "mutants":["apps-always-advertise","apps-prefetch","apps-use-flat-key","apps-drop-policy","apps-ignore-mime"],
+  "server":{"capabilities":{"tools":{},"resources":{}}},
+  "script":[
+    {"do":"call","as":"enabled","method":"apps/capabilities","params":{"healthy":true}},
+    {"do":"call","as":"disabled","method":"apps/capabilities","params":{"healthy":false}},
+    {"do":"call","as":"tools","method":"apps/list"},
+    {"server":"result","for":"tools","result":{"tools":[{"name":"view","inputSchema":{"type":"object"},"_meta":{"ui":{"resourceUri":"ui://example/view","csp":{"connectDomains":[]}}}},{"name":"old","inputSchema":{"type":"object"},"_meta":{"ui/resourceUri":"ui://example/old"}}]}},
+    {"do":"call","as":"valid","method":"apps/load"},
+    {"server":"result","for":"valid","result":{"contents":[{"uri":"ui://example/view","mimeType":"text/html;profile=mcp-app","text":"<p>hello</p>","_meta":{"ui":{"permissions":{"camera":{}}}}}]}},
+    {"do":"call","as":"invalid","method":"apps/load"},
+    {"server":"result","for":"invalid","result":{"contents":[{"uri":"ui://example/view","mimeType":"text/html","text":"not an app"}]}}
+  ],
+  "expect":{"outcome":{"enabled":{"extensions":{"io.modelcontextprotocol/ui":{"mimeTypes":["text/html;profile=mcp-app"]}}},"disabled":{},"tools":["ui://example/view",null],"valid":{"kind":"ok","rendered":[{"resourceUri":"ui://example/view","mimeType":"text/html;profile=mcp-app","text":"<p>hello</p>","csp":{"connectDomains":[]},"permissions":{"camera":{}}}]},"invalid":{"kind":"protocol-violation","detail":{"reason":"invalid-app-mime","mimeType":"text/html"},"rendered":[]}},"wire":{"count":{"resources/read":2,"tools/list":1}}}
+}
