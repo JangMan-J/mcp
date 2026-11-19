@@ -1,7 +1,7 @@
 # Gate status
 
-- Gate SHA: `10d2cfd0d7403a6b30cb522cc67b1fe24247ccc2` (conformance: dispatch Tier B transport runners)
-- Date: 2026-11-19T22:08:03Z (from report `generatedAt`)
+- Gate SHA: `b11881eddfceb8b9fa537d2d1340d15b37a4e42d`
+- Date: 2026-11-19T22:31:43.424Z (from report `generatedAt`)
 - Command: `npm run gate` (`bash scripts/gate.sh`), exit 1, `BLOCKED`
 - Release eligible: **no**
 - Env: node v26.13.1, linux 6.18.60-2-cachyos-lts x64; lockfile sha256 86ec5d55e5e5…, pins sha256 1bd5c34a5f38…
@@ -20,7 +20,7 @@
 | G8 | pass | ops/* 38 pass; wire/* 14 pass |
 | G9 | pass | ver/* 8 pass; http/400-modern-error-vs-legacy 1 |
 | G10 | pass | suite removal; ext/* 39 pass |
-| G11 | **fail** | suites no-pi, wire-scan, network-scan, secret-scan (only wire-scan failed) |
+| G11 | pass | suites no-pi, wire-scan, network-scan, secret-scan |
 | G12 | **fail** | suites official, evidence (only official failed) |
 
 ## Suites
@@ -31,30 +31,18 @@
 | baseline | pass | 265/265 passed |
 | mutation | pass | 342/342 killed |
 | coverage | pass | ok=true |
-| wire-scan | **fail** | exit 1; `wire-scan: FAIL (471 errors, 0 violations)` — all 251 transcripts "transcript marked incomplete", 220 also "empty 'frames' (no evidence)" |
-| network-scan | pass | clean (251 transcripts, loopback only) |
-| secret-scan | pass | clean (251 transcripts, 0 logs) |
+| wire-scan | pass | clean (261 transcripts, 629 client frames); DCR detection depends on endpoint metadata |
+| network-scan | pass | clean (261 transcripts, loopback only) |
+| secret-scan | pass | clean (261 transcripts, 0 logs) |
 | official | **fail** | ok=false total=? (exit 1) |
 | removal | pass | 8 extensions removable |
 | evidence | pass | lock 86ec5d55e5e5 pins 1bd5c34a5f38 |
 
 ## Blockers (verbatim from report)
 
-- `wire-scan: exit 1 wire-scan: error: /home/jangmanj/.local/state/jing/tx/dlr_d6c1f731a4739898/cards/crd_02d35baa0bca8c57/reports/gate-10d2cfd0d7403a6b30cb522cc67b1fe24247ccc2-transcripts-JCm6Jv/ops__prompts-list-page.transcript.json: transcript marked incomplete | wire-scan: error: /home/jangmanj/.local/state/jing/tx/dlr_d6c1f731a4739898/cards/crd_02d35baa0bca8c57/reports/gate-10d2cfd0d7403a6b30cb522cc67b1fe24247ccc2-transcripts-JCm6Jv/ops__prompts-list-page.transcript.json: empty 'frames' (no evidence) | wire-sca`
 - `official: ok=false total=? (exit 1)`
 - `requirements: 164 required/deprecated/excluded rows not pass (missing/fail)`
-- `G11: fail (suite no-pi, wire-scan, network-scan, secret-scan)`
 - `G12: fail (suite official, evidence)`
-
-## wire-scan failure (not expected)
-
-This is a failure outside official/G12 and row gaps. Every transcript the gate writes is a placeholder, e.g. `ops__prompts-list-page.transcript.json`:
-
-```json
-{"fixture": "ops/prompts-list-page", "frames": [], "incomplete": ["provider-owned fixture: frames are not observed by the conformance runner"]}
-```
-
-`scripts/wire-scan.mjs` treats `incomplete` and empty `frames` as errors, so G11 fails until the runner records frames or wire-scan accepts provider-owned placeholders. Raised to the Dealer via jing_ask.
 
 ## officialBlockedReason
 
