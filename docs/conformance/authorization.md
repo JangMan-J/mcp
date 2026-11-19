@@ -192,3 +192,10 @@ Lane file created from plan section 10 and the 12.3/12.4 sections. Row counts: s
 - **New fixture ids** (not in plan 10.10): every `auth/*`, `consent/*`, `ext/cc/*`, `ext/ema/*` id in the table that is not listed there; `ext/*` fixtures need the synthetic AS and IdP of plan 13.
 - **Not owned here, referenced**: `STDIO-AUTH-1` (wire), `ELIC-AUTH-1`, `CACHE-AUTH-1`, `DEP-DCR-1` (operations), `EXT-REMOVE-1` (extensions).
 - **Removed**: none.
+
+### Follow-up revision (validator alignment)
+- **Anchors**: every anchor cell is now a wiki `page#heading` that exists (ext-auth and RFC 9728 anchors replaced by the wiki page that cites or mirrors them; exact external sections moved to `source:` notes in Condition). `AUTH-REG-5` re-anchored on `client-registration.md#Pre-registration`.
+- **Role**: `CONSENT-3`, `EXT-cc-PIN`, `EXT-ema-PIN` are `host`; pin rows strength `derived`.
+- **Negative client observables replace `none (server role)`**: `AUTH-SRV-1..7` and `EXT-ema-10` (new fixtures `auth/client-exposes-no-token-validator`, `auth/client-publishes-no-prm`, `auth/client-no-proxy-consent-role`, `auth/client-exposes-no-as-endpoints`, `ext/ema/client-issues-no-access-token`; `AUTH-SRV-4` and `-5` reuse existing ids). `AUTH-AUD-1` and `AUTH-SEP-1` now name one fixture (`consent/url-elicitation-no-token-change` is new).
+- **Non-claims** (`unresolved`, Q number kept): `EXT-cc-1/2/3/6`, `EXT-ema-1/4/7/8/9`, `AUTH-CONT-1`.
+- **Pins**: commit hashes and dates removed from this file; evidence goes to the director through the Card submission.
