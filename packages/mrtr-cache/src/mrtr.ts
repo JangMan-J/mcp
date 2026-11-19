@@ -5,6 +5,7 @@ import {
   type Outcome,
   type OutcomeMeta,
   type RequestOptions,
+  type TransportFailure,
 } from "@mcp-client/core";
 import { object, Violation, type Obj, type RequestFn } from "./common.js";
 import {
@@ -18,6 +19,8 @@ export interface MrtrOptions extends ElicitationOptions {
   deadlineMs?: number;
   maxRounds?: number;
   retryDelay?: number;
+  /** Aborts when the underlying transport closes or fails (EDGE-27); reason may be a TransportFailure. */
+  transportClosed?: AbortSignal;
 }
 const supported = new Set(["tools/call", "resources/read", "prompts/get"]);
 async function digest(state: string) {
@@ -46,9 +49,12 @@ export class MrtrSession {
     const end = clock.now() + (config.deadlineMs ?? 300_000),
       trace: MrtrRound[] = [];
     const deadline = new AbortController(),
-      signal = opts.signal
-        ? AbortSignal.any([deadline.signal, opts.signal])
-        : deadline.signal;
+      closed = config.transportClosed,
+      signal = AbortSignal.any(
+        [deadline.signal, opts.signal, closed].filter(
+          (s): s is AbortSignal => s !== undefined,
+        ),
+      );
     let meta: OutcomeMeta = {
       method,
       requestId: "unsent",
@@ -56,7 +62,17 @@ export class MrtrSession {
       binding: "local",
     };
     const stop = (): Outcome<unknown> =>
-      deadline.signal.aborted || clock.now() >= end
+      closed?.aborted
+        ? {
+            kind: "transport-failure",
+            failure:
+              object(closed.reason) && typeof closed.reason.kind === "string"
+                ? (closed.reason as unknown as TransportFailure)
+                : { kind: "closed", message: "transport closed during MRTR wait" },
+            safeToRetry: false,
+            meta,
+          }
+        : deadline.signal.aborted || clock.now() >= end
         ? { kind: "limit-exceeded", detail: { reason: "mrtr-deadline" }, meta }
         : { kind: "cancelled", phase: "input", wasSent: false, meta };
     const violate = (reason: string, context: Obj = {}): Outcome<unknown> => {
