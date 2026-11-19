@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,6 +7,21 @@ import { afterEach, describe, expect, it } from "vitest";
 
 const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
 const script = join(repoRoot, "scripts/assert-no-pi.mjs");
+
+// Real denied names come from the checked-in deny list so this source never spells them.
+const denyList = JSON.parse(readFileSync(join(repoRoot, "packages/conformance/deny-pi.json"), "utf8")) as {
+  packages: string[];
+};
+const deniedPkg = (suffix: string): string => {
+  const hit = denyList.packages.find((p) => p.endsWith(suffix));
+  if (!hit) throw new Error(`deny-pi.json has no package ending in ${suffix}`);
+  return hit;
+};
+const PI_AI = deniedPkg("/pi-ai");
+const PI_TUI = deniedPkg("/pi-tui");
+const PI_ROUTER = deniedPkg("/pi-router");
+const MCP_SDK = deniedPkg("/sdk");
+const re = (s: string) => new RegExp(s.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&"));
 
 const dirs: string[] = [];
 const tmp = () => {
@@ -75,20 +90,20 @@ describe("static scans", () => {
       join(root, "package-lock.json"),
       JSON.stringify({
         lockfileVersion: 3,
-        packages: { "": {}, "node_modules/foo/node_modules/@earendil-works/pi-ai": { version: "1.0.0" } },
+        packages: { "": {}, [`node_modules/foo/node_modules/${PI_AI}`]: { version: "1.0.0" } },
       }),
     );
     const r = run(["--root", root]);
     expect(r.code).toBe(1);
-    expect(r.err).toMatch(/package-lock\.json: .*pi-ai/);
+    expect(r.err).toMatch(new RegExp(`package-lock\\.json: .*${re(PI_AI).source}`));
   });
 
   it("fails when node_modules contains a denied package (nested, scoped)", () => {
     const root = cleanRoot();
-    writePkg(join(root, "node_modules/left-pad/node_modules/@modelcontextprotocol/sdk"), "@modelcontextprotocol/sdk");
+    writePkg(join(root, "node_modules/left-pad/node_modules", MCP_SDK), MCP_SDK);
     const r = run(["--root", root]);
     expect(r.code).toBe(1);
-    expect(r.err).toMatch(/node_modules: .*@modelcontextprotocol\/sdk/);
+    expect(r.err).toMatch(new RegExp(`node_modules: .*${re(MCP_SDK).source}`));
   });
 
   it("fails when a PI_* variable is set", () => {
@@ -121,27 +136,27 @@ describe("protected node wrapper", () => {
 
   it("fails the process when a denied ESM import is caught", () => {
     const root = cleanRoot();
-    writePkg(join(root, "node_modules/@earendil-works/pi-ai"), "@earendil-works/pi-ai");
+    writePkg(join(root, "node_modules", PI_AI), PI_AI);
     const entry = join(root, "entry.mjs");
     writeFileSync(
       entry,
-      "try { await import('@earendil-works/pi-ai'); console.log('imported'); } catch (e) { console.log('caught:' + e.code); }\nprocess.exit(0);\n",
+      `try { await import(${JSON.stringify(PI_AI)}); console.log('imported'); } catch (e) { console.log('caught:' + e.code); }\nprocess.exit(0);\n`,
     );
     // Static scan would catch this package; use a separate clean root for scans.
     const r = run(["--root", cleanRoot(), "--", entry], { cwd: root });
     expect(r.out).toContain("caught:");
     expect(r.out).not.toContain("imported");
-    expect(r.err).toMatch(/denied resolution in gate process: @earendil-works\/pi-ai/);
+    expect(r.err).toMatch(new RegExp(`denied resolution in gate process: ${re(PI_AI).source}`));
     expect(r.code).toBe(1);
   });
 
   it("fails the process when a denied require() is caught, even for a missing package", () => {
     const root = cleanRoot();
     const entry = join(root, "entry.cjs");
-    writeFileSync(entry, "try { require('@jangmanj/pi-router/sub'); } catch {}\nconsole.log('done');\n");
+    writeFileSync(entry, `try { require(${JSON.stringify(PI_ROUTER + "/sub")}); } catch {}\nconsole.log('done');\n`);
     const r = run(["--root", root, "--", entry], { cwd: root });
     expect(r.out).toContain("done");
-    expect(r.err).toMatch(/denied resolution in gate process: @jangmanj\/pi-router\/sub/);
+    expect(r.err).toMatch(new RegExp(`denied resolution in gate process: ${re(PI_ROUTER + "/sub").source}`));
     expect(r.code).toBe(1);
   });
 
@@ -151,11 +166,11 @@ describe("protected node wrapper", () => {
     writeFileSync(
       entry,
       `import { spawnSync } from "node:child_process";
-spawnSync(process.execPath, ["-e", "import('@earendil-works/pi-tui').catch(() => {})"], { stdio: "inherit" });
+spawnSync(process.execPath, ["-e", ${JSON.stringify(`import(${JSON.stringify(PI_TUI)}).catch(() => {})`)}], { stdio: "inherit" });
 `,
     );
     const r = run(["--root", root, "--", entry], { cwd: root });
-    expect(r.err).toMatch(/pi-tui/);
+    expect(r.err).toMatch(re(PI_TUI));
     expect(r.code).toBe(1);
   });
 
