@@ -1,4 +1,4 @@
-import type { ClientRequest, JsonRpcNotification, Outcome, ProgressEvent } from "@mcp-client/core";
+import type { ClientRequest, JsonRpcNotification, Outcome, ProgressEvent } from "../../core/dist/index.js";
 import { loadExchangeFiles, type ExchangeFixture } from "@mcp-client/fixtures";
 import { createCoreAdapter, type HarnessAdapter } from "./adapter.js";
 

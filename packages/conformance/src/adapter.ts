@@ -1,7 +1,7 @@
 import {
   EraCache,
   classifyDiscoverOutcome,
-  McpClient,
+  LifecycleClient,
   NotificationQueue,
   ProgressRegistry,
   type Clock,
@@ -10,13 +10,13 @@ import {
   type Extension,
   type JsonRpcNotification,
   type LifecycleContext,
-  type McpClientLifecycleOptions,
+  type LifecyclePolicyOptions,
   type Outcome,
   type ProgressToken,
   type RequestId,
   type RequestOptions,
   type Transport,
-} from "@mcp-client/core";
+} from "../../core/dist/index.js";
 import { InprocTransport, type InprocMutants } from "@mcp-client/fixtures";
 
 export interface HarnessClock extends Clock {
@@ -50,7 +50,7 @@ export function createFakeClock(startMs = 1_700_000_000_000): HarnessClock {
 }
 
 export interface HarnessInstance {
-  readonly client: McpClient;
+  readonly client: LifecycleClient;
   readonly transport: InprocTransport;
   readonly clock: HarnessClock;
   call(method: string, params: Record<string, unknown>, opts?: RequestOptions): ClientRequest<unknown>;
@@ -96,7 +96,7 @@ class ForgetfulEraCache extends EraCache {
   override set(): void {}
 }
 
-function lifecycleMutant(mutant: string | undefined): McpClientLifecycleOptions {
+function lifecycleMutant(mutant: string | undefined): LifecyclePolicyOptions {
   switch (mutant) {
     case "lax-progress-registry":
       return { progressRegistry: new LaxProgressRegistry() };
@@ -243,7 +243,7 @@ export function createCoreAdapter(): HarnessAdapter {
         diagnostics: transport.diagnostics,
       };
 
-      const client = new McpClient({
+      const client = new LifecycleClient({
         transport: wrappedTransport,
         server: { key: "conformance-inproc" },
         ports: { clock },

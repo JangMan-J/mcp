@@ -26,15 +26,13 @@ Wire lifecycle per `IMPLEMENTATION_PLAN.md` §5 and `docs/conformance/wire.md` r
   - versions and diagnostics: `selectProtocolVersion`, `UnsupportedVersionDiagnostic`, `buildUnsupportedVersionDiagnostic`, `LifecycleContext`, `mapLifecycleOutcome`.
   - era: `EraState`, `classifyDiscoverOutcome`, `isCacheableEra`, `EraCache` (memory only, single-flight `resolve`).
   - transport layer: `LifecycleTransport` (progress registry, inbound notification policy, local settle on abort, late responses counted), `LifecycleTransportOptions`, `defaultNotificationFilter`, `NotificationVerdict`, `LifecycleHooks`, `defaultLifecycleHooks`, `WireStats`.
-- `index.ts` / `McpClient` (additive members only):
-  - `McpClientOptions.lifecycle?: McpClientLifecycleOptions` (`hooks`, `settleOnAbort`, `readOnlyMethods`, `progressRegistry`, `eraCache`); `ProbeOptions`.
-  - `probe(opts?) => Promise<EraState>`, `era() => EraState | undefined`, `wireStats() => WireStats`.
+- `lifecycle.ts` client: `LifecycleClient` / `createLifecycleClient(opts)` composed over the frozen `RequestManager` (same `request`/`discover`/`use`/`close` surface as `McpClient`) plus `probe(opts?) => Promise<EraState>`, `era()`, `wireStats()`; `LifecycleClientOptions` (McpClientOptions fields plus `lifecycle?: LifecyclePolicyOptions` with `hooks`, `settleOnAbort`, `readOnlyMethods`, `progressRegistry`, `eraCache`), `ProbeOptions`.
+- `index.ts`: only adds `export *` of `lifecycle.ts`, `cancel.ts`, `progress.ts`. `McpClient` / `McpClientOptions` are unchanged.
 
-Behavior changes inside the frozen signatures:
+`LifecycleClient` behavior relative to `McpClient`:
 
-- `McpClient` wraps the configured transport in `LifecycleTransport`. Core still never writes `notifications/cancelled`; bindings do (stdio sends it, HTTP closes the stream).
-- `clientInfo` defaults to `LIBRARY_CLIENT_INFO` when neither `clientInfo` nor `ports.identity` is given (WIRE-META-3). `clientInfo: false` still omits it.
-- `RequestOptions.idempotent` defaults to `isReadOnly(method)` (default list `DEFAULT_READ_ONLY_METHODS`) instead of `false`, so interrupted reads are `cancelled` / `transport-failure` and interrupted writes are `uncertain-write` (N14).
-- A `-32022` that is not retried (no mutual version) or fails again after the single retry settles as `unsupported-version` with an `UnsupportedVersionDiagnostic` in `detail`, not `jsonrpc-error` (VER-3, VER-4).
-- `discover()` now goes through `McpClient.request` (same mapping and idempotent flag).
-- Era probing is explicit (`probe()`); it is not run automatically before the first request. Hosts or bindings that want VER-5 / STDIO-DISC-1 probe-on-first-use call `probe()` first.
+- wraps the transport in `LifecycleTransport`. Core still never writes `notifications/cancelled`; bindings do (stdio sends it, HTTP closes the stream).
+- `clientInfo` defaults to `LIBRARY_CLIENT_INFO` when neither `clientInfo` nor `ports.identity` is given (WIRE-META-3); `false` omits it.
+- `RequestOptions.idempotent` defaults to `isReadOnly(method)`, so interrupted reads are `cancelled` / `transport-failure` and interrupted writes are `uncertain-write` (N14).
+- a `-32022` with no mutual version, or failing again after the single retry, settles as `unsupported-version` with an `UnsupportedVersionDiagnostic` in `detail` (VER-3, VER-4).
+- era probing is explicit (`probe()`), not automatic before the first request; hosts or bindings wanting VER-5 / STDIO-DISC-1 probe-on-first-use call `probe()` first.

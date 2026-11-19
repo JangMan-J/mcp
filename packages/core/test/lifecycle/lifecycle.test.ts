@@ -8,7 +8,7 @@ import {
   EraCache,
   LIBRARY_CLIENT_INFO,
   mapLifecycleOutcome,
-  McpClient,
+  LifecycleClient,
   META_CLIENT_CAPABILITIES,
   META_CLIENT_INFO,
   META_LOG_LEVEL,
@@ -60,7 +60,7 @@ describe("_meta injection (WIRE-META-1..5, WIRE-LOG-1)", () => {
       capabilities: () => ({ "io.example/widgets": { v: 1 } }),
       attach: () => ({ dispose() {} }),
     };
-    const client = new McpClient({ transport, server: { key: "s" }, extensions: [ext] });
+    const client = new LifecycleClient({ transport, server: { key: "s" }, extensions: [ext] });
     await client.request("tools/list");
     await client.request("prompts/list");
     for (const r of sent) {
@@ -73,7 +73,7 @@ describe("_meta injection (WIRE-META-1..5, WIRE-LOG-1)", () => {
 
   it("capabilities are empty when nothing is registered, and recomputed after dispose", async () => {
     const { transport, sent } = scripted((req) => ok(req, {}));
-    const client = new McpClient({ transport, server: { key: "s" } });
+    const client = new LifecycleClient({ transport, server: { key: "s" } });
     const d = client.use({ id: "x", capabilities: () => ({ x: {} }), attach: () => ({ dispose() {} }) });
     await client.request("tools/list");
     d.dispose();
@@ -84,17 +84,17 @@ describe("_meta injection (WIRE-META-1..5, WIRE-LOG-1)", () => {
 
   it("clientInfo: false omits it; an IdentityPort wins over the library default", async () => {
     const a = scripted((req) => ok(req, {}));
-    await new McpClient({ transport: a.transport, server: { key: "s" }, clientInfo: false }).request("tools/list");
+    await new LifecycleClient({ transport: a.transport, server: { key: "s" }, clientInfo: false }).request("tools/list");
     expect(META_CLIENT_INFO in metaOf(a.sent[0]!)).toBe(false);
     const b = scripted((req) => ok(req, {}));
     const identity = { clientInfo: () => ({ name: "host", version: "9" }) };
-    await new McpClient({ transport: b.transport, server: { key: "s" }, ports: { identity } }).request("tools/list");
+    await new LifecycleClient({ transport: b.transport, server: { key: "s" }, ports: { identity } }).request("tools/list");
     expect(metaOf(b.sent[0]!)[META_CLIENT_INFO]).toEqual({ name: "host", version: "9" });
   });
 
   it("rejects reserved overrides, bad key syntax, and logLevel before anything is sent", () => {
     const { transport, sent } = scripted((req) => ok(req, {}));
-    const client = new McpClient({ transport, server: { key: "s" } });
+    const client = new LifecycleClient({ transport, server: { key: "s" } });
     expect(() => client.request("tools/list", {}, { meta: { [META_PROTOCOL_VERSION]: "x" } })).toThrow(/WIRE-META-4/);
     expect(() => client.request("tools/list", {}, { meta: { "bad key": 1 } })).toThrow(/WIRE-META-5/);
     expect(() => client.request("tools/list", {}, { meta: { [META_LOG_LEVEL]: "debug" } })).toThrow(/WIRE-LOG-1/);
@@ -146,7 +146,7 @@ describe("version negotiation (VER-2/3/4)", () => {
 
   it("no mutual version: one request, unsupported-version diagnostic", async () => {
     const { transport, sent } = scripted((req) => err(req, -32022, "Unsupported", { requested: "2026-07-28", supported: ["2025-11-25"] }));
-    const client = new McpClient({ transport, server: { key: "s", label: "my-server" } });
+    const client = new LifecycleClient({ transport, server: { key: "s", label: "my-server" } });
     const out = await client.request("tools/list");
     expect(sent).toHaveLength(1);
     expect(out.kind).toBe("unsupported-version");
@@ -163,7 +163,7 @@ describe("version negotiation (VER-2/3/4)", () => {
 
   it("retries at most once (VER-4)", async () => {
     const { transport, sent } = scripted((req) => err(req, -32022, "Unsupported", { requested: "2026-07-28", supported: ["2026-07-28"] }));
-    const client = new McpClient({ transport, server: { key: "s" } });
+    const client = new LifecycleClient({ transport, server: { key: "s" } });
     const out = await client.request("tools/list");
     expect(sent).toHaveLength(2);
     expect(sent[0]!.id).not.toBe(sent[1]!.id);
@@ -231,7 +231,7 @@ describe("discover, era cache, diagnostics (VER-5/6, VER-CACHE-1, VER-DIAG-1)", 
 
   it("probe sends server/discover once per client and caches only in memory", async () => {
     const { transport, sent } = scripted((req) => ok(req, discover));
-    const client = new McpClient({ transport, server: { key: "s" } });
+    const client = new LifecycleClient({ transport, server: { key: "s" } });
     const [a, b] = await Promise.all([client.probe(), client.probe()]);
     expect(a).toBe(b);
     expect(await client.probe()).toBe(a);
@@ -239,7 +239,7 @@ describe("discover, era cache, diagnostics (VER-5/6, VER-CACHE-1, VER-DIAG-1)", 
     expect(sent.map((r) => r.method)).toEqual(["server/discover"]);
     expect(sent.some((r) => r.method === "initialize")).toBe(false);
 
-    const other = new McpClient({ transport, server: { key: "s" } });
+    const other = new LifecycleClient({ transport, server: { key: "s" } });
     expect(other.era()).toBeUndefined();
     await other.probe();
     expect(sent).toHaveLength(2);
@@ -254,7 +254,7 @@ describe("discover, era cache, diagnostics (VER-5/6, VER-CACHE-1, VER-DIAG-1)", 
 
   it("legacy peer: probe yields a populated diagnostic", async () => {
     const { transport } = scripted((req) => err(req, -32601, "Method not found: server/discover"));
-    const client = new McpClient({ transport, server: { key: "cmd", label: "node old-server.js" } });
+    const client = new LifecycleClient({ transport, server: { key: "cmd", label: "node old-server.js" } });
     const st = await client.probe();
     expect(st).toMatchObject({
       era: "legacy-or-unresponsive",

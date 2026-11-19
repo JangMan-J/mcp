@@ -1,9 +1,22 @@
-import { guardExchangeDone } from "./cancel.js";
-import { SUPPORTED_PROTOCOL_VERSION, type JsonRpcNotification, type JsonRpcRequest } from "./jsonrpc.js";
+import { createReadOnlyPredicate, guardExchangeDone } from "./cancel.js";
+import { ExtensionRegistry, type Disposable, type Extension } from "./extension.js";
+import {
+  SUPPORTED_PROTOCOL_VERSION,
+  type IdGenerator,
+  type JsonRpcNotification,
+  type JsonRpcRequest,
+} from "./jsonrpc.js";
 import { refineJsonRpcCode, type JsonRpcRefinement, type Outcome } from "./outcome.js";
-import type { Exchange, Transport, TransportCall, TransportDiagnostic } from "./ports.js";
+import type { Exchange, PortRegistry, Transport, TransportCall, TransportDiagnostic } from "./ports.js";
 import { isProgressToken, NotificationQueue, ProgressRegistry, type ProgressStats, type ProgressToken } from "./progress.js";
-import { META_PROGRESS_TOKEN, validateMetaEntries } from "./request.js";
+import {
+  META_PROGRESS_TOKEN,
+  RequestManager,
+  validateMetaEntries,
+  type ClientRequest,
+  type Limits,
+  type RequestOptions,
+} from "./request.js";
 import type { DiscoverResult } from "./schema/index.js";
 
 /**
@@ -526,4 +539,164 @@ export class LifecycleTransport implements Transport {
 export function missingClientCapabilities(outcome: Outcome<unknown>): unknown {
   if (outcome.kind !== "jsonrpc-error" || outcome.code !== -32021) return undefined;
   return classifyJsonRpcError(outcome.code, outcome.data).requiredCapabilities;
+}
+
+// ---------------------------------------------------------------------------------------------
+// LifecycleClient: composition over the frozen RequestManager (McpClient stays unchanged)
+// ---------------------------------------------------------------------------------------------
+
+export interface LifecyclePolicyOptions {
+  /** Replace individual lifecycle policies (outcome mapping, discover classification, notification filter). */
+  readonly hooks?: Partial<LifecycleHooks>;
+  /** Settle a request locally on abort/timeout when the transport does not. Default true. */
+  readonly settleOnAbort?: boolean;
+  /** Methods treated as read-only for uncertain-write classification. Default DEFAULT_READ_ONLY_METHODS. */
+  readonly readOnlyMethods?: readonly string[];
+  /** Progress registry (shared or custom). Default: one per client. */
+  readonly progressRegistry?: ProgressRegistry;
+  /** In-memory era cache (shared or custom). Default: one per client. Never persisted. */
+  readonly eraCache?: EraCache;
+}
+
+/** Same fields as McpClientOptions, plus `lifecycle` policy. */
+export interface LifecycleClientOptions {
+  readonly transport: Transport;
+  readonly server: { readonly key: string; readonly label?: string };
+  readonly clientInfo?: { readonly name: string; readonly version: string; readonly title?: string } | false;
+  readonly ports?: Partial<PortRegistry>;
+  readonly extensions?: readonly Extension[];
+  readonly idGenerator?: IdGenerator;
+  readonly supportedVersions?: readonly string[];
+  readonly defaults?: {
+    readonly timeoutMs?: number;
+    readonly limits?: Partial<Limits>;
+  };
+  readonly lifecycle?: LifecyclePolicyOptions;
+}
+
+export interface ProbeOptions {
+  readonly timeoutMs?: number;
+  readonly signal?: AbortSignal;
+}
+
+/**
+ * Client with the full S1.1 wire lifecycle: LifecycleTransport (progress registry, notification
+ * policy, local abort settle, late responses counted), default clientInfo (WIRE-META-3), caller
+ * _meta checks incl. logLevel (WIRE-LOG-1), idempotent defaults from the read-only list (N14),
+ * outcome mapping (-32022 -> unsupported-version), and server/discover era probing with an
+ * in-memory cache. Same request/discover/use/close surface as McpClient.
+ */
+export class LifecycleClient {
+  readonly server: { readonly key: string; readonly label?: string };
+  private readonly extensions = new ExtensionRegistry();
+  private readonly manager: RequestManager;
+  private readonly wire: LifecycleTransport;
+  private readonly hooks: LifecycleHooks;
+  private readonly isReadOnly: (method: string) => boolean;
+  private readonly eraCache: EraCache;
+  private readonly ctx: LifecycleContext;
+
+  constructor(opts: LifecycleClientOptions) {
+    this.server = opts.server;
+    const lc = opts.lifecycle ?? {};
+    this.hooks = { ...defaultLifecycleHooks, ...lc.hooks };
+    this.isReadOnly = createReadOnlyPredicate(lc.readOnlyMethods);
+    this.eraCache = lc.eraCache ?? new EraCache();
+    this.wire = new LifecycleTransport(opts.transport, {
+      ...(lc.progressRegistry ? { progress: lc.progressRegistry } : {}),
+      filterNotification: this.hooks.filterNotification,
+      ...(lc.settleOnAbort !== undefined ? { settleOnAbort: lc.settleOnAbort } : {}),
+    });
+    this.ctx = {
+      binding: opts.transport.binding,
+      endpointOrCommand: opts.server.label ?? opts.server.key,
+      supportedVersions: opts.supportedVersions ?? [SUPPORTED_PROTOCOL_VERSION],
+    };
+    // WIRE-META-3: sent by default; `false` disables it; an IdentityPort wins over the library default.
+    const clientInfo =
+      opts.clientInfo !== undefined ? opts.clientInfo : opts.ports?.identity ? undefined : LIBRARY_CLIENT_INFO;
+    for (const ext of opts.extensions ?? []) {
+      this.extensions.register(ext);
+    }
+    const limits =
+      opts.defaults?.limits || opts.defaults?.timeoutMs !== undefined
+        ? {
+            ...opts.defaults?.limits,
+            ...(opts.defaults?.timeoutMs !== undefined ? { defaultTimeoutMs: opts.defaults.timeoutMs } : {}),
+          }
+        : undefined;
+    this.manager = new RequestManager({
+      transport: this.wire,
+      ...(opts.ports ? { ports: opts.ports } : {}),
+      ...(clientInfo !== undefined ? { clientInfo } : {}),
+      extensions: this.extensions,
+      ...(opts.idGenerator ? { idGenerator: opts.idGenerator } : {}),
+      ...(opts.supportedVersions ? { supportedVersions: opts.supportedVersions } : {}),
+      ...(limits ? { limits } : {}),
+    });
+  }
+
+  request<T = Record<string, unknown>>(
+    method: string,
+    params: Record<string, unknown> = {},
+    opts?: RequestOptions,
+  ): ClientRequest<T> {
+    if (opts?.meta) {
+      validateCallerMeta(opts.meta);
+    }
+    const handle = this.manager.request<T>(method, params, {
+      ...opts,
+      idempotent: opts?.idempotent ?? this.isReadOnly(method),
+    });
+    const mapped = Promise.resolve(handle).then((o) => this.hooks.mapOutcome(o, this.ctx));
+    return {
+      id: handle.id,
+      signal: handle.signal,
+      cancel: (reason?: string) => handle.cancel(reason),
+      progress: handle.progress,
+      notifications: handle.notifications,
+      then: mapped.then.bind(mapped),
+    };
+  }
+
+  discover(opts?: RequestOptions): ClientRequest<DiscoverResult> {
+    return this.request<DiscoverResult>("server/discover", {}, { ...opts, idempotent: true });
+  }
+
+  /**
+   * Probes the server era with server/discover once per server key and caches the verdict in
+   * memory (VER-5, VER-CACHE-1, VER-DIAG-1). Never sends initialize. Local cancels and transport
+   * faults yield `unknown` and are not cached.
+   */
+  probe(opts: ProbeOptions = {}): Promise<EraState> {
+    return this.eraCache.resolve(this.server.key, async () => {
+      const outcome = await this.discover({
+        timeoutMs: opts.timeoutMs ?? DISCOVER_PROBE_TIMEOUT_MS,
+        ...(opts.signal ? { signal: opts.signal } : {}),
+      });
+      return this.hooks.classifyDiscover(outcome, this.ctx);
+    });
+  }
+
+  /** Cached era verdict for this server, if any. */
+  era(): EraState | undefined {
+    return this.eraCache.get(this.server.key);
+  }
+
+  /** Lifecycle counters: progress drops, late responses, dropped notifications. */
+  wireStats(): WireStats {
+    return this.wire.stats();
+  }
+
+  use(ext: Extension): Disposable {
+    return this.extensions.register(ext);
+  }
+
+  async close(opts?: { readonly graceMs?: number }): Promise<void> {
+    await this.manager.close(opts);
+  }
+}
+
+export function createLifecycleClient(opts: LifecycleClientOptions): LifecycleClient {
+  return new LifecycleClient(opts);
 }

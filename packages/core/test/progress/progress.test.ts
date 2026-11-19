@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  McpClient,
+  LifecycleClient,
   META_PROGRESS_TOKEN,
   NotificationQueue,
   parseProgressParams,
@@ -83,7 +83,7 @@ describe("NotificationQueue", () => {
   });
 });
 
-describe("progress through McpClient", () => {
+describe("progress through LifecycleClient", () => {
   function pushTransport() {
     const queues: { req: JsonRpcRequest; q: NotificationQueue<JsonRpcNotification>; resolve(e: ExchangeEnd): void }[] = [];
     const transport: Transport = {
@@ -112,7 +112,7 @@ describe("progress through McpClient", () => {
 
   it("mints a token only with onProgress, delivers valid progress, drops the rest", async () => {
     const { transport, queues } = pushTransport();
-    const client = new McpClient({ transport, server: { key: "s" } });
+    const client = new LifecycleClient({ transport, server: { key: "s" } });
     const events: ProgressEvent[] = [];
     const req = client.request("tools/call", { name: "job" }, { onProgress: (e) => events.push(e) });
     const plain = client.request("tools/list");
