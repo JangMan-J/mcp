@@ -1,0 +1,54 @@
+{
+  "id": "ext/skills/identity-and-no-prefetch",
+  "requirements": ["EXT-skills-5", "EXT-skills-6", "EXT-skills-7"],
+  "pin": "ext-page",
+  "source": ["W/extensions/skills/overview.md#Security Considerations"],
+  "tier": "A",
+  "binding": "any",
+  "server": {
+    "capabilities": {
+      "resources": {},
+      "extensions": { "io.modelcontextprotocol/skills": {} }
+    }
+  },
+  "client": { "setup": { "useApproval": true } },
+  "script": [
+    { "do": "call", "as": "listBoth", "method": "skills/list" },
+    {
+      "server": "result",
+      "for": "listBoth",
+      "result": {
+        "skills": [
+          {
+            "uri": "skill://s/a/lint",
+            "name": "lint",
+            "description": "Run linter",
+            "files": [{ "uri": "skill://s/a/lint/SKILL.md", "size": 50, "sha256": "444505125cd0f6a97acc4714cef98420a7e83b636212ee4ec8759a52cbf7be48" }]
+          },
+          {
+            "uri": "skill://s/b/lint",
+            "name": "lint",
+            "description": "Run linter",
+            "files": [{ "uri": "skill://s/b/lint/SKILL.md", "size": 50, "sha256": "444505125cd0f6a97acc4714cef98420a7e83b636212ee4ec8759a52cbf7be48" }]
+          }
+        ]
+      }
+    },
+    { "do": "call", "as": "approveA", "method": "skills/approve", "params": { "uri": "skill://s/a/lint" } },
+    { "do": "call", "as": "count", "method": "skills/retainedCount" },
+    { "do": "call", "as": "schemeOnly", "method": "skills/isKnown", "params": { "uri": "skill://s/unlisted" } }
+  ],
+  "expect": {
+    "outcome": {
+      "listBoth": { "kind": "ok", "count": 2 },
+      "approveA": { "approved": true },
+      "count": { "count": 2 },
+      "schemeOnly": { "known": false }
+    },
+    "wire": {
+      "totalRequests": 1,
+      "never": ["resources/read", "resources/directory/read"]
+    }
+  },
+  "mutants": ["replace-by-name", "trust-scheme-alone", "prefetch-on-list"]
+}

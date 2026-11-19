@@ -1,0 +1,69 @@
+{
+  "id": "ext/skills/integrity-and-refresh",
+  "requirements": ["EXT-skills-8", "EXT-skills-9", "EXT-skills-10"],
+  "pin": "ext-page",
+  "source": ["W/extensions/skills/overview.md#Integrity and Verification"],
+  "tier": "A",
+  "binding": "any",
+  "server": {
+    "capabilities": {
+      "resources": {},
+      "extensions": { "io.modelcontextprotocol/skills": {} }
+    }
+  },
+  "script": [
+    { "do": "call", "as": "get1", "method": "skills/get", "params": { "uri": "skill://s/lint" } },
+    {
+      "server": "result",
+      "for": "get1",
+      "result": {
+        "skill": {
+          "uri": "skill://s/lint",
+          "name": "lint",
+          "description": "Run linter",
+          "files": [
+            { "uri": "skill://s/lint/SKILL.md", "size": 50, "sha256": "444505125cd0f6a97acc4714cef98420a7e83b636212ee4ec8759a52cbf7be48" },
+            { "uri": "skill://s/lint/helper.ts", "size": 20, "sha256": "b40dedde60828bf61d1fadbfc3bb7ea2e0421e9511d22f1b5fb44ae5ba07dbb3" }
+          ]
+        }
+      }
+    },
+    { "do": "call", "as": "readOk", "method": "skills/readFile", "params": { "skillUri": "skill://s/lint", "fileUri": "skill://s/lint/SKILL.md" } },
+    {
+      "server": "result",
+      "for": "readOk",
+      "result": { "contents": [{ "uri": "skill://s/lint/SKILL.md", "text": "---\nname: lint\ndescription: Run linter\n---\n# Lint\n" }] }
+    },
+    { "do": "call", "as": "readBadDigest", "method": "skills/readFile", "params": { "skillUri": "skill://s/lint", "fileUri": "skill://s/lint/helper.ts" } },
+    {
+      "server": "result",
+      "for": "readBadDigest",
+      "result": { "contents": [{ "uri": "skill://s/lint/helper.ts", "text": "export const x = 2;\n" }] }
+    },
+    {
+      "server": "result",
+      "for": "readBadDigest",
+      "result": {
+        "skill": {
+          "uri": "skill://s/lint",
+          "name": "lint",
+          "description": "Run linter",
+          "files": [
+            { "uri": "skill://s/lint/SKILL.md", "size": 50, "sha256": "444505125cd0f6a97acc4714cef98420a7e83b636212ee4ec8759a52cbf7be48" },
+            { "uri": "skill://s/lint/helper.ts", "size": 20, "sha256": "b40dedde60828bf61d1fadbfc3bb7ea2e0421e9511d22f1b5fb44ae5ba07dbb3" }
+          ]
+        }
+      }
+    }
+  ],
+  "expect": {
+    "outcome": {
+      "readOk": { "kind": "ok" },
+      "readBadDigest": { "kind": "protocol-violation" }
+    },
+    "wire": {
+      "count": { "skills/get": 2, "resources/read": 2 }
+    }
+  },
+  "mutants": ["skip-digest-check", "skip-frontmatter-check", "return-on-mismatch-no-refresh"]
+}

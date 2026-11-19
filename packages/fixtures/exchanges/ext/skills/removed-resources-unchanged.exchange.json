@@ -1,0 +1,35 @@
+{
+  "id": "ext/skills/removed-resources-unchanged",
+  "requirements": ["EXT-REMOVE-skills", "EXT-CAP-1", "EXT-REMOVE-1"],
+  "pin": "ext-page",
+  "source": ["W/extensions/skills/overview.md#Capabilities"],
+  "tier": "A",
+  "binding": "any",
+  "server": {
+    "capabilities": { "resources": {} }
+  },
+  "script": [
+    { "do": "call", "as": "capsWorking", "method": "skills/checkCaps", "params": { "isWorking": true, "healthy": true } },
+    { "do": "call", "as": "capsUnhealthy", "method": "skills/checkCaps", "params": { "isWorking": true, "healthy": false } },
+    { "do": "call", "as": "capsNotWorking", "method": "skills/checkCaps", "params": { "isWorking": false, "healthy": true } },
+    { "do": "call", "as": "resList", "method": "resources/list" },
+    {
+      "server": "result",
+      "for": "resList",
+      "result": { "resources": [{ "uri": "file:///a.txt", "name": "a.txt" }] }
+    }
+  ],
+  "expect": {
+    "outcome": {
+      "capsWorking": { "hasSkillsCap": true },
+      "capsUnhealthy": { "hasSkillsCap": false },
+      "capsNotWorking": { "hasSkillsCap": false },
+      "resList": { "kind": "ok", "count": 1 }
+    },
+    "wire": {
+      "count": { "resources/list": 1 },
+      "never": ["skills/list", "skills/get"]
+    }
+  },
+  "mutants": ["advertise-when-unhealthy", "alter-resources-list"]
+}

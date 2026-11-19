@@ -1,0 +1,83 @@
+{
+  "id": "ext/skills/limits-dynamic-and-directory",
+  "requirements": ["EXT-skills-2", "EXT-skills-13", "EXT-skills-14", "EXT-skills-18"],
+  "pin": "ext-page",
+  "source": ["W/extensions/skills/overview.md#Reading Directories"],
+  "tier": "A",
+  "binding": "any",
+  "server": {
+    "capabilities": {
+      "resources": {},
+      "extensions": { "io.modelcontextprotocol/skills": { "directoryRead": true } }
+    }
+  },
+  "script": [
+    { "do": "call", "as": "dynList", "method": "skills/list" },
+    {
+      "server": "result",
+      "for": "dynList",
+      "result": {
+        "skills": [{ "uri": "skill://s/dyn", "name": "dyn", "description": "Dynamic", "resources": "dynamic", "files": [] }]
+      }
+    },
+    { "do": "call", "as": "overSize", "method": "skills/list" },
+    {
+      "server": "result",
+      "for": "overSize",
+      "result": {
+        "skills": [
+          {
+            "uri": "skill://s/big",
+            "name": "big",
+            "description": "Too large",
+            "files": [{ "uri": "skill://s/big/blob.bin", "size": 16777217, "sha256": "444505125cd0f6a97acc4714cef98420a7e83b636212ee4ec8759a52cbf7be48" }]
+          }
+        ]
+      }
+    },
+    { "do": "call", "as": "okList", "method": "skills/list" },
+    {
+      "server": "result",
+      "for": "okList",
+      "result": {
+        "skills": [
+          {
+            "uri": "skill://s/lint",
+            "name": "lint",
+            "description": "Run linter",
+            "files": [{ "uri": "skill://s/lint/SKILL.md", "size": 50, "sha256": "444505125cd0f6a97acc4714cef98420a7e83b636212ee4ec8759a52cbf7be48" }]
+          }
+        ]
+      }
+    },
+    {
+      "do": "call",
+      "as": "dirNoFlag",
+      "method": "skills/readDirectory",
+      "params": {
+        "skillUri": "skill://s/lint",
+        "dirUri": "skill://s/lint",
+        "overrideCaps": { "resources": {}, "extensions": { "io.modelcontextprotocol/skills": {} } }
+      }
+    },
+    { "do": "call", "as": "dirOk", "method": "skills/readDirectory", "params": { "skillUri": "skill://s/lint", "dirUri": "skill://s/lint" } },
+    {
+      "server": "result",
+      "for": "dirOk",
+      "result": { "uris": ["skill://s/lint/SKILL.md", "skill://s/lint/extra-unlisted.txt"] }
+    }
+  ],
+  "expect": {
+    "outcome": {
+      "dynList": { "kind": "protocol-violation" },
+      "overSize": { "kind": "limit-exceeded" },
+      "okList": { "kind": "ok", "count": 1 },
+      "dirNoFlag": { "kind": "capability-absent" },
+      "dirOk": { "kind": "ok", "uris": ["skill://s/lint/SKILL.md"] }
+    },
+    "wire": {
+      "count": { "resources/directory/read": 1 }
+    }
+  },
+  "mutants": ["allow-dynamic-by-default", "allow-over-512-files", "call-directory-read-without-flag", "include-unlisted-directory-files"]
+}
