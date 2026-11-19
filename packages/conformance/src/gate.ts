@@ -96,7 +96,7 @@ export interface GateOptions {
   readonly now?: () => Date;
 }
 
-export const REQUIRED_SUITES = ["baseline", "mutation", "coverage", "wire-scan", "no-pi", "official", "removal", "evidence"] as const;
+export const REQUIRED_SUITES = ["baseline", "mutation", "coverage", "wire-scan", "network-scan", "secret-scan", "no-pi", "official", "removal", "evidence"] as const;
 export const ALL_EXTENSIONS = [
   "ext-apps",
   "ext-client-credentials",
@@ -110,15 +110,56 @@ export const ALL_EXTENSIONS = [
 export const GATE_ITEM_IDS = Array.from({ length: 12 }, (_, i) => `G${i + 1}`);
 /** Env var naming the prereq dir where scripts/gate.sh writes remove-ext.json (dev toolchain stays out of production). */
 export const PREREQ_DIR_ENV = "GATE_PREREQ_DIR";
+/** Prefix for gate-item entries that name fixture groups instead of suites. */
+export const FIXTURE_PREFIX = "fixtures:";
 /**
- * Gate items mapped to the suites that actually prove them. An item passes only when every listed suite
- * exists and passes. G11 also needs network and secret scans, which no suite provides yet, so it stays missing.
+ * Gate items (PLAN §14.3/§14.4) mapped to suites and fixture groups. An item passes only when every entry passes.
+ * A `fixtures:<id-or-glob>` entry passes only when >=1 baseline row matches, every matching row passes, and the
+ * mutation suite passed. Plan names with no fixture under packages/fixtures/exchanges are omitted:
+ * edge/EDGE-1, arch/close-settles-all, stdio/legacy-peer-diagnostic, consent/* (consent fixtures live in elic/, auth/).
  */
 export const DEFAULT_GATE_ITEM_MAP: Readonly<Record<string, readonly string[]>> = {
-  G10: ["removal"],
+  G1: ["baseline", "mutation", "fixtures:stdio/concurrent-out-of-order", "fixtures:sub/two-listeners-demux*"],
+  G2: [
+    "fixtures:wire/cancel*",
+    "fixtures:http/abort-closes-stream",
+    "fixtures:stdio/shutdown-escalation",
+    "fixtures:stdio/cancel-inflight",
+  ],
+  G3: ["fixtures:elic/*"],
+  G4: ["fixtures:auth/*"],
+  G5: ["fixtures:cache/*"],
+  G6: ["fixtures:sub/*"],
+  G7: ["fixtures:stdio/crash-*", "fixtures:http/stream-break-*", "fixtures:http/5xx-write-uncertain"],
+  G8: ["fixtures:ops/*", "fixtures:wire/*"],
+  G9: ["fixtures:ver/*", "fixtures:http/400-modern-error-vs-legacy"],
+  G10: ["removal", "fixtures:ext/*"],
   G11: ["no-pi", "wire-scan", "network-scan", "secret-scan"],
   G12: ["official", "evidence"],
 };
+
+/** Plan-named fixture ids absent from packages/fixtures/exchanges; listed in the G-item detail. */
+export const OMITTED_PLAN_FIXTURES = ["edge/EDGE-1", "arch/close-settles-all", "stdio/legacy-peer-diagnostic", "consent/*"];
+
+/** Default eligible scenarios: the exact (non-glob) fixture ids named by G1-G11, sorted. */
+export const DEFAULT_GATE_SCENARIOS: readonly string[] = [
+  ...new Set(
+    GATE_ITEM_IDS.slice(0, 11)
+      .flatMap((g) => DEFAULT_GATE_ITEM_MAP[g] ?? [])
+      .filter((e) => e.startsWith(FIXTURE_PREFIX) && !e.includes("*"))
+      .map((e) => e.slice(FIXTURE_PREFIX.length)),
+  ),
+].sort();
+
+/** Match a fixture id against an exact id or a `*` glob. */
+export function matchFixture(pattern: string, id: string): boolean {
+  if (!pattern.includes("*")) return pattern === id;
+  const esc = (p: string): string => p.replace(/[.+?^$()|[\]\\{}]/g, "\\$&");
+  return new RegExp("^" + pattern.split("*").map(esc).join(".*") + "$").test(id);
+}
+
+/** Dispositions that block release unless their row passes. */
+export const BLOCKING_DISPOSITIONS = ["required", "deprecated", "excluded"];
 
 /** Parse and validate shell removal evidence: exactly the eight known extensions, unique, all exit 0. */
 export function checkRemovalEvidence(raw: unknown): { ok: boolean; rows: RemovalRow[]; problems: string[] } {
@@ -290,6 +331,10 @@ export function runGate(opts: GateOptions): GateReport {
     const r = exec(node, [script, transcriptsDir], gateEnv, root);
     add("wire-scan", r.code === 0, `exit ${r.code} ${tail(r.stdout + r.stderr)}`);
   }
+  for (const name of ["network-scan", "secret-scan"]) {
+    const r = exec(node, [join(root, `scripts/${name}.mjs`), transcriptsDir], gateEnv, root);
+    add(name, r.code === 0, `exit ${r.code} ${tail(r.stdout + r.stderr)}`);
+  }
   // official: blocking; reason retained
   {
     const r = wrapped("official", "--json");
@@ -338,7 +383,9 @@ export function runGate(opts: GateOptions): GateReport {
   for (const s of REQUIRED_SUITES) if (!suites.some((x) => x.name === s)) add(s, false, "suite missing");
 
   // Scenarios: explicit, nonempty, each an actual passing row.
-  const scenarios = [...(opts.requiredScenarios ?? (env.GATE_SCENARIOS ?? "").split(",").map((s) => s.trim()).filter(Boolean))];
+  // Default: DEFAULT_GATE_SCENARIOS when neither the option nor GATE_SCENARIOS is set.
+  const envScenarios = env.GATE_SCENARIOS !== undefined ? env.GATE_SCENARIOS.split(",").map((s) => s.trim()).filter(Boolean) : undefined;
+  const scenarios = [...(opts.requiredScenarios ?? envScenarios ?? DEFAULT_GATE_SCENARIOS)];
   if (scenarios.length === 0) blockers.push("scenarios: no explicit eligible scenarios given");
   const passing = new Set(matrix.filter((m) => m.ok).map((m) => m.id));
   const missingScenarios = scenarios.filter((s) => !passing.has(s));
@@ -349,19 +396,43 @@ export function runGate(opts: GateOptions): GateReport {
   const fixtures = opts.fixtures ?? loadFixtures(root);
   const requirementMatrix = buildRequirementMatrix(reqs, fixtures, matrix);
   if (reqs.length === 0) blockers.push("requirements: requirements.json rows missing");
-  const reqGap = requirementMatrix.filter((r) => r.disposition === "required" && r.status !== "pass");
-  if (reqGap.length) blockers.push(`requirements: ${reqGap.length} required rows not pass (missing/fail)`);
+  const reqGap = requirementMatrix.filter((r) => BLOCKING_DISPOSITIONS.includes(r.disposition) && r.status !== "pass");
+  if (reqGap.length) blockers.push(`requirements: ${reqGap.length} required/deprecated/excluded rows not pass (missing/fail)`);
+  const nonClaims = [...NON_CLAIMS];
+  const unresolved = requirementMatrix.filter((r) => r.disposition === "unresolved");
+  if (unresolved.length) nonClaims.push(`Unresolved requirement rows (no claim): ${unresolved.map((r) => r.id).join(", ")}`);
+  const oos = requirementMatrix.filter((r) => r.disposition.startsWith("out-of-scope"));
+  if (oos.length) nonClaims.push(`Out-of-scope requirement rows (listed, not checked): ${oos.map((r) => r.id).join(", ")}`);
+  const otherNotPass = requirementMatrix.filter(
+    (r) => !BLOCKING_DISPOSITIONS.includes(r.disposition) && r.disposition !== "unresolved" && !r.disposition.startsWith("out-of-scope") && r.status !== "pass",
+  );
+  if (otherNotPass.length) nonClaims.push(`Non-required requirement rows without passing evidence (no claim): ${otherNotPass.map((r) => r.id).join(", ")}`);
 
-  // Gate items G1..G12: pass only when mapped to a passing suite.
+  // Gate items G1..G12: pass only when every mapped suite / fixture group passes.
   const map = opts.gateItemMap ?? DEFAULT_GATE_ITEM_MAP;
+  const mutationOk = suites.find((x) => x.name === "mutation")?.ok === true;
+  const fixtureEntry = (pattern: string): { status: Evidence; detail: string } => {
+    const rows = matrix.filter((m) => matchFixture(pattern, m.id));
+    if (rows.length === 0) return { status: "missing", detail: `fixtures ${pattern}: no matching rows` };
+    const bad = rows.filter((m) => !m.ok).map((m) => m.id);
+    if (bad.length) return { status: "fail", detail: `fixtures ${pattern}: failing ${bad.join(", ")}` };
+    if (!mutationOk) return { status: "fail", detail: `fixtures ${pattern}: mutation suite not passing` };
+    return { status: "pass", detail: `fixtures ${pattern}: ${rows.length} pass` };
+  };
   const gateItems: GateItem[] = GATE_ITEM_IDS.map((id) => {
     const m = map[id];
     const names = m === undefined ? [] : typeof m === "string" ? [m] : [...m];
     if (names.length === 0) return { id, status: "missing", detail: "not mapped" };
-    const found = names.map((n) => suites.find((x) => x.name === n));
-    const absent = names.filter((_, i) => !found[i]);
+    const suiteNames = names.filter((n) => !n.startsWith(FIXTURE_PREFIX));
+    const found = suiteNames.map((n) => suites.find((x) => x.name === n));
+    const absent = suiteNames.filter((_, i) => !found[i]);
     if (absent.length) return { id, status: "missing", detail: `suite ${absent.join(", ")} absent` };
-    return { id, status: found.every((s) => s!.ok) ? "pass" : "fail", detail: `suite ${names.join(", ")}` };
+    const fx = names.filter((n) => n.startsWith(FIXTURE_PREFIX)).map((n) => fixtureEntry(n.slice(FIXTURE_PREFIX.length)));
+    const details = [...(suiteNames.length ? [`suite ${suiteNames.join(", ")}`] : []), ...fx.map((f) => f.detail)];
+    if (id === "G2" || id === "G1") details.push(`omitted (no fixture): ${OMITTED_PLAN_FIXTURES.join(", ")}`);
+    const statuses: Evidence[] = [...found.map((s) => (s!.ok ? "pass" : "fail") as Evidence), ...fx.map((f) => f.status)];
+    const status: Evidence = statuses.includes("fail") ? "fail" : statuses.includes("missing") ? "missing" : "pass";
+    return { id, status, detail: details.join("; ") };
   });
   for (const g of gateItems) if (g.status !== "pass") blockers.push(`${g.id}: ${g.status} (${g.detail})`);
 
@@ -377,7 +448,7 @@ export function runGate(opts: GateOptions): GateReport {
     missingScenarios,
     officialBlockedReason,
     evidence,
-    nonClaims: NON_CLAIMS,
+    nonClaims,
     releaseEligible: blockers.length === 0,
     blockers,
   };

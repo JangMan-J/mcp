@@ -1,8 +1,20 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { ALL_EXTENSIONS, DEFAULT_GATE_ITEM_MAP, GATE_ITEM_IDS, checkRemovalEvidence, runGate, type Exec } from "../src/gate.js";
+import {
+  ALL_EXTENSIONS,
+  DEFAULT_GATE_ITEM_MAP,
+  DEFAULT_GATE_SCENARIOS,
+  GATE_ITEM_IDS,
+  REQUIRED_SUITES,
+  checkRemovalEvidence,
+  matchFixture,
+  runGate,
+  type Exec,
+} from "../src/gate.js";
 
 const SHA = "a".repeat(40);
 const ALL_MAPPED = Object.fromEntries(GATE_ITEM_IDS.map((g) => [g, "baseline"]));
@@ -179,21 +191,123 @@ describe("gate", () => {
     expect(runGate(c.opts).blockers.some((x) => x.startsWith("evidence") && x.includes("package-lock.json missing"))).toBe(true);
   });
 
-  it("default map: G10 from removal, G11 missing without network/secret scans, G12 needs official and evidence", () => {
-    const b = base();
-    const { gateItemMap: _m, ...rest } = b.opts;
+  it("default map covers G1-G12 with fixture groups; only existing fixture ids", () => {
+    const rows = [
+      ...DEFAULT_GATE_SCENARIOS,
+      "sub/two-listeners-demux",
+      "wire/cancel-read-clean",
+      "elic/x",
+      "auth/x",
+      "cache/x",
+      "sub/x",
+      "stdio/crash-write-uncertain",
+      "http/stream-break-x",
+      "ops/x",
+      "wire/x",
+      "ver/x",
+      "ext/cc/x",
+    ].map((id) => ({ id, ok: true }));
+    const b = base({ "run --json": { code: 0, stdout: JSON.stringify({ ok: true, results: rows }) } });
+    const { gateItemMap: _m, requiredScenarios: _s, ...rest } = b.opts;
     const rep = runGate(rest);
-    const st = (id: string) => rep.gateItems.find((g) => g.id === id)?.status;
-    expect(st("G10")).toBe("pass");
-    expect(st("G11")).toBe("missing");
-    expect(st("G12")).toBe("pass");
-    expect(st("G1")).toBe("missing");
-    expect(DEFAULT_GATE_ITEM_MAP.G11).toContain("wire-scan");
+    expect(rep.gateItems.filter((g) => g.status !== "pass")).toEqual([]);
+    expect(rep.scenarios).toEqual([...DEFAULT_GATE_SCENARIOS]);
+    expect(Object.keys(DEFAULT_GATE_ITEM_MAP).sort()).toEqual([...GATE_ITEM_IDS].sort());
+    expect(DEFAULT_GATE_ITEM_MAP.G11).toEqual(["no-pi", "wire-scan", "network-scan", "secret-scan"]);
+    // every fixture entry names an existing fixture or a glob matching at least one existing fixture
+    const exch = fileURLToPath(new URL("../../fixtures/exchanges", import.meta.url));
+    const ids = (readdirSync(exch, { recursive: true }) as string[])
+      .filter((f) => f.endsWith(".exchange.json"))
+      .map((f) => f.replace(/\\/g, "/").replace(/\.exchange\.json$/, ""));
+    for (const e of Object.values(DEFAULT_GATE_ITEM_MAP).flat().filter((e) => e.startsWith("fixtures:")))
+      expect(ids.some((id) => matchFixture(e.slice(9), id)), e).toBe(true);
+    for (const id of DEFAULT_GATE_SCENARIOS) expect(ids).toContain(id);
+    // official failure fails G12; bad removal fails G10
     const o = base({ "official --json": { code: 1, stdout: JSON.stringify({ ok: false, total: 0 }) } }, [GOOD_ROWS[0]]);
     const { gateItemMap: _n, ...rest2 } = o.opts;
     const r2 = runGate(rest2);
     expect(r2.gateItems.find((g) => g.id === "G12")?.status).toBe("fail");
     expect(r2.gateItems.find((g) => g.id === "G10")?.status).toBe("fail");
+    expect(r2.officialBlockedReason).not.toBeNull();
+  });
+
+  it("fixture-group entries: missing with no rows, fail on failing row or failed mutation, pass otherwise", () => {
+    expect(matchFixture("wire/cancel*", "wire/cancel-read-clean")).toBe(true);
+    expect(matchFixture("wire/cancel*", "wire/x")).toBe(false);
+    expect(matchFixture("a.b", "aXb")).toBe(false);
+    const rows = [{ id: "wire.a", ok: true }, { id: "ver.b", ok: true }, { id: "g/x", ok: true }, { id: "g/y", ok: false }];
+    const b = base({ "run --json": { code: 0, stdout: JSON.stringify({ ok: true, results: rows }) } });
+    const map = { ...ALL_MAPPED, G1: ["mutation", "fixtures:wire.a"], G2: ["fixtures:g/*"], G3: "fixtures:none/*", G4: "fixtures:g/x" };
+    const rep = runGate({ ...b.opts, gateItemMap: map });
+    const st = (id: string) => rep.gateItems.find((g) => g.id === id)!;
+    expect(st("G1").status).toBe("pass");
+    expect(st("G2").status).toBe("fail");
+    expect(st("G2").detail).toContain("g/y");
+    expect(st("G3").status).toBe("missing");
+    expect(st("G4").status).toBe("pass");
+    const m = base({ "run --mutate --json": { code: 1, stdout: JSON.stringify({ ok: false, total: 3, passed: 1 }) } });
+    const r2 = runGate({ ...m.opts, gateItemMap: { ...ALL_MAPPED, G4: "fixtures:wire.a" } });
+    expect(r2.gateItems.find((g) => g.id === "G4")?.status).toBe("fail");
+  });
+
+  it("runs network-scan and secret-scan on the run transcripts; failures block", () => {
+    const b = base();
+    const rep = runGate(b.opts);
+    for (const n of ["network-scan", "secret-scan"]) {
+      const c = b.f.calls.find((x) => x[0]!.endsWith(`scripts/${n}.mjs`));
+      expect(c?.[1]).toBe(rep.transcriptsDir);
+      expect(rep.suites.find((s) => s.name === n)?.ok).toBe(true);
+    }
+    expect(REQUIRED_SUITES).toContain("network-scan");
+    expect(REQUIRED_SUITES).toContain("secret-scan");
+    const f = base({ "network-scan.mjs": { code: 1, stdout: "non-loopback" }, "secret-scan.mjs": { code: 1, stdout: "hit" } });
+    const r2 = runGate(f.opts);
+    expect(r2.blockers.some((x) => x.startsWith("network-scan"))).toBe(true);
+    expect(r2.blockers.some((x) => x.startsWith("secret-scan"))).toBe(true);
+  });
+
+  it("scenarios: GATE_SCENARIOS env overrides default; explicit option overrides env", () => {
+    const b = base();
+    const { requiredScenarios: _s, ...rest } = b.opts;
+    expect(runGate({ ...rest, env: { ...b.opts.env, GATE_SCENARIOS: "ver.b" } }).scenarios).toEqual(["ver.b"]);
+    expect(runGate(rest).scenarios).toEqual([...DEFAULT_GATE_SCENARIOS]);
+    expect(runGate({ ...b.opts, env: { ...b.opts.env, GATE_SCENARIOS: "ver.b" } }).scenarios).toEqual(["wire.a"]);
+  });
+
+  it("deprecated/excluded rows need pass; unresolved, out-of-scope and optional rows are non-claims", () => {
+    const b = base();
+    const reqs = [...REQS, { id: "D1", disposition: "deprecated" }, { id: "U1", disposition: "unresolved" }, { id: "O1", disposition: "out-of-scope" }];
+    const rep = runGate({ ...b.opts, requirements: reqs });
+    expect(rep.blockers.some((x) => x.startsWith("requirements:"))).toBe(true);
+    expect(rep.nonClaims.join("\n")).toContain("U1");
+    expect(rep.nonClaims.join("\n")).toContain("O1");
+    expect(rep.nonClaims.join("\n")).toContain("R2");
+    const ok = runGate({ ...b.opts, requirements: [...REQS, { id: "U1", disposition: "unresolved" }, { id: "X", disposition: "excluded" }], fixtures: [...FIX, { id: "ver.b", requirements: ["X"] }] });
+    expect(ok.releaseEligible).toBe(true);
+  });
+
+  it("network-scan and secret-scan scripts flag offenders and pass clean transcripts", () => {
+    const dir = mkdtempSync(join(tmpdir(), "scan-test-"));
+    const root = fileURLToPath(new URL("../../..", import.meta.url));
+    const run = (script: string, ...args: string[]) => spawnSync(process.execPath, [join(root, "scripts", script), ...args], { encoding: "utf8" });
+    const clean = { fixture: "f", mcpEndpoint: "http://127.0.0.1:1/mcp", frames: [{ direction: "client", url: "http://localhost:3/mcp", headers: { authorization: "Bearer tok" }, message: { jsonrpc: "2.0", id: 1, method: "tools/list" } }] };
+    writeFileSync(join(dir, "a.json"), JSON.stringify(clean));
+    expect(run("network-scan.mjs", dir).status).toBe(0);
+    expect(run("secret-scan.mjs", dir).status).toBe(0);
+    const bad = { ...clean, frames: [...clean.frames, { direction: "client", url: "https://evil.example.com/x", endpoint: "other", message: { jsonrpc: "2.0", method: "notifications/x", params: { client_secret: "s3cr3t" } } }] };
+    writeFileSync(join(dir, "b.json"), JSON.stringify(bad));
+    const n = run("network-scan.mjs", dir);
+    expect(n.status).toBe(1);
+    expect(n.stderr).toContain("evil.example.com");
+    const sres = run("secret-scan.mjs", dir);
+    expect(sres.status).toBe(1);
+    expect(sres.stderr).not.toContain("s3cr3t");
+    rmSync(join(dir, "b.json"));
+    const log = join(dir, "x.log");
+    writeFileSync(log, "-----BEGIN RSA PRIVATE KEY-----\n");
+    expect(run("secret-scan.mjs", dir, "--log", log).status).toBe(1);
+    writeFileSync(log, "client_secret=***\n");
+    expect(run("secret-scan.mjs", dir, "--log", log).status).toBe(0);
   });
 
   it("validates sha from option, GATE_SHA and git", () => {
