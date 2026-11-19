@@ -188,11 +188,29 @@ async function http(action: string, mutant?: string) {
   }
 }
 
+export class ObservationMismatch extends Error {}
+
+const supportedMutants: Record<string, string> = {
+  "two-listeners-demux": "drop-updates",
+  "two-listeners-demux-http": "drop-updates",
+  "stdio-restart-resend": "skip-resend",
+  "graceful-close": "wrong-completion-id",
+  "graceful-close-stdio": "wrong-completion-id",
+  "http-abrupt-reconnect-invalidates-cache": "skip-invalidation",
+  "client-cancel-http": "extra-cancel",
+  "client-cancel-stdio": "omit-close",
+};
+
 export async function runBinding(fx: ExchangeFixture, mutant?: string) {
   assert.equal(fx.script.length, 1, "expected one binding exercise");
   const action = (fx.script[0] as {do?: string}).do;
   assert(action);
+  if (mutant && supportedMutants[action] !== mutant) throw new Error(`Unsupported mutant ${mutant} for ${action}`);
   assert(fx.binding === "http" || fx.binding === "stdio");
   const actual = await (fx.binding === "http" ? http : stdio)(action, mutant);
-  assert.deepEqual(actual, (fx.expect as { observe?: unknown }).observe);
+  try {
+    assert.deepEqual(actual, (fx.expect as { observe?: unknown }).observe);
+  } catch (error) {
+    throw new ObservationMismatch(`Observation mismatch: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
