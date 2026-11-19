@@ -22,6 +22,10 @@ export async function runTierAProvider(fixture: ExchangeFixture, mutant?: string
       ["ext/tasks/", "@mcp-client/ext-tasks/conformance"],
       ["ext/skills/", "@mcp-client/ext-skills/conformance"],
       ["tel/", "@mcp-client/telemetry-otel/conformance"],
+      ["ext/apps/", "@mcp-client/ext-apps/conformance"],
+      ["ext/card/", "@mcp-client/ext-server-cards/conformance"],
+      ["ext/events/webhook/", "@mcp-client/ext-events-webhook/conformance"],
+      ["ext/events/", "@mcp-client/ext-events/conformance"],
     ];
     for (const [prefix, specifier] of optional) {
       if (fixture.id.startsWith(prefix)) {
