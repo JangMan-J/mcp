@@ -1,0 +1,24 @@
+{
+  "id": "smoke/resulttype-absent",
+  "requirements": ["WIRE-RT-2"],
+  "pin": "tag",
+  "source": ["S/basic/index.md#ResultType"],
+  "tier": "A",
+  "binding": "stdio",
+  "client": { "clock": "fake" },
+  "script": [
+    { "do": "call", "as": "c1", "method": "tools/list", "idempotent": true },
+    { "expect": "wire", "index": 0, "match": { "method": "tools/list", "params._meta.io.modelcontextprotocol/protocolVersion": "2026-07-28" } },
+    { "server": "result", "for": "c1", "result": { "tools": [{ "name": "echo" }] } }
+  ],
+  "expect": {
+    "outcome": {
+      "c1": { "kind": "ok" }
+    },
+    "wire": {
+      "totalRequests": 1,
+      "never": ["Last-Event-ID", "Mcp-Session-Id"]
+    }
+  },
+  "mutants": ["reject-missing-resulttype"]
+}

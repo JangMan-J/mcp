@@ -1,0 +1,28 @@
+{
+  "name": "mcp-client-workspace",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "test": "vitest run",
+    "req:build": "node scripts/req-build.mjs",
+    "gen:schema": "node scripts/gen-schema-types.mjs",
+    "check:deps": "node scripts/check-deps.mjs",
+    "check:forbidden": "node scripts/check-forbidden.mjs",
+    "check:deps-doc": "node scripts/check-deps-doc.mjs",
+    "check:coverage": "node packages/conformance/dist/cli.js check-coverage"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.6",
+    "dependency-cruiser": "18.8.0",
+    "json-schema-to-typescript": "16.0.0",
+    "typescript": "7.0.2",
+    "vitest": "5.1.1"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  }
+}
