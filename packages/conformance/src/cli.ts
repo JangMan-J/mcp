@@ -57,7 +57,28 @@ async function main(): Promise<number> {
     return summary.ok ? 0 : 1;
   }
 
-  console.error("usage: conformance <run [--tier A|B] [--area A] [--id GLOB] [--mutate] [--json] | check-coverage>");
+  if (cmd === "official") {
+    const jsonOut = args.includes("--json");
+    // Lazy, non-literal import so this package builds independently of official.ts.
+    const spec = "./official.js";
+    const mod = (await import(spec)) as {
+      runOfficial(root: string): Promise<{ ok: boolean; blocked?: string; scenarios: unknown[] }>;
+    };
+    const rep = await mod.runOfficial(ROOT);
+    if (jsonOut) {
+      console.log(JSON.stringify(rep, null, 2));
+    } else {
+      if (rep.blocked) console.log(`BLOCKED — ${rep.blocked}`);
+      for (const s of rep.scenarios as Array<{ name?: string; id?: string; ok?: boolean; error?: string }>) {
+        const tag = s.ok ? "PASS" : "FAIL";
+        console.log(`${tag} ${s.name ?? s.id ?? "?"}${s.error ? ` — ${s.error}` : ""}`);
+      }
+      console.log(`official conformance: ${rep.ok && !rep.blocked ? "ok" : rep.blocked ? "blocked" : "failed"}`);
+    }
+    return rep.ok && !rep.blocked ? 0 : 1;
+  }
+
+  console.error("usage: conformance <run [--tier A|B] [--area A] [--id GLOB] [--mutate] [--json] | official [--json] | check-coverage>");
   return 2;
 }
 
