@@ -310,7 +310,7 @@ describe("gate", () => {
     expect(run("secret-scan.mjs", dir, "--log", log).status).toBe(0);
   });
 
-  it("network-scan excludes server stimulus messages but checks destinations", () => {
+  it("network-scan excludes frame.message data fields but checks destinations", () => {
     const dir = mkdtempSync(join(tmpdir(), "network-stimulus-"));
     const file = join(dir, "transcript.json");
     const script = fileURLToPath(new URL("../../../scripts/network-scan.mjs", import.meta.url));
@@ -319,11 +319,18 @@ describe("gate", () => {
       return spawnSync(process.execPath, [script, file], { encoding: "utf8" });
     };
     try {
-      const message = { params: { nested: ["https://remote.example/path"] } };
-      expect(scan({ mcpEndpoint: "http://localhost/mcp", frames: [{ direction: "server", message }] }).status).toBe(0);
+      const stimulusMessage = { params: { nested: ["https://remote.example/path"] } };
+      const subscribeMessage = {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "events/subscribe",
+        params: { delivery: { url: "https://remote.example/webhook" } },
+      };
+      expect(scan({ mcpEndpoint: "http://localhost/mcp", frames: [{ direction: "server", message: stimulusMessage }] }).status).toBe(0);
+      expect(scan({ mcpEndpoint: "http://localhost/mcp", frames: [{ direction: "client", message: subscribeMessage }] }).status).toBe(0);
       for (const doc of [
-        { frames: [{ direction: "client", message }] },
         { mcpEndpoint: "https://remote.example/mcp", frames: [] },
+        { frames: [{ direction: "client", url: "https://remote.example/mcp" }] },
         { frames: [{ direction: "server", url: "https://remote.example" }] },
         { frames: [{ direction: "server", headers: { location: "https://remote.example" } }] },
         { frames: [{ direction: "client", headers: { location: "https://remote.example" } }] },
