@@ -8,9 +8,9 @@ Events: the explicit request is planning, not enabling. D4 does not implement Ev
 
 | Id | Status | Recorded choice | Row impact | Next evidence |
 |---|---|---|---|---|
-| D1 | answered | Lookback set is `{2026-07-28}` only. `git ls-remote` `refs/tags/2026-*` returned that tag and `2026-07-28-RC`, nothing dated 2026-05-19 through 2026-07-27 | `VER-*` stay as the wire lane wrote them. No initialize-era fallback | An upstream tag created later would reopen this |
-| D2 | answered | Node >= 22 for transports and auth. `core` stays runtime-neutral. No browser or edge target. Installed Pi package says `engines.node` `>=22.19.0`. This machine's node was `v26.13.1` | Package metadata later. No row change now | Wave 1 engine field |
-| D3 | answered | Adapter pin is checkout HEAD `7d80b45f62f8a8b8cd0f91a71d78ba56f229b1ec`, which matches installed build `next-7d80b45f62f8` and `pi --version` 1.5.2. `e903c27bb` is not selected | Wave 3 only. Nothing in Pi changes now | Q21 before any adapter code |
+| D1 | answered | Lookback set is the primary profile only. The tag list in [PINS.md](PINS.md) has no other tag dated inside the lookback window | `VER-*` stay as the wire lane wrote them. No initialize-era fallback | An upstream tag created later would reopen this |
+| D2 | answered | Node >= 22 for transports and auth. `core` stays runtime-neutral. No browser or edge target. The installed engine field and this machine's node are in [PINS.md](PINS.md) | Package metadata later. No row change now | Wave 1 engine field |
+| D3 | answered | Adapter pin is the checkout in [PINS.md](PINS.md). It matches the installed build recorded there. The PLAN.md checkout recorded there is not selected | Wave 3 only. Nothing in Pi changes now | Q21 before any adapter code |
 | D4 | answered, not enabled | Events are planned and stay draft-labeled and off. Webhook delivery stays a separate package in the plan. No Events code in Wave 0 | `EXT-events-*` dispositions stay as the extensions lane wrote them. PR-head header rows stay unresolved | A later explicit request to implement, after the header subsection is adopted or rejected |
 | D5 | answered, fixture gated | Cache auth context id is the grant. Public sharing stays off. A configured bearer has no grant, so that id is a hash of the token, as the authorization lane described | `CACHE-AUTH-1` and `AUTH-BEARER-5` stay `unresolved`. The spec example is a different access token and does not define refresh | A fixture may be written only after this gate is lifted in a later slice |
 | D6 | answered | Block private, loopback, and link-local ranges on discovery fetches by default. Host may override. Pin DNS with a custom dispatcher. Browser authorization URLs are https-only in this project, stricter than the security-best-practices loopback `http` allowance | `AUTH-SSRF-*`, `AUTH-URL-1`, `EXT-ema-12` stay as written. Q32 is closed by this default | Implementation slice S2.1 |
@@ -25,11 +25,11 @@ Events: the explicit request is planning, not enabling. D4 does not implement Ev
 | Id | Status | What was decided or seen | Rows | Next evidence |
 |---|---|---|---|---|
 | Q1 | answered | Same observation as D1 | `VER-*` | A new upstream tag |
-| Q2 | answered | Same as D2. Pi's `>=22.19.0` is host metadata, not a `core` import | none in the tables | Engine field in Wave 1 |
-| Q3 | answered | Tag docs are `docs/specification/2026-07-28/<page>.mdx`. Schema is `schema/2026-07-28/schema.json`. Both exist at the unpeeled tag | operations and wire notes | none |
-| Q4 | answered | `2026-07-28` is a commit, not an annotated tag. Peel equals `5f5440bb26a62e2cf3440b92da5a667efa03b267`. `ls-remote` printed no `^{}` line | none | none |
+| Q2 | answered | Same as D2. The Pi engine field in [PINS.md](PINS.md) is host metadata, not a `core` import | none in the tables | Engine field in Wave 1 |
+| Q3 | answered | Tag docs path and schema path are in [PINS.md](PINS.md). Both exist at the unpeeled tag | operations and wire notes | none |
+| Q4 | answered | The dated tag is a commit, not an annotated tag. Peel equals the tag id in [PINS.md](PINS.md). `ls-remote` printed no `^{}` line | none | none |
 | Q5 | answered | `DiscoverResult` requires `ttlMs` (integer), `cacheScope` (`public` or `private`), `capabilities`, `resultType`, `supportedVersions`. `instructions` optional | `DISC-1` and the wire schema notes | none for field presence |
-| Q6 | answered | `-32601` and `-32602` require only `code` and `message`. `data` is optional and untyped | `WIRE-ERR-4` | The `isError` disagreement stays a non-claim, not this question |
+| Q6 | answered | `-32601` and `-32602` require only `code` and `message`. `data` is optional and untyped | `WIRE-ERR-4` | The calculate-sample disagreement is a fixture gate in [RECONCILIATION.md](RECONCILIATION.md), not this question |
 | Q7 | answered | No `batch` match in the tagged specification tree | wire non-claim | none |
 | Q8 | deferred | No idempotency sentence for `prompts/get` in `server/prompts.mdx`. D10 does not invent one | `STDIO-RECOVER-1` | Spec text or a host override test |
 | Q9 | answered | Upstream heads are in `PINS.md` for tasks, skills, apps, auth, and server cards. SEP-2640 has only the wiki docs mirror, no separate SHA | `EXT-cc-PIN`, `EXT-ema-PIN`, `EXT-cc-1`, `EXT-ema-1` stay `unresolved`. The pin record does not promote them | Implementation slices after the non-claims are explicitly closed |
@@ -39,8 +39,8 @@ Events: the explicit request is planning, not enabling. D4 does not implement Ev
 | Q13 | answered | Wiki and tag List Changed Notification name the resource list only. No templates notification in that clause. Plan 9.3's extra invalidation is not encoded | `SUB-LIST-4` | A decision to encode the plan sentence would be a new reconciliation line |
 | Q14 | deferred | No server maximum in the subscription prose or on `SubscriptionFilter.resourceSubscriptions` | `SUB-CAP-1` | A spec cap, or a decision that the client cap is local policy |
 | Q15 | deferred | No mid-stream token-expiry clause in `subscriptions.md` | `SUB-AUTH-1`, `AUTH-CONT-1` | Spec text or an explicit non-claim that stays |
-| Q16 | deferred | Selected runner is release `v0.1.16`. Its README has no 2026-07-28 scenario list. Main README flags were observed and are not a scenario catalog | no row | A release whose README or `--requirements` output lists the client scenarios |
-| Q17 | answered as observation, not adopted | Mirror and PR head both say Accepted. File delta is the custom-header subsection and `HeaderMismatch`. Commit distance is +218/−0. Project label stays draft and off | `EXT-events-8`, `EXT-events-9`, `EXT-events-ERR-1` stay unresolved | A decision to adopt or drop that subsection |
+| Q16 | deferred | Selected runner release is the one in [PINS.md](PINS.md). Its README has no profile scenario list. Main README flags were observed and are not a scenario catalog | no row | A release whose README or `--requirements` output lists the client scenarios |
+| Q17 | answered as observation, not adopted | Mirror and PR head both say Accepted. The file delta is in [PINS.md](PINS.md). Project label stays draft and off | `EXT-events-8`, `EXT-events-9`, `EXT-events-ERR-1` stay unresolved | A decision to adopt or drop that subsection |
 | Q18 | answered | `events/list` is paginated in the mirror, at the PR head, and in the wiki | extensions notes. No open row | none |
 | Q19 | answered | Apps `ui/*` text is `specification/2026-01-26/apps.mdx` on ext-apps `main`. There is no `specification/stable/` tree at that commit | extensions notes | A later stable path would be a new pin |
 | Q20 | deferred | Discovery doc at server-card HEAD says draft. Wiki extensions page says Beta. Both were read. The stage is not chosen | `EXT-card-10` | A director choice of one label, or an upstream edit that removes the conflict |
@@ -51,7 +51,7 @@ Events: the explicit request is planning, not enabling. D4 does not implement Ev
 | Q25 | answered | An `x-mcp-header` reached through `$ref` makes the tool definition invalid. It is not dereferenced | `HTTP-PARAM-1` | none |
 | Q26 | answered | No schema time budget (D8). Depth, count, and byte caps stay the plan proposal | `OPS-SCHEMA-6` | none unless a budget is added later |
 | Q27 | deferred | RFC 6570 is the template language. No expander library is pinned. In-tree expander is the unimplemented default | `OPS-RES-2` | A dependency row, or confirmation that in-tree is the pin |
-| Q28 | answered | Checkout drift is real: 105 and 94 commits, `e903c27bb` is not an ancestor. D3 selects HEAD | Wave 3 pin | none |
+| Q28 | answered | Checkout drift is the pair recorded in [PINS.md](PINS.md). D3 selects HEAD | Wave 3 pin | none |
 | Q29 | deferred | Notification POST header requirements for extension notifications are not in this revision | `HTTP-NOTIF-2` | Spec text |
 | Q30 | deferred | Wiki client matrix does not name Pi. Hosts on the first rows include Claude, VS Code GitHub Copilot, Microsoft 365 Copilot, Goose, and Postman. No resemblance was chosen. The matrix is not a wire reference | no requirement row | A later comparison if an adapter needs one |
 
