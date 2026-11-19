@@ -112,6 +112,11 @@ for check in check-deps-doc check-forbidden check-deps; do
 done
 printf ']\n' >>"$validate_json"
 
+# Vitest JSON report: tests tagged [REQ-ID] count as requirement evidence (gate suite `unit`).
+vitest_rc=0
+isolated "$DEV" "$GATE_PREREQ_DIR/vitest.log" -- "$NODE_BIN" node_modules/vitest/vitest.mjs run --reporter=json --outputFile="$GATE_PREREQ_DIR/vitest.json" || vitest_rc=$?
+echo "gate: prereq vitest exit $vitest_rc"
+
 # Explicit removal set; must match ALL_EXTENSIONS in packages/conformance/src/gate.ts
 # and the remove:ext-* aliases in package.json.
 REMOVE_EXTS=(ext-apps ext-client-credentials ext-enterprise-auth ext-events

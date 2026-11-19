@@ -9,7 +9,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { arch, platform, release } from "node:os";
 import { loadExchangeFiles } from "@mcp-client/fixtures";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export interface ExecResult {
@@ -34,7 +34,13 @@ export interface RequirementMatrixRow {
   readonly id: string;
   readonly disposition: string;
   readonly fixtures: readonly string[];
+  readonly evidence: readonly string[];
   readonly status: Evidence;
+}
+export interface UnitEvidence {
+  readonly req: string;
+  readonly source: string;
+  readonly ok: boolean;
 }
 export interface GateItem {
   readonly id: string;
@@ -74,7 +80,10 @@ export interface RemovalRow {
 export interface RequirementInput {
   readonly id: string;
   readonly disposition: string;
+  readonly condition?: string;
 }
+/** Rows whose condition marks them as Wave 3 (post-gate, PLAN §15). */
+export const WAVE3_RE = /Wave 3|Not built in Wave 0/;
 export interface FixtureInput {
   readonly id: string;
   readonly requirements: readonly string[];
@@ -96,7 +105,7 @@ export interface GateOptions {
   readonly now?: () => Date;
 }
 
-export const REQUIRED_SUITES = ["baseline", "mutation", "coverage", "wire-scan", "network-scan", "secret-scan", "no-pi", "official", "removal", "evidence"] as const;
+export const REQUIRED_SUITES = ["baseline", "mutation", "coverage", "wire-scan", "network-scan", "secret-scan", "no-pi", "official", "removal", "evidence", "unit"] as const;
 export const ALL_EXTENSIONS = [
   "ext-apps",
   "ext-client-credentials",
@@ -184,6 +193,38 @@ export function checkRemovalEvidence(raw: unknown): { ok: boolean; rows: Removal
   return { ok: problems.length === 0, rows, problems };
 }
 
+const REQ_TAG_RE = /\[([A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)+)\]/g;
+
+/** Parse a Vitest JSON report; passing/failing tests tagged `[REQ-ID]` become requirement evidence. */
+export function parseVitestEvidence(
+  raw: unknown,
+  knownIds: ReadonlySet<string>,
+): { ok: boolean; detail: string; evidence: UnitEvidence[] } {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { ok: false, detail: "vitest.json is not an object", evidence: [] };
+  const j = raw as Record<string, unknown>;
+  const total = typeof j.numTotalTests === "number" ? j.numTotalTests : 0;
+  const failed = typeof j.numFailedTests === "number" ? j.numFailedTests : -1;
+  const ok = j.success === true && failed === 0 && total > 0;
+  const evidence: UnitEvidence[] = [];
+  const cwd = process.cwd();
+  for (const tr of Array.isArray(j.testResults) ? (j.testResults as Array<Record<string, unknown>>) : []) {
+    const name = typeof tr?.name === "string" ? tr.name : "?";
+    const file = name.startsWith("/") ? relative(cwd, name) : name;
+    for (const a of Array.isArray(tr?.assertionResults) ? (tr.assertionResults as Array<Record<string, unknown>>) : []) {
+      const ok1 = a?.status === "passed" ? true : a?.status === "failed" ? false : undefined;
+      if (ok1 === undefined) continue;
+      const anc = Array.isArray(a.ancestorTitles) ? (a.ancestorTitles as unknown[]).map(String) : [];
+      const title = typeof a.title === "string" ? a.title : "";
+      const text = [...anc, title].join(" ");
+      const fullName = typeof a.fullName === "string" ? a.fullName : text;
+      const tags = new Set([...text.matchAll(REQ_TAG_RE)].map((m) => m[1]!).filter((t) => knownIds.has(t)));
+      for (const req of tags) evidence.push({ req, source: `unit:${file}#${fullName}`, ok: ok1 });
+    }
+  }
+  const detail = `success=${j.success} tests=${total} failed=${failed} tagged=${evidence.length}`;
+  return { ok, detail, evidence };
+}
+
 function sha256File(p: string): string | null {
   return existsSync(p) ? createHash("sha256").update(readFileSync(p)).digest("hex") : null;
 }
@@ -239,7 +280,7 @@ function loadRequirements(root: string): RequirementInput[] {
   const p = join(root, "packages/conformance/requirements.json");
   if (!existsSync(p)) return [];
   const doc = JSON.parse(readFileSync(p, "utf8")) as { rows?: RequirementInput[] };
-  return (doc.rows ?? []).map((r) => ({ id: r.id, disposition: r.disposition }));
+  return (doc.rows ?? []).map((r) => ({ id: r.id, disposition: r.disposition, ...(typeof r.condition === "string" ? { condition: r.condition } : {}) }));
 }
 
 function loadFixtures(root: string): FixtureInput[] {
@@ -252,6 +293,7 @@ export function buildRequirementMatrix(
   reqs: readonly RequirementInput[],
   fixtures: readonly FixtureInput[],
   results: readonly MatrixRow[],
+  evidence: readonly UnitEvidence[] = [],
 ): RequirementMatrixRow[] {
   const byReq = new Map<string, string[]>();
   for (const f of fixtures) for (const r of f.requirements) byReq.set(r, [...(byReq.get(r) ?? []), f.id]);
@@ -261,10 +303,12 @@ export function buildRequirementMatrix(
     const fx = byReq.get(r.id) ?? [];
     const oks = fx.flatMap((f) => res.get(f) ?? []);
     const withResult = fx.filter((f) => res.has(f));
+    const ev = evidence.filter((e) => e.req === r.id);
     let status: Evidence;
-    if (fx.length === 0 || withResult.length < fx.length) status = oks.includes(false) ? "fail" : "missing";
-    else status = oks.every(Boolean) ? "pass" : "fail";
-    return { id: r.id, disposition: r.disposition, fixtures: fx, status };
+    if (oks.includes(false) || ev.some((e) => !e.ok)) status = "fail";
+    else if (fx.length + ev.length >= 1 && withResult.length === fx.length) status = "pass";
+    else status = "missing";
+    return { id: r.id, disposition: r.disposition, fixtures: fx, evidence: ev.map((e) => e.source), status };
   });
 }
 
@@ -364,6 +408,24 @@ export function runGate(opts: GateOptions): GateReport {
       }
     }
   }
+  // unit: Vitest JSON report from the prereq stage; [REQ-ID]-tagged tests are requirement evidence
+  const reqs = opts.requirements ?? loadRequirements(root);
+  let unitEvidence: UnitEvidence[] = [];
+  {
+    const dir = env[PREREQ_DIR_ENV] ? resolve(env[PREREQ_DIR_ENV]!) : undefined;
+    const file = dir ? join(dir, "vitest.json") : undefined;
+    if (!file) add("unit", false, `${PREREQ_DIR_ENV} unset; vitest evidence missing`);
+    else if (!existsSync(file)) add("unit", false, `${file} missing`);
+    else {
+      const raw = parseJson(readFileSync(file, "utf8"));
+      if (raw === undefined) add("unit", false, `${file} unparseable`);
+      else {
+        const v = parseVitestEvidence(raw, new Set(reqs.map((r) => r.id)));
+        if (v.ok) unitEvidence = v.evidence;
+        add("unit", v.ok, v.detail);
+      }
+    }
+  }
   // evidence: environment, lockfile and pin table hashes
   const pinsPath = join(root, "docs/conformance/PINS.md");
   const evidence: RunEvidence = {
@@ -392,13 +454,14 @@ export function runGate(opts: GateOptions): GateReport {
   for (const s of missingScenarios) blockers.push(`scenario missing or not passing: ${s}`);
 
   // Requirement-row matrix
-  const reqs = opts.requirements ?? loadRequirements(root);
   const fixtures = opts.fixtures ?? loadFixtures(root);
-  const requirementMatrix = buildRequirementMatrix(reqs, fixtures, matrix);
+  const requirementMatrix = buildRequirementMatrix(reqs, fixtures, matrix, unitEvidence);
+  const wave3 = new Set(reqs.filter((r) => r.condition !== undefined && WAVE3_RE.test(r.condition)).map((r) => r.id));
   if (reqs.length === 0) blockers.push("requirements: requirements.json rows missing");
-  const reqGap = requirementMatrix.filter((r) => BLOCKING_DISPOSITIONS.includes(r.disposition) && r.status !== "pass");
+  const reqGap = requirementMatrix.filter((r) => BLOCKING_DISPOSITIONS.includes(r.disposition) && r.status !== "pass" && !wave3.has(r.id));
   if (reqGap.length) blockers.push(`requirements: ${reqGap.length} required/deprecated/excluded rows not pass (missing/fail)`);
   const nonClaims = [...NON_CLAIMS];
+  if (wave3.size) nonClaims.push(`Wave 3 rows (post-gate, PLAN §15; not built before the gate): ${[...wave3].join(", ")}`);
   const unresolved = requirementMatrix.filter((r) => r.disposition === "unresolved");
   if (unresolved.length) nonClaims.push(`Unresolved requirement rows (no claim): ${unresolved.map((r) => r.id).join(", ")}`);
   const oos = requirementMatrix.filter((r) => r.disposition.startsWith("out-of-scope"));
@@ -459,9 +522,10 @@ export function runGate(opts: GateOptions): GateReport {
 }
 
 export function renderCoverageMatrix(r: GateReport): string {
-  const l = [`# Coverage matrix ${r.sha}`, "", "| Requirement | Disposition | Fixtures | Status |", "|---|---|---|---|"];
-  for (const m of r.requirementMatrix) l.push(`| ${m.id} | ${m.disposition} | ${m.fixtures.join(", ") || "-"} | ${m.status} |`);
-  if (r.requirementMatrix.length === 0) l.push("| (none) | - | - | missing |");
+  const l = [`# Coverage matrix ${r.sha}`, "", "| Requirement | Disposition | Fixtures | Status | Unit evidence |", "|---|---|---|---|---|"];
+  for (const m of r.requirementMatrix)
+    l.push(`| ${m.id} | ${m.disposition} | ${m.fixtures.join(", ") || "-"} | ${m.status} | ${m.evidence.join(", ").replace(/\|/g, "\\|") || "-"} |`);
+  if (r.requirementMatrix.length === 0) l.push("| (none) | - | - | missing | - |");
   return l.join("\n") + "\n";
 }
 

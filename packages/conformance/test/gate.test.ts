@@ -11,7 +11,9 @@ import {
   GATE_ITEM_IDS,
   REQUIRED_SUITES,
   checkRemovalEvidence,
+  buildRequirementMatrix,
   matchFixture,
+  parseVitestEvidence,
   runGate,
   type Exec,
 } from "../src/gate.js";
@@ -44,11 +46,13 @@ function fakeExec(over: Over = {}) {
 }
 
 const GOOD_ROWS = ALL_EXTENSIONS.map((e) => ({ script: `remove:${e}`, ext: e, exitCode: 0, log: `${e}.log` }));
+const GOOD_VITEST = { success: true, numTotalTests: 1, numFailedTests: 0, testResults: [] };
 function setup(rows: unknown = GOOD_ROWS) {
   const dir = mkdtempSync(join(tmpdir(), "gate-test-"));
   const prereq = join(dir, "prereq");
   mkdirSync(prereq);
   if (rows !== null) writeFileSync(join(prereq, "remove-ext.json"), typeof rows === "string" ? rows : JSON.stringify(rows));
+  writeFileSync(join(prereq, "vitest.json"), JSON.stringify(GOOD_VITEST));
   writeFileSync(join(dir, "package-lock.json"), "{}");
   mkdirSync(join(dir, "docs/conformance"), { recursive: true });
   writeFileSync(join(dir, "docs/conformance/PINS.md"), "| pin | value |\n| spec | 2026-07-28 |\n");
@@ -361,5 +365,72 @@ describe("gate", () => {
     const dir = join(b.root, "envreports");
     runGate({ ...rest, env: { ...b.opts.env, GATE_REPORTS_DIR: dir } });
     expect(existsSync(join(dir, `gate-${SHA}.json`))).toBe(true);
+  });
+
+  it("parseVitestEvidence: tags from passed/failed tests; skipped and unknown ids ignored", () => {
+    const raw = {
+      success: false,
+      numTotalTests: 4,
+      numFailedTests: 1,
+      testResults: [
+        {
+          name: join(process.cwd(), "packages/x/test/a.test.ts"),
+          assertionResults: [
+            { ancestorTitles: ["[R1] group"], title: "ok one", fullName: "[R1] group ok one", status: "passed" },
+            { ancestorTitles: [], title: "[R2] bad", fullName: "[R2] bad", status: "failed" },
+            { ancestorTitles: [], title: "[R1] skipped", fullName: "[R1] skipped", status: "skipped" },
+            { ancestorTitles: [], title: "[NOPE-1] unknown", fullName: "[NOPE-1] unknown", status: "passed" },
+          ],
+        },
+      ],
+    };
+    const known = new Set(["R-1", "R1", "R2", "WIRE-DIR-1"]);
+    // R1/R2 have no hyphen and are not tags; use hyphenated ids
+    const raw2 = JSON.parse(JSON.stringify(raw).replace(/\[R1\]/g, "[WIRE-DIR-1]").replace(/\[R2\]/g, "[R-1]"));
+    const v = parseVitestEvidence(raw2, known);
+    expect(v.ok).toBe(false);
+    expect(v.evidence).toEqual([
+      { req: "WIRE-DIR-1", source: "unit:packages/x/test/a.test.ts#[WIRE-DIR-1] group ok one", ok: true },
+      { req: "R-1", source: "unit:packages/x/test/a.test.ts#[R-1] bad", ok: false },
+    ]);
+    expect(parseVitestEvidence({ success: true, numTotalTests: 0, numFailedTests: 0 }, known).ok).toBe(false);
+    expect(parseVitestEvidence({ success: true, numTotalTests: 2, numFailedTests: 0, testResults: [] }, known).ok).toBe(true);
+    expect(parseVitestEvidence([], known).ok).toBe(false);
+  });
+
+  it("unit suite fails closed when vitest.json is missing or unparseable", () => {
+    const b = base();
+    rmSync(join(b.prereq, "vitest.json"));
+    const rep = runGate(b.opts);
+    expect(rep.suites.find((s) => s.name === "unit")?.ok).toBe(false);
+    expect(rep.blockers.some((x) => x.startsWith("unit") && x.includes("missing"))).toBe(true);
+    const c = base();
+    writeFileSync(join(c.prereq, "vitest.json"), "{");
+    expect(runGate(c.opts).blockers.some((x) => x.startsWith("unit") && x.includes("unparseable"))).toBe(true);
+  });
+
+  it("requirement matrix: pass via unit evidence only; failing evidence fails", () => {
+    const reqs = [{ id: "A-1", disposition: "required" }];
+    expect(buildRequirementMatrix(reqs, [], [], [{ req: "A-1", source: "unit:t#x", ok: true }])[0]).toMatchObject({ status: "pass", evidence: ["unit:t#x"] });
+    expect(buildRequirementMatrix(reqs, [], [], [{ req: "A-1", source: "unit:t#x", ok: false }])[0]!.status).toBe("fail");
+    expect(buildRequirementMatrix(reqs, [], [])[0]!.status).toBe("missing");
+    const b = base();
+    writeFileSync(
+      join(b.prereq, "vitest.json"),
+      JSON.stringify({ ...GOOD_VITEST, testResults: [{ name: "t.ts", assertionResults: [{ ancestorTitles: [], title: "[A-1] works", fullName: "[A-1] works", status: "passed" }] }] }),
+    );
+    const rep = runGate({ ...b.opts, requirements: [...REQS, ...reqs] });
+    expect(rep.requirementMatrix.find((r) => r.id === "A-1")).toMatchObject({ status: "pass", evidence: ["unit:t.ts#[A-1] works"] });
+    expect(rep.blockers).toEqual([]);
+    expect(readFileSync(join(b.reportsDir, "coverage-matrix.md"), "utf8")).toContain("| A-1 | required | - | pass | unit:t.ts#[A-1] works |");
+  });
+
+  it("wave-3 rows are a non-claim and do not block", () => {
+    const b = base();
+    const rep = runGate({ ...b.opts, requirements: [...REQS, { id: "PICA-1", disposition: "required", condition: "Wave 3 only" }] });
+    expect(rep.blockers).toEqual([]);
+    expect(rep.nonClaims).toContain("Wave 3 rows (post-gate, PLAN §15; not built before the gate): PICA-1");
+    const c = base();
+    expect(runGate({ ...c.opts, requirements: [...REQS, { id: "PICA-1", disposition: "required" }] }).blockers.some((x) => x.startsWith("requirements:"))).toBe(true);
   });
 });
