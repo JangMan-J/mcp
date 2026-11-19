@@ -36,3 +36,19 @@ Wire lifecycle per `IMPLEMENTATION_PLAN.md` §5 and `docs/conformance/wire.md` r
 - `RequestOptions.idempotent` defaults to `isReadOnly(method)`, so interrupted reads are `cancelled` / `transport-failure` and interrupted writes are `uncertain-write` (N14).
 - a `-32022` with no mutual version, or failing again after the single retry, settles as `unsupported-version` with an `UnsupportedVersionDiagnostic` in `detail` (VER-3, VER-4).
 - era probing is explicit (`probe()`), not automatic before the first request; hosts or bindings wanting VER-5 / STDIO-DISC-1 probe-on-first-use call `probe()` first.
+
+## Post-S1.1 additions (additive and optional; no existing member removed or made required)
+
+All from `packages/core/src/index.ts`; still runtime-neutral. Existing implementers of the S1.0 ports compile unchanged because every new member is optional.
+
+- `auth-types.ts`:
+  - new `AuthRequestContext` (`signal`, `consent?`, `serverLabel?`) passed as an optional trailing argument to `AuthProvider.headerFor(url, operation?, context?)` and `onChallenge(challenge, signal, context?)`.
+  - new `AuthError(kind: "auth-failure" | "auth-unavailable", reason)`; `reason` is structured and never carries peer or credential text.
+  - `AuthProvider.stepUpLimit?` (max 403 replays per exchange, default 3); `AuthHeaderResult.credentialVersion?` and `AuthChallenge.credentialVersion?` (opaque identity of the credential on the wire; `null` means no Authorization header was sent).
+- `bearer-challenge.ts` (new, re-exported): `BearerChallenge`, `parseBearerChallenges(input)`.
+- `outcome.ts`: `TransportFailureKind` adds `auth-failure`, `auth-unavailable`; `TransportFailure.reason?`; `UncertainWrite.taskHandle?` (HTTP-AMBIG-4); `OutcomeMeta.retryOf?` (HTTP-AMBIG-3).
+- `ports.ts`: `TransportCall.consent?`, `TransportCall.serverLabel?`; `Exchange.abortDelivery?()` (delivery evidence when interrupted before `done` settles); `ConsentPrompt.kind` adds `authorize`, `client-info`, plus optional `issuer`, `issuerHost`, `resource`, `scopes`, `redirectUri`, `redirectHost`, `localhostWarning`.
+- `request.ts`: `RequestOptions.acceptDuplicate?` / `retryOf?` (opt-in re-issue; `retryOf` without `acceptDuplicate: true` settles `local-error` `accept-duplicate-required`); `RequestManager` options `serverLabel?`. Over `maxInFlight`, requests now wait in a FIFO admission queue instead of failing; aborting while queued settles `cancelled` with `wasSent: false`, `phase: "queue"` (LIM-CONC-1).
+- `progress.ts`: `ProgressThrottle<T>(clock, emit, limit = 50, windowMs = 1000)`: sliding-window throttle for progress callbacks that coalesces to the latest value and flushes it before settle (LIM-PROG-1).
+- `cancel.ts`: `guardExchangeDone` uses `abortDelivery()` when the exchange provides it; the local-abort message no longer includes the abort reason.
+- `McpClient` and `LifecycleClient` pass `server.label ?? server.key` as `serverLabel` to the `RequestManager`.
