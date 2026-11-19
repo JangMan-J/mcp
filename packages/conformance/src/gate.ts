@@ -5,7 +5,9 @@
  * missing fixture row, missing required scenario, or unparseable output blocks release.
  */
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { arch, platform, release } from "node:os";
 import { loadExchangeFiles } from "@mcp-client/fixtures";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -50,9 +52,23 @@ export interface GateReport {
   readonly scenarios: readonly string[];
   readonly missingScenarios: readonly string[];
   readonly officialBlockedReason: string | null;
+  readonly evidence: RunEvidence;
   readonly nonClaims: readonly string[];
   readonly releaseEligible: boolean;
   readonly blockers: readonly string[];
+}
+
+export interface RunEvidence {
+  readonly node: string;
+  readonly os: string;
+  readonly lockfileSha256: string | null;
+  readonly pinsSha256: string | null;
+  readonly removal: readonly RemovalRow[];
+}
+export interface RemovalRow {
+  readonly ext: string;
+  readonly exitCode: number;
+  readonly log?: string;
 }
 
 export interface RequirementInput {
@@ -72,16 +88,15 @@ export interface GateOptions {
   readonly env?: NodeJS.ProcessEnv;
   /** Explicit eligible scenarios; must be nonempty and all present as passing fixture rows. */
   readonly requiredScenarios?: readonly string[];
-  readonly removalExts?: readonly string[];
   readonly nodeArgs?: readonly string[];
   readonly requirements?: readonly RequirementInput[];
   readonly fixtures?: readonly FixtureInput[];
   /** Mapping of gate items G1..G12 to the suite that evidences them. Unmapped items are missing. */
-  readonly gateItemMap?: Readonly<Record<string, string>>;
+  readonly gateItemMap?: Readonly<Record<string, string | readonly string[]>>;
   readonly now?: () => Date;
 }
 
-export const REQUIRED_SUITES = ["baseline", "mutation", "coverage", "wire-scan", "no-pi", "official", "removal"] as const;
+export const REQUIRED_SUITES = ["baseline", "mutation", "coverage", "wire-scan", "no-pi", "official", "removal", "evidence"] as const;
 export const ALL_EXTENSIONS = [
   "ext-apps",
   "ext-client-credentials",
@@ -93,8 +108,48 @@ export const ALL_EXTENSIONS = [
   "ext-tasks",
 ];
 export const GATE_ITEM_IDS = Array.from({ length: 12 }, (_, i) => `G${i + 1}`);
-/** Env var naming the development workspace in which removal checks run (agreed with shell card). */
-export const DEV_WORKSPACE_ENV = "GATE_DEV_WORKSPACE";
+/** Env var naming the prereq dir where scripts/gate.sh writes remove-ext.json (dev toolchain stays out of production). */
+export const PREREQ_DIR_ENV = "GATE_PREREQ_DIR";
+/**
+ * Gate items mapped to the suites that actually prove them. An item passes only when every listed suite
+ * exists and passes. G11 also needs network and secret scans, which no suite provides yet, so it stays missing.
+ */
+export const DEFAULT_GATE_ITEM_MAP: Readonly<Record<string, readonly string[]>> = {
+  G10: ["removal"],
+  G11: ["no-pi", "wire-scan", "network-scan", "secret-scan"],
+  G12: ["official", "evidence"],
+};
+
+/** Parse and validate shell removal evidence: exactly the eight known extensions, unique, all exit 0. */
+export function checkRemovalEvidence(raw: unknown): { ok: boolean; rows: RemovalRow[]; problems: string[] } {
+  const problems: string[] = [];
+  if (!Array.isArray(raw)) return { ok: false, rows: [], problems: ["remove-ext.json is not an array"] };
+  const rows: RemovalRow[] = [];
+  const seen = new Set<string>();
+  for (const r of raw as Array<Record<string, unknown>>) {
+    const ext = typeof r?.ext === "string" ? r.ext : undefined;
+    const code = typeof r?.exitCode === "number" ? r.exitCode : undefined;
+    if (!ext || code === undefined) {
+      problems.push(`malformed row ${JSON.stringify(r)}`);
+      continue;
+    }
+    rows.push({ ext, exitCode: code, ...(typeof r.log === "string" ? { log: r.log } : {}) });
+    if (!ALL_EXTENSIONS.includes(ext)) problems.push(`unknown extension ${ext}`);
+    if (seen.has(ext)) problems.push(`duplicate ${ext}`);
+    seen.add(ext);
+    if (code !== 0) problems.push(`${ext} exit ${code}`);
+  }
+  for (const e of ALL_EXTENSIONS) if (!seen.has(e)) problems.push(`missing ${e}`);
+  return { ok: problems.length === 0, rows, problems };
+}
+
+function sha256File(p: string): string | null {
+  return existsSync(p) ? createHash("sha256").update(readFileSync(p)).digest("hex") : null;
+}
+/** A pin table counts only when present and free of placeholder markers. */
+function pinsPartial(p: string): boolean {
+  return !existsSync(p) || /\b(TBD|TODO|unpinned|partial)\b/i.test(readFileSync(p, "utf8"));
+}
 export const NON_CLAIMS = [
   "No claim of conformance beyond the requirement rows marked pass in the coverage matrix.",
   "No claim about Pi runtime integration; the gate runs with Pi excluded.",
@@ -247,20 +302,38 @@ export function runGate(opts: GateOptions): GateReport {
     }
     add("official", ok, ok ? `ok total=${j!.total}` : officialBlockedReason!);
   }
-  // removal: all eight extensions, from the development workspace
+  // removal: shell prereq evidence (dev toolchain ran outside this production runtime)
+  let removalRows: RemovalRow[] = [];
   {
-    const ws = env[DEV_WORKSPACE_ENV] ? resolve(env[DEV_WORKSPACE_ENV]!) : undefined;
-    const exts = opts.removalExts ?? ALL_EXTENSIONS;
-    if (!ws) add("removal", false, `${DEV_WORKSPACE_ENV} unset; removal evidence missing`);
-    else if (exts.length === 0) add("removal", false, "no extensions checked");
+    const dir = env[PREREQ_DIR_ENV] ? resolve(env[PREREQ_DIR_ENV]!) : undefined;
+    const file = dir ? join(dir, "remove-ext.json") : undefined;
+    if (!file) add("removal", false, `${PREREQ_DIR_ENV} unset; removal evidence missing`);
+    else if (!existsSync(file)) add("removal", false, `${file} missing`);
     else {
-      const bad: string[] = [];
-      for (const e of exts) {
-        const r = exec(node, [join(ws, "scripts/check-remove-ext.mjs"), e], gateEnv, ws);
-        if (r.code !== 0) bad.push(`${e} (exit ${r.code})`);
+      const raw = parseJson(readFileSync(file, "utf8"));
+      if (raw === undefined) add("removal", false, `${file} unparseable`);
+      else {
+        const c = checkRemovalEvidence(raw);
+        removalRows = c.rows;
+        add("removal", c.ok, c.ok ? `${ALL_EXTENSIONS.length} extensions removable` : c.problems.join("; "));
       }
-      add("removal", bad.length === 0, bad.length ? `failed: ${bad.join(", ")}` : `${exts.length} extensions removable`);
     }
+  }
+  // evidence: environment, lockfile and pin table hashes
+  const pinsPath = join(root, "docs/conformance/PINS.md");
+  const evidence: RunEvidence = {
+    node: process.version,
+    os: `${platform()} ${release()} ${arch()}`,
+    lockfileSha256: sha256File(join(root, "package-lock.json")),
+    pinsSha256: sha256File(pinsPath),
+    removal: removalRows,
+  };
+  {
+    const gaps: string[] = [];
+    if (!evidence.lockfileSha256) gaps.push("package-lock.json missing");
+    if (!evidence.pinsSha256) gaps.push("PINS.md missing");
+    else if (pinsPartial(pinsPath)) gaps.push("PINS.md partial");
+    add("evidence", gaps.length === 0, gaps.length ? gaps.join("; ") : `lock ${evidence.lockfileSha256!.slice(0, 12)} pins ${evidence.pinsSha256!.slice(0, 12)}`);
   }
   for (const s of REQUIRED_SUITES) if (!suites.some((x) => x.name === s)) add(s, false, "suite missing");
 
@@ -280,13 +353,15 @@ export function runGate(opts: GateOptions): GateReport {
   if (reqGap.length) blockers.push(`requirements: ${reqGap.length} required rows not pass (missing/fail)`);
 
   // Gate items G1..G12: pass only when mapped to a passing suite.
-  const map = opts.gateItemMap ?? {};
+  const map = opts.gateItemMap ?? DEFAULT_GATE_ITEM_MAP;
   const gateItems: GateItem[] = GATE_ITEM_IDS.map((id) => {
-    const suite = map[id];
-    if (!suite) return { id, status: "missing", detail: "not mapped" };
-    const s = suites.find((x) => x.name === suite);
-    if (!s) return { id, status: "missing", detail: `suite ${suite} absent` };
-    return { id, status: s.ok ? "pass" : "fail", detail: `suite ${suite}` };
+    const m = map[id];
+    const names = m === undefined ? [] : typeof m === "string" ? [m] : [...m];
+    if (names.length === 0) return { id, status: "missing", detail: "not mapped" };
+    const found = names.map((n) => suites.find((x) => x.name === n));
+    const absent = names.filter((_, i) => !found[i]);
+    if (absent.length) return { id, status: "missing", detail: `suite ${absent.join(", ")} absent` };
+    return { id, status: found.every((s) => s!.ok) ? "pass" : "fail", detail: `suite ${names.join(", ")}` };
   });
   for (const g of gateItems) if (g.status !== "pass") blockers.push(`${g.id}: ${g.status} (${g.detail})`);
 
@@ -301,6 +376,7 @@ export function runGate(opts: GateOptions): GateReport {
     scenarios,
     missingScenarios,
     officialBlockedReason,
+    evidence,
     nonClaims: NON_CLAIMS,
     releaseEligible: blockers.length === 0,
     blockers,
@@ -333,6 +409,9 @@ export function renderMarkdown(r: GateReport): string {
   for (const m of r.requirementMatrix) counts[m.status]++;
   l.push("", `Requirement rows: ${counts.pass} pass, ${counts.fail} fail, ${counts.missing} missing (see coverage-matrix.md)`);
   l.push("", `Official blocked reason: ${r.officialBlockedReason ?? "none"}`);
+  l.push("", "## Evidence", "", `- Node: ${r.evidence.node}`, `- OS: ${r.evidence.os}`, `- SHA: ${r.sha}`);
+  l.push(`- package-lock.json sha256: ${r.evidence.lockfileSha256 ?? "missing"}`, `- PINS.md sha256: ${r.evidence.pinsSha256 ?? "missing"}`);
+  for (const x of r.evidence.removal) l.push(`- remove ${x.ext}: exit ${x.exitCode}${x.log ? ` (${x.log})` : ""}`);
   l.push("", "## Non-claims", "", ...r.nonClaims.map((n) => `- ${n}`));
   l.push("", "## Blockers", "", ...(r.blockers.length ? r.blockers.map((b) => `- ${b}`) : ["- none"]), "");
   return l.join("\n");

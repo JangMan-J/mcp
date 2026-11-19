@@ -1,8 +1,8 @@
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { ALL_EXTENSIONS, GATE_ITEM_IDS, runGate, type Exec } from "../src/gate.js";
+import { ALL_EXTENSIONS, DEFAULT_GATE_ITEM_MAP, GATE_ITEM_IDS, checkRemovalEvidence, runGate, type Exec } from "../src/gate.js";
 
 const SHA = "a".repeat(40);
 const ALL_MAPPED = Object.fromEntries(GATE_ITEM_IDS.map((g) => [g, "baseline"]));
@@ -31,13 +31,20 @@ function fakeExec(over: Over = {}) {
   return { exec, calls, envs };
 }
 
-function setup() {
+const GOOD_ROWS = ALL_EXTENSIONS.map((e) => ({ script: `remove:${e}`, ext: e, exitCode: 0, log: `${e}.log` }));
+function setup(rows: unknown = GOOD_ROWS) {
   const dir = mkdtempSync(join(tmpdir(), "gate-test-"));
-  return { root: dir, reportsDir: join(dir, "reports"), ws: join(dir, "dev") };
+  const prereq = join(dir, "prereq");
+  mkdirSync(prereq);
+  if (rows !== null) writeFileSync(join(prereq, "remove-ext.json"), typeof rows === "string" ? rows : JSON.stringify(rows));
+  writeFileSync(join(dir, "package-lock.json"), "{}");
+  mkdirSync(join(dir, "docs/conformance"), { recursive: true });
+  writeFileSync(join(dir, "docs/conformance/PINS.md"), "| pin | value |\n| spec | 2026-07-28 |\n");
+  return { root: dir, reportsDir: join(dir, "reports"), prereq };
 }
 
-function base(over: Over = {}) {
-  const s = setup();
+function base(over: Over = {}, rows: unknown = GOOD_ROWS) {
+  const s = setup(rows);
   const f = fakeExec(over);
   return {
     ...s,
@@ -47,7 +54,7 @@ function base(over: Over = {}) {
       reportsDir: s.reportsDir,
       sha: SHA,
       exec: f.exec,
-      env: { PI_X: "1", NODE_PATH: "x", GATE_DEV_WORKSPACE: s.ws },
+      env: { PI_X: "1", NODE_PATH: "x", GATE_PREREQ_DIR: s.prereq },
       requiredScenarios: ["wire.a"],
       requirements: REQS,
       fixtures: FIX,
@@ -70,7 +77,7 @@ describe("gate", () => {
     expect(cov).toContain("| R2 | active-optional | - | missing |");
   });
 
-  it("runs built CLI inside the no-Pi wrapper, wire-scan on fresh transcripts, removal for all eight in dev workspace", () => {
+  it("runs built CLI inside the no-Pi wrapper, wire-scan on fresh transcripts, never runs removal in production", () => {
     const b = base();
     const rep = runGate(b.opts);
     const cliCalls = b.f.calls.filter((c) => c.some((a) => a.endsWith("dist/cli.js")));
@@ -89,9 +96,9 @@ describe("gate", () => {
       expect(e.NODE_PATH).toBeUndefined();
       expect(e.MCP_CONFORMANCE_TRANSCRIPTS).toBe(rep.transcriptsDir);
     }
-    const removals = b.f.calls.filter((c) => c[0] === join(b.ws, "scripts/check-remove-ext.mjs")).map((c) => c[1]);
-    expect(removals).toEqual(ALL_EXTENSIONS);
+    expect(b.f.calls.some((c) => c.some((a) => a.includes("check-remove-ext")))).toBe(false);
     expect(ALL_EXTENSIONS).toHaveLength(8);
+    expect(rep.evidence.removal.map((r) => r.ext)).toEqual(ALL_EXTENSIONS);
     // a second run gets a fresh transcript dir
     expect(runGate(b.opts).transcriptsDir).not.toBe(rep.transcriptsDir);
   });
@@ -129,10 +136,64 @@ describe("gate", () => {
     expect(rep.releaseEligible).toBe(false);
   });
 
-  it("missing dev workspace blocks removal", () => {
+  it("unset prereq dir blocks removal", () => {
     const b = base();
     const rep = runGate({ ...b.opts, env: {} });
-    expect(rep.blockers.some((x) => x.startsWith("removal") && x.includes("GATE_DEV_WORKSPACE"))).toBe(true);
+    expect(rep.blockers.some((x) => x.startsWith("removal") && x.includes("GATE_PREREQ_DIR"))).toBe(true);
+  });
+
+  const removalBlock = (rows: unknown, needle: string) => {
+    const b = base({}, rows);
+    const rep = runGate(b.opts);
+    const r = rep.suites.find((s) => s.name === "removal")!;
+    expect(r.ok).toBe(false);
+    expect(r.detail).toContain(needle);
+    expect(rep.releaseEligible).toBe(false);
+    expect(rep.gateItems.find((g) => g.id === "G1")?.status).toBe("pass");
+  };
+  it("removal: missing file, unparseable, incomplete, duplicate, nonzero, unknown rows block", () => {
+    removalBlock(null, "missing");
+    removalBlock("[{", "unparseable");
+    removalBlock(GOOD_ROWS.slice(0, 4), "missing ext-events");
+    removalBlock([...GOOD_ROWS.slice(0, 7), GOOD_ROWS[0]], "duplicate ext-apps");
+    removalBlock(GOOD_ROWS.map((r, i) => (i === 2 ? { ...r, exitCode: 1 } : r)), `${ALL_EXTENSIONS[2]} exit 1`);
+    removalBlock([...GOOD_ROWS, { ext: "ext-bogus", exitCode: 0 }], "unknown extension ext-bogus");
+    removalBlock([...GOOD_ROWS.slice(1), { ext: "ext-apps" }], "malformed");
+    expect(checkRemovalEvidence({}).ok).toBe(false);
+    expect(checkRemovalEvidence(GOOD_ROWS).ok).toBe(true);
+  });
+
+  it("records Node/OS/lockfile/PINS evidence; missing or partial pins block", () => {
+    const b = base();
+    const rep = runGate(b.opts);
+    expect(rep.evidence.node).toBe(process.version);
+    expect(rep.evidence.os).toMatch(/\S+ \S+ \S+/);
+    expect(rep.evidence.lockfileSha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(rep.evidence.pinsSha256).toMatch(/^[0-9a-f]{64}$/);
+    const md = readFileSync(join(b.reportsDir, `gate-${SHA}.md`), "utf8");
+    expect(md).toContain(`PINS.md sha256: ${rep.evidence.pinsSha256}`);
+    writeFileSync(join(b.root, "docs/conformance/PINS.md"), "| spec | TBD |\n");
+    expect(runGate(b.opts).blockers).toContain("evidence: PINS.md partial");
+    const c = base();
+    rmSync(join(c.root, "package-lock.json"));
+    expect(runGate(c.opts).blockers.some((x) => x.startsWith("evidence") && x.includes("package-lock.json missing"))).toBe(true);
+  });
+
+  it("default map: G10 from removal, G11 missing without network/secret scans, G12 needs official and evidence", () => {
+    const b = base();
+    const { gateItemMap: _m, ...rest } = b.opts;
+    const rep = runGate(rest);
+    const st = (id: string) => rep.gateItems.find((g) => g.id === id)?.status;
+    expect(st("G10")).toBe("pass");
+    expect(st("G11")).toBe("missing");
+    expect(st("G12")).toBe("pass");
+    expect(st("G1")).toBe("missing");
+    expect(DEFAULT_GATE_ITEM_MAP.G11).toContain("wire-scan");
+    const o = base({ "official --json": { code: 1, stdout: JSON.stringify({ ok: false, total: 0 }) } }, [GOOD_ROWS[0]]);
+    const { gateItemMap: _n, ...rest2 } = o.opts;
+    const r2 = runGate(rest2);
+    expect(r2.gateItems.find((g) => g.id === "G12")?.status).toBe("fail");
+    expect(r2.gateItems.find((g) => g.id === "G10")?.status).toBe("fail");
   });
 
   it("validates sha from option, GATE_SHA and git", () => {
