@@ -218,31 +218,33 @@ export class NotificationQueue<T> implements AsyncIterable<T> {
 }
 
 /**
- * LIM-PROG-1: rate-limits progress delivery to one callback per `intervalMs` (default 20 ms,
- * i.e. 50/s). Faster events are coalesced to the latest; `flush()` delivers the pending latest
- * value so the final progress is always observed before settlement. Uses the injected Clock.
+ * LIM-PROG-1: rate-limits progress delivery to `limit` callbacks per `windowMs` (default 50 per
+ * 1000 ms) over a sliding window. Events beyond the budget are coalesced to the latest; `flush()`
+ * delivers the pending latest value so the final progress is always observed before settlement.
+ * Uses the injected Clock so fake clocks work.
  */
 export class ProgressThrottle<T> {
-  private lastEmit: number | undefined;
+  private readonly emitted: number[] = [];
   private pending: { value: T } | undefined;
   private cancelTimer: (() => void) | undefined;
 
   constructor(
     private readonly clock: Clock,
     private readonly emit: (v: T) => void,
-    private readonly intervalMs = 20,
+    private readonly limit = 50,
+    private readonly windowMs = 1000,
   ) {}
 
   push(v: T): void {
     const now = this.clock.now();
-    if (this.cancelTimer === undefined && (this.lastEmit === undefined || now - this.lastEmit >= this.intervalMs)) {
-      this.lastEmit = now;
-      this.emit(v);
+    this.prune(now);
+    if (this.cancelTimer === undefined && this.emitted.length < this.limit) {
+      this.deliver(v, now);
       return;
     }
     this.pending = { value: v };
     if (this.cancelTimer === undefined) {
-      const wait = Math.max(0, (this.lastEmit ?? now) + this.intervalMs - now);
+      const wait = Math.max(0, (this.emitted[0] ?? now) + this.windowMs - now);
       this.cancelTimer = this.clock.setTimeout(() => {
         this.cancelTimer = undefined;
         this.deliverPending();
@@ -256,11 +258,21 @@ export class ProgressThrottle<T> {
     this.deliverPending();
   }
 
+  private prune(now: number): void {
+    while (this.emitted.length > 0 && now - (this.emitted[0] as number) >= this.windowMs) this.emitted.shift();
+  }
+
   private deliverPending(): void {
     const p = this.pending;
     if (!p) return;
     this.pending = undefined;
-    this.lastEmit = this.clock.now();
-    this.emit(p.value);
+    const now = this.clock.now();
+    this.prune(now);
+    this.deliver(p.value, now);
+  }
+
+  private deliver(v: T, now: number): void {
+    this.emitted.push(now);
+    this.emit(v);
   }
 }

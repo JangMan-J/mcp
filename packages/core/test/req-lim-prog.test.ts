@@ -76,8 +76,10 @@ describe("[LIM-PROG-1] progress delivery rate limit", () => {
     expect(seen.length).toBeGreaterThan(1);
     for (let i = 1; i < seen.length; i++) {
       expect(seen[i]!.p).toBeGreaterThan(seen[i - 1]!.p);
-      if (i < seen.length - 1) expect(seen[i]!.at - seen[i - 1]!.at).toBeGreaterThanOrEqual(20);
     }
     expect(seen[seen.length - 1]!.p).toBe(200);
+    // no more than 50 callbacks in any 1000 ms window (excluding the settlement flush)
+    const timed = seen.slice(0, -1);
+    for (let i = 50; i < timed.length; i++) expect(timed[i]!.at - timed[i - 50]!.at).toBeGreaterThanOrEqual(1000);
   });
 });
