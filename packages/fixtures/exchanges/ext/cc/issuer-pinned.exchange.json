@@ -1,0 +1,45 @@
+{
+  "id": "ext/cc/issuer-pinned",
+  "requirements": [
+    "EXT-cc-8"
+  ],
+  "pin": "ext-page",
+  "source": [
+    "extensions/auth/oauth-client-credentials.md#SDK examples"
+  ],
+  "tier": "A",
+  "binding": "http",
+  "client": {
+    "mode": "jwt-es256",
+    "expectedIssuer": "https://as.test/tenant",
+    "prm": {
+      "resource": "https://mcp.test/rpc",
+      "authorization_servers": [
+        "https://evil.test"
+      ]
+    }
+  },
+  "script": [
+    {
+      "do": "header"
+    },
+    {
+      "expect": "outcome",
+      "value": {
+        "error": "auth-failure/issuer-mismatch"
+      }
+    },
+    {
+      "expect": "no-requests-to",
+      "host": "evil.test"
+    },
+    {
+      "expect": "token-requests",
+      "count": 0
+    }
+  ],
+  "expect": {},
+  "mutants": [
+    "ignore-pin"
+  ]
+}

@@ -1,0 +1,51 @@
+{
+  "id": "ext/cc/omit-when-unavailable",
+  "requirements": [
+    "EXT-CAP-1",
+    "EXT-REG-2"
+  ],
+  "pin": "ext-page",
+  "source": [
+    "extensions/auth/oauth-client-credentials.md#How it works"
+  ],
+  "tier": "A",
+  "binding": "http",
+  "client": {
+    "kind": "extension"
+  },
+  "script": [
+    {
+      "expect": "capabilities",
+      "config": "configured",
+      "isWorking": true,
+      "value": {
+        "extensions": {
+          "io.modelcontextprotocol/oauth-client-credentials": {}
+        }
+      }
+    },
+    {
+      "expect": "capabilities",
+      "config": "configured",
+      "isWorking": false,
+      "value": {}
+    },
+    {
+      "expect": "capabilities",
+      "config": "none",
+      "isWorking": true,
+      "value": {}
+    },
+    {
+      "expect": "capabilities",
+      "config": "none",
+      "isWorking": false,
+      "value": {}
+    }
+  ],
+  "expect": {},
+  "mutants": [
+    "ignore-health",
+    "ignore-is-working"
+  ]
+}

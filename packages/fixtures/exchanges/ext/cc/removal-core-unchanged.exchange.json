@@ -1,0 +1,25 @@
+{
+  "id": "ext/cc/removal-core-unchanged",
+  "requirements": [
+    "EXT-cc-11",
+    "EXT-REMOVE-1"
+  ],
+  "pin": "ext-page",
+  "source": [
+    "specification/2026-07-28/basic/authorization/index.md#MCP Authorization Extensions"
+  ],
+  "tier": "A",
+  "binding": "http",
+  "client": {
+    "kind": "extension"
+  },
+  "script": [
+    {
+      "expect": "removal"
+    }
+  ],
+  "expect": {},
+  "mutants": [
+    "registers-result-type"
+  ]
+}

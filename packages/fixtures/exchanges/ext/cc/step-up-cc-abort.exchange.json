@@ -1,0 +1,40 @@
+{
+  "id": "ext/cc/step-up-cc-abort",
+  "requirements": [
+    "AUTH-STEP-4"
+  ],
+  "pin": "ext-page",
+  "source": [
+    "specification/2026-07-28/basic/authorization/index.md#Step-Up Authorization Flow"
+  ],
+  "tier": "A",
+  "binding": "http",
+  "client": {
+    "mode": "jwt-es256"
+  },
+  "script": [
+    {
+      "do": "header"
+    },
+    {
+      "do": "challenge",
+      "status": 403,
+      "challenge": "Bearer error=\"insufficient_scope\", scope=\"admin\""
+    },
+    {
+      "expect": "outcome",
+      "value": {
+        "error": "auth-failure/insufficient-scope"
+      }
+    },
+    {
+      "expect": "token-requests",
+      "count": 1
+    }
+  ],
+  "expect": {},
+  "mutants": [
+    "step-up-retry",
+    "reacquire-on-403"
+  ]
+}
