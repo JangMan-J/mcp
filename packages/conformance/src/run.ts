@@ -1,4 +1,6 @@
 import type { ClientRequest, JsonRpcNotification, Outcome, ProgressEvent } from "@mcp-client/core";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { loadExchangeFiles, type ExchangeFixture } from "@mcp-client/fixtures";
 import { createCoreAdapter, type HarnessAdapter } from "./adapter.js";
 import { runTierAProvider } from "./tier-a.js";
@@ -26,6 +28,44 @@ export interface FixtureResult {
   /** Only an observed expectation mismatch can kill a mutant. */
   readonly failure?: "assertion";
 }
+
+/** One observed frame. HTTP fields are present only when a binding observes them. */
+export interface TranscriptFrame {
+  readonly direction: "client" | "server";
+  readonly message?: unknown;
+  readonly method?: string;
+  readonly headers?: Record<string, string>;
+  readonly url?: string;
+}
+
+/**
+ * Baseline transcript built only from observations at the harness send seam.
+ * `incomplete` lists what the runner could not observe; frames are never synthesized.
+ */
+export interface Transcript {
+  readonly fixture: string;
+  readonly frames: readonly TranscriptFrame[];
+  readonly incomplete?: readonly string[];
+}
+
+export const TRANSCRIPTS_ENV = "MCP_CONFORMANCE_TRANSCRIPTS";
+
+/** Writes `<dir>/<id with / as __>.transcript.json` when MCP_CONFORMANCE_TRANSCRIPTS is set. */
+export function writeTranscript(transcript: Transcript): string | undefined {
+  const dir = process.env[TRANSCRIPTS_ENV];
+  if (!dir) return undefined;
+  mkdirSync(dir, { recursive: true });
+  const file = join(dir, `${transcript.fixture.replace(/[\/]/g, "__")}.transcript.json`);
+  writeFileSync(file, `${JSON.stringify(transcript, null, 2)}\n`);
+  return file;
+}
+
+// The in-process seam records outbound requests only; transport.notify drops client
+// notifications unrecorded, and injected server frames are the harness's own deliveries.
+const coreSeamGaps = [
+  "client notifications (transport.notify) are not recorded by the in-process transport",
+  "server frames are the messages handed to the in-process transport for a pending request, not bytes read off a wire",
+];
 
 export interface RunSummary {
   readonly ok: boolean;
@@ -65,6 +105,25 @@ export async function runOneFixture(
   adapter: HarnessAdapter,
   mutant?: string,
 ): Promise<FixtureResult> {
+  let observed: { frames: TranscriptFrame[]; sync: () => void } | undefined;
+  const result = await runOneObserved(fixture, adapter, mutant, (o) => (observed = o));
+  if (mutant === undefined) {
+    if (observed) {
+      observed.sync();
+      writeTranscript({ fixture: fixture.id, frames: observed.frames, incomplete: coreSeamGaps });
+    } else {
+      writeTranscript({ fixture: fixture.id, frames: [], incomplete: [`harness setup failed: ${result.error ?? "unknown"}`] });
+    }
+  }
+  return result;
+}
+
+async function runOneObserved(
+  fixture: ExchangeFixture,
+  adapter: HarnessAdapter,
+  mutant: string | undefined,
+  expose: (o: { frames: TranscriptFrame[]; sync: () => void }) => void,
+): Promise<FixtureResult> {
   const result = { id: fixture.id, ...(mutant !== undefined ? { mutant } : {}) };
   let harness;
   try {
@@ -80,6 +139,17 @@ export async function runOneFixture(
   const progressLog = new Map<string, ProgressEvent[]>();
   const probes = new Map<string, Promise<unknown>>();
   const probeResults = new Map<string, unknown>();
+  // Baseline-only transcript of what actually crossed the send seam, in observed order.
+  const frames: TranscriptFrame[] = [];
+  let clientSeen = 0;
+  const syncClient = () => {
+    const sent = harness.transport.sent;
+    for (; clientSeen < sent.length; clientSeen++) {
+      frames.push({ direction: "client", message: JSON.parse(sent[clientSeen]!.rawText) as unknown });
+    }
+  };
+  const wasSent = (id: unknown) => harness.transport.sent.some((s) => s.request.id === id);
+  expose({ frames, sync: syncClient });
 
   const flushMicrotasks = async () => {
     for (let i = 0; i < 6; i++) {
@@ -124,6 +194,8 @@ export async function runOneFixture(
         }
         if (targetId === undefined) throw new Error("notify step could not resolve target request id");
         if (!harness.notify) throw new Error("adapter does not support server notifications");
+        syncClient();
+        if (wasSent(targetId)) frames.push({ direction: "server", message: loose["notification"] });
         harness.notify(targetId, loose["notification"] as JsonRpcNotification);
         await flushMicrotasks();
         continue;
@@ -193,10 +265,17 @@ export async function runOneFixture(
         if (targetId === undefined) {
           throw new ObservationMismatch("Server step could not resolve target request id");
         }
+        syncClient();
+        const pending = harness.transport.hasPending(targetId);
         if (step.server === "result") {
+          if (pending) frames.push({ direction: "server", message: { jsonrpc: "2.0", id: targetId, result: step.result ?? {} } });
           harness.transport.deliverResult(targetId, step.result ?? {});
         } else {
           const err = step.error ?? { code: -32603, message: "error" };
+          if (pending) {
+            const error = { code: err.code, message: err.message, ...(err.data !== undefined ? { data: err.data } : {}) };
+            frames.push({ direction: "server", message: { jsonrpc: "2.0", id: targetId, error } });
+          }
           harness.transport.deliverError(targetId, err.code, err.message, err.data);
         }
         await flushMicrotasks();
@@ -327,7 +406,12 @@ async function runSelectedFixture(fixture: ExchangeFixture, adapter?: HarnessAda
   if (adapter) return runOneFixture(fixture, adapter, mutant);
   if (fixture.tier === "A") {
     const result = await runTierAProvider(fixture, mutant);
-    if (result) return result;
+    if (result) {
+      if (mutant === undefined) {
+        writeTranscript({ fixture: fixture.id, frames: [], incomplete: ["provider-owned fixture: frames are not observed by the conformance runner"] });
+      }
+      return result;
+    }
     if (coreAreas.has(fixture.id.split("/", 1)[0]!)) {
       if (!Array.isArray(fixture.script) || fixture.script.length === 0) {
         return { id: fixture.id, ok: false, error: "empty core script" };
