@@ -76,6 +76,8 @@ function runConformance(cwd, area) {
 
 let scratch;
 try {
+  // Build the checkout first so a fresh export (no dist/) can run the baseline.
+  execFileSync(process.execPath, [join(root, "scripts/build-workspaces.mjs")], { cwd: root, stdio: "pipe" });
   const baseline = runConformance(root, CORE_AREA);
   if (!baseline.ok) throw new Error(`baseline core conformance failed: ${JSON.stringify(baseline.results?.filter(r=>!r.ok))}`);
 
