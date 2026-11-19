@@ -1,0 +1,83 @@
+{
+  "id": "ops/schema-draft07-unsupported",
+  "requirements": [
+    "OPS-SCHEMA-2"
+  ],
+  "pin": "tag",
+  "source": [
+    "S/basic/index.md#Implementation Requirements"
+  ],
+  "tier": "A",
+  "binding": "any",
+  "client": {
+    "clock": "fake"
+  },
+  "script": [
+    {
+      "do": "call",
+      "as": "l",
+      "op": "tools.list",
+      "args": []
+    },
+    {
+      "server": "result",
+      "result": {
+        "tools": [
+          {
+            "name": "t",
+            "inputSchema": {
+              "$schema": "http://json-schema.org/draft-07/schema#",
+              "type": "object"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "do": "call",
+      "as": "c1",
+      "op": "tools.call",
+      "args": [
+        "t",
+        {}
+      ]
+    },
+    {
+      "do": "call",
+      "as": "c2",
+      "op": "tools.call",
+      "args": [
+        "t",
+        {},
+        {
+          "allowUnvalidated": true
+        }
+      ]
+    },
+    {
+      "server": "result",
+      "result": {
+        "content": []
+      }
+    }
+  ],
+  "expect": {
+    "outcome": {
+      "l": {
+        "kind": "ok",
+        "value.tools.0.inputValidation": "unsupported-dialect"
+      },
+      "c1": {
+        "kind": "invalid-schema",
+        "detail.reason": "unsupported-dialect"
+      },
+      "c2": {
+        "kind": "ok"
+      }
+    },
+    "wire": {
+      "totalRequests": 2
+    }
+  },
+  "mutants": []
+}

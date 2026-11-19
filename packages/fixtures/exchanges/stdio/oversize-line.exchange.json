@@ -1,0 +1,19 @@
+{
+  "id": "stdio/oversize-line",
+  "requirements": ["STDIO-LIMIT-1"],
+  "pin": "tag",
+  "source": ["S/basic/transports/stdio.md#Receiving Messages"],
+  "tier": "B",
+  "binding": "stdio",
+  "client": { "clock": "realtime" },
+  "script": [
+    { "do": "call", "as": "c1", "method": "tools/list", "idempotent": true },
+    { "expect": "wire", "index": 0, "match": { "method": "tools/list" } }
+  ],
+  "expect": {
+    "outcome": {
+      "c1": { "kind": "transport-failure", "failure.kind": "too-large" }
+    }
+  },
+  "mutants": ["unbounded-line-buffer"]
+}

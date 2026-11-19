@@ -1,0 +1,53 @@
+{
+  "id": "ops/content-unknown-type-preserved",
+  "requirements": [
+    "OPS-TOOLS-13"
+  ],
+  "pin": "tag",
+  "source": [
+    "S/server/tools.md#Tool Result"
+  ],
+  "tier": "A",
+  "binding": "any",
+  "client": {
+    "clock": "fake"
+  },
+  "script": [
+    {
+      "do": "call",
+      "as": "c1",
+      "op": "tools.call",
+      "args": [
+        "t",
+        {}
+      ]
+    },
+    {
+      "server": "result",
+      "result": {
+        "content": [
+          {
+            "type": "hologram",
+            "payload": 1
+          },
+          {
+            "type": "text",
+            "text": "x"
+          }
+        ]
+      }
+    }
+  ],
+  "expect": {
+    "outcome": {
+      "c1": {
+        "kind": "ok",
+        "value.content.0.type": "unknown",
+        "value.content.0.rawType": "hologram",
+        "value.content.0.raw.payload": 1,
+        "value.content.1.type": "text"
+      }
+    }
+  },
+  "mutants": []
+}

@@ -1,0 +1,24 @@
+{
+  "id": "stdio/routing-progress-and-subscription",
+  "requirements": ["STDIO-ROUTE-1", "STDIO-ROUTE-2"],
+  "pin": "tag",
+  "source": ["S/basic/transports/stdio.md#Receiving Messages"],
+  "tier": "B",
+  "binding": "stdio",
+  "client": { "clock": "realtime" },
+  "script": [
+    { "do": "call", "as": "c1", "method": "subscriptions/listen", "params": { "subscriptionId": "sub-1" }, "idempotent": true },
+    { "do": "call", "as": "c2", "method": "tools/list", "idempotent": true },
+    { "expect": "wire", "index": 0 },
+    { "expect": "wire", "index": 1 },
+    { "server": "result", "for": "c2", "result": { "resultType": "complete", "interleaved": true } },
+    { "server": "result", "for": "c1", "result": { "resultType": "complete", "ended": "done" } }
+  ],
+  "expect": {
+    "outcome": {
+      "c1": { "kind": "ok", "value.ended": "done" },
+      "c2": { "kind": "ok", "value.interleaved": true }
+    }
+  },
+  "mutants": ["drop-subscription-notifications", "cross-route-progress"]
+}

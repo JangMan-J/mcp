@@ -1,0 +1,60 @@
+{
+  "id": "ops/prompts-get-error-mapping",
+  "requirements": [
+    "OPS-PROMPT-5"
+  ],
+  "pin": "tag",
+  "source": [
+    "S/server/prompts.md#Error Handling"
+  ],
+  "tier": "A",
+  "binding": "any",
+  "client": {
+    "clock": "fake"
+  },
+  "script": [
+    {
+      "do": "call",
+      "as": "c1",
+      "op": "prompts.get",
+      "args": [
+        "nope"
+      ]
+    },
+    {
+      "server": "error",
+      "error": {
+        "code": -32602,
+        "message": "Invalid prompt name"
+      }
+    },
+    {
+      "do": "call",
+      "as": "c2",
+      "op": "prompts.get",
+      "args": [
+        "p"
+      ]
+    },
+    {
+      "server": "error",
+      "error": {
+        "code": -32603,
+        "message": "Internal error"
+      }
+    }
+  ],
+  "expect": {
+    "outcome": {
+      "c1": {
+        "kind": "jsonrpc-error",
+        "code": -32602
+      },
+      "c2": {
+        "kind": "jsonrpc-error",
+        "code": -32603
+      }
+    }
+  },
+  "mutants": []
+}

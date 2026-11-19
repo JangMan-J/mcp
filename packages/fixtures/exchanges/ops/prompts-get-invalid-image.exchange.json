@@ -1,0 +1,49 @@
+{
+  "id": "ops/prompts-get-invalid-image",
+  "requirements": [
+    "OPS-PROMPT-4"
+  ],
+  "pin": "tag",
+  "source": [
+    "S/server/prompts.md#Image Content"
+  ],
+  "tier": "A",
+  "binding": "any",
+  "client": {
+    "clock": "fake"
+  },
+  "script": [
+    {
+      "do": "call",
+      "as": "c1",
+      "op": "prompts.get",
+      "args": [
+        "p"
+      ]
+    },
+    {
+      "server": "result",
+      "result": {
+        "messages": [
+          {
+            "role": "user",
+            "content": {
+              "type": "image",
+              "data": "***",
+              "mimeType": "image/png"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "expect": {
+    "outcome": {
+      "c1": {
+        "kind": "protocol-violation",
+        "detail.reason": "invalid-media"
+      }
+    }
+  },
+  "mutants": []
+}

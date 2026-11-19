@@ -1,0 +1,54 @@
+{
+  "id": "ops/schema-ref-network-rejected",
+  "requirements": [
+    "OPS-SCHEMA-4"
+  ],
+  "pin": "tag",
+  "source": [
+    "S/basic/index.md#$ref Resolution"
+  ],
+  "tier": "A",
+  "binding": "any",
+  "client": {
+    "clock": "fake"
+  },
+  "script": [
+    {
+      "do": "call",
+      "as": "l",
+      "op": "tools.list",
+      "args": []
+    },
+    {
+      "server": "result",
+      "result": {
+        "tools": [
+          {
+            "name": "bad",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "a": {
+                  "$ref": "https://evil.example/schema.json"
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "expect": {
+    "outcome": {
+      "l": {
+        "kind": "ok",
+        "value.tools.length": 0,
+        "value.excluded.0.reason": "invalid-schema"
+      }
+    },
+    "wire": {
+      "totalRequests": 1
+    }
+  },
+  "mutants": []
+}

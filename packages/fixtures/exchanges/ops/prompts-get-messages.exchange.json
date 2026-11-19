@@ -1,0 +1,61 @@
+{
+  "id": "ops/prompts-get-messages",
+  "requirements": [
+    "OPS-PROMPT-2"
+  ],
+  "pin": "tag",
+  "source": [
+    "S/server/prompts.md#Getting a Prompt"
+  ],
+  "tier": "A",
+  "binding": "any",
+  "client": {
+    "clock": "fake"
+  },
+  "script": [
+    {
+      "do": "call",
+      "as": "c1",
+      "op": "prompts.get",
+      "args": [
+        "p",
+        {
+          "a": "1"
+        }
+      ]
+    },
+    {
+      "server": "result",
+      "result": {
+        "messages": [
+          {
+            "role": "user",
+            "content": {
+              "type": "text",
+              "text": "hi"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "expect": {
+    "outcome": {
+      "c1": {
+        "kind": "ok",
+        "value.messages.0.role": "user"
+      }
+    },
+    "wire": {
+      "params": {
+        "0": {
+          "name": "p",
+          "arguments": {
+            "a": "1"
+          }
+        }
+      }
+    }
+  },
+  "mutants": []
+}

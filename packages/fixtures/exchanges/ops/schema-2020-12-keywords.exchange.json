@@ -1,0 +1,104 @@
+{
+  "id": "ops/schema-2020-12-keywords",
+  "requirements": [
+    "OPS-SCHEMA-1"
+  ],
+  "pin": "tag",
+  "source": [
+    "S/basic/index.md#Implementation Requirements"
+  ],
+  "tier": "A",
+  "binding": "any",
+  "client": {
+    "clock": "fake"
+  },
+  "script": [
+    {
+      "do": "call",
+      "as": "l",
+      "op": "tools.list",
+      "args": []
+    },
+    {
+      "server": "result",
+      "result": {
+        "tools": [
+          {
+            "name": "t",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "xs": {
+                  "type": "array",
+                  "prefixItems": [
+                    {
+                      "type": "string"
+                    }
+                  ],
+                  "items": {
+                    "type": "integer"
+                  }
+                }
+              },
+              "required": [
+                "xs"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "do": "call",
+      "as": "ok",
+      "op": "tools.call",
+      "args": [
+        "t",
+        {
+          "xs": [
+            "a",
+            1,
+            2
+          ]
+        }
+      ]
+    },
+    {
+      "server": "result",
+      "result": {
+        "content": []
+      }
+    },
+    {
+      "do": "call",
+      "as": "bad",
+      "op": "tools.call",
+      "args": [
+        "t",
+        {
+          "xs": [
+            "a",
+            "b"
+          ]
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "outcome": {
+      "l": {
+        "kind": "ok"
+      },
+      "ok": {
+        "kind": "ok"
+      },
+      "bad": {
+        "kind": "invalid-arguments"
+      }
+    },
+    "wire": {
+      "totalRequests": 2
+    }
+  },
+  "mutants": []
+}

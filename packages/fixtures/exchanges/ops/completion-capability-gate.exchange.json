@@ -1,0 +1,50 @@
+{
+  "id": "ops/completion-capability-gate",
+  "requirements": [
+    "OPS-COMP-1"
+  ],
+  "pin": "tag",
+  "source": [
+    "S/server/utilities/completion.md#Capabilities"
+  ],
+  "tier": "A",
+  "binding": "any",
+  "client": {
+    "clock": "fake"
+  },
+  "server": {
+    "capabilities": {
+      "tools": {}
+    }
+  },
+  "script": [
+    {
+      "do": "call",
+      "as": "c1",
+      "op": "completion.complete",
+      "args": [
+        {
+          "ref": {
+            "type": "ref/prompt",
+            "name": "p"
+          },
+          "argument": {
+            "name": "a",
+            "value": ""
+          }
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "outcome": {
+      "c1": {
+        "kind": "capability-absent"
+      }
+    },
+    "wire": {
+      "totalRequests": 0
+    }
+  },
+  "mutants": []
+}

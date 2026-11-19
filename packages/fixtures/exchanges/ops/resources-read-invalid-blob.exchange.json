@@ -1,0 +1,45 @@
+{
+  "id": "ops/resources-read-invalid-blob",
+  "requirements": [
+    "OPS-RES-8"
+  ],
+  "pin": "tag",
+  "source": [
+    "S/server/resources.md#Binary Content"
+  ],
+  "tier": "A",
+  "binding": "any",
+  "client": {
+    "clock": "fake"
+  },
+  "script": [
+    {
+      "do": "call",
+      "as": "c1",
+      "op": "resources.read",
+      "args": [
+        "file:///a"
+      ]
+    },
+    {
+      "server": "result",
+      "result": {
+        "contents": [
+          {
+            "uri": "file:///a",
+            "blob": "@@@"
+          }
+        ]
+      }
+    }
+  ],
+  "expect": {
+    "outcome": {
+      "c1": {
+        "kind": "ok",
+        "value.contents.0.issues.0": "invalid-base64"
+      }
+    }
+  },
+  "mutants": []
+}

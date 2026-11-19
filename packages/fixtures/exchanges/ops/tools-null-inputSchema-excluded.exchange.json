@@ -1,0 +1,51 @@
+{
+  "id": "ops/tools-null-inputSchema-excluded",
+  "requirements": [
+    "OPS-TOOLS-5"
+  ],
+  "pin": "tag",
+  "source": [
+    "S/server/tools.md#Tool"
+  ],
+  "tier": "A",
+  "binding": "any",
+  "client": {
+    "clock": "fake"
+  },
+  "script": [
+    {
+      "do": "call",
+      "as": "c1",
+      "op": "tools.list",
+      "args": []
+    },
+    {
+      "server": "result",
+      "result": {
+        "tools": [
+          {
+            "name": "bad",
+            "inputSchema": null
+          },
+          {
+            "name": "good",
+            "inputSchema": {
+              "type": "object"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "expect": {
+    "outcome": {
+      "c1": {
+        "kind": "ok",
+        "value.tools.length": 1,
+        "value.tools.0.name": "good",
+        "value.excluded.0.name": "bad"
+      }
+    }
+  },
+  "mutants": []
+}

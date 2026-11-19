@@ -1,0 +1,19 @@
+{
+  "id": "stdio/batch-line-rejected",
+  "requirements": ["STDIO-BATCH-1"],
+  "pin": "tag",
+  "source": ["S/basic/index.md#Messages"],
+  "tier": "B",
+  "binding": "stdio",
+  "client": { "clock": "realtime" },
+  "script": [
+    { "do": "call", "as": "c1", "method": "tools/list", "idempotent": true },
+    { "expect": "wire", "index": 0, "match": { "method": "tools/list" } }
+  ],
+  "expect": {
+    "outcome": {
+      "c1": { "kind": "transport-failure" }
+    }
+  },
+  "mutants": ["accept-jsonrpc-batch-array"]
+}

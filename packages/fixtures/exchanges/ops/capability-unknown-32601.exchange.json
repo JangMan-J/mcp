@@ -1,0 +1,41 @@
+{
+  "id": "ops/capability-unknown-32601",
+  "requirements": [
+    "OPS-GATE-1"
+  ],
+  "pin": "tag",
+  "source": [
+    "S/server/tools.md#Capabilities"
+  ],
+  "tier": "A",
+  "binding": "any",
+  "client": {
+    "clock": "fake"
+  },
+  "script": [
+    {
+      "do": "call",
+      "as": "c1",
+      "op": "tools.list",
+      "args": []
+    },
+    {
+      "server": "error",
+      "error": {
+        "code": -32601,
+        "message": "Method not found"
+      }
+    }
+  ],
+  "expect": {
+    "outcome": {
+      "c1": {
+        "kind": "capability-absent"
+      }
+    },
+    "wire": {
+      "totalRequests": 1
+    }
+  },
+  "mutants": []
+}

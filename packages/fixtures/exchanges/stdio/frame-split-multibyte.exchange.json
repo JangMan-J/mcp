@@ -1,0 +1,23 @@
+{
+  "id": "stdio/frame-split-multibyte",
+  "requirements": ["STDIO-FRAME-1", "STDIO-FRAME-2", "STDIO-STDIN-1"],
+  "pin": "tag",
+  "source": ["S/basic/transports/stdio.md#Sending Messages", "S/basic/transports/stdio.md#Receiving Messages"],
+  "tier": "B",
+  "binding": "stdio",
+  "client": { "clock": "realtime" },
+  "script": [
+    { "do": "call", "as": "c1", "method": "tools/call", "params": { "name": "echo_unicode" }, "idempotent": true },
+    { "expect": "wire", "index": 0, "match": { "method": "tools/call" } },
+    { "server": "result", "for": "c1", "result": { "resultType": "complete", "text": "Hello 🌍 日本語 café 🚀" } }
+  ],
+  "expect": {
+    "outcome": {
+      "c1": { "kind": "ok", "value.text": "Hello 🌍 日本語 café 🚀" }
+    },
+    "wire": {
+      "totalRequests": 1
+    }
+  },
+  "mutants": ["decode-per-chunk-without-stream", "allow-embedded-newline"]
+}

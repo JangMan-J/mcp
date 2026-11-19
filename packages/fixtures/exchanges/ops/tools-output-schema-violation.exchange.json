@@ -1,0 +1,94 @@
+{
+  "id": "ops/tools-output-schema-violation",
+  "requirements": [
+    "OPS-TOOLS-11"
+  ],
+  "pin": "tag",
+  "source": [
+    "S/server/tools.md#Output Schema"
+  ],
+  "tier": "A",
+  "binding": "any",
+  "client": {
+    "clock": "fake"
+  },
+  "script": [
+    {
+      "do": "call",
+      "as": "l",
+      "op": "tools.list",
+      "args": []
+    },
+    {
+      "server": "result",
+      "result": {
+        "tools": [
+          {
+            "name": "t",
+            "inputSchema": {
+              "type": "object"
+            },
+            "outputSchema": {
+              "type": "object",
+              "required": [
+                "n"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "do": "call",
+      "as": "c1",
+      "op": "tools.call",
+      "args": [
+        "t",
+        {}
+      ]
+    },
+    {
+      "server": "result",
+      "result": {
+        "content": [],
+        "structuredContent": {
+          "x": 1
+        }
+      }
+    },
+    {
+      "do": "call",
+      "as": "c2",
+      "op": "tools.call",
+      "args": [
+        "t",
+        {},
+        {
+          "strictOutput": true
+        }
+      ]
+    },
+    {
+      "server": "result",
+      "result": {
+        "content": [],
+        "structuredContent": {
+          "x": 1
+        }
+      }
+    }
+  ],
+  "expect": {
+    "outcome": {
+      "c1": {
+        "kind": "ok",
+        "value.validation.status": "invalid",
+        "value.structuredContent.x": 1
+      },
+      "c2": {
+        "kind": "protocol-violation"
+      }
+    }
+  },
+  "mutants": []
+}

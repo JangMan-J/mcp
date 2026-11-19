@@ -1,0 +1,67 @@
+{
+  "id": "ops/tools-call-ok-structured-array",
+  "requirements": [
+    "OPS-TOOLS-10",
+    "OPS-SCHEMA-7"
+  ],
+  "pin": "tag",
+  "source": [
+    "S/server/tools.md#Structured Content"
+  ],
+  "tier": "A",
+  "binding": "any",
+  "client": {
+    "clock": "fake"
+  },
+  "script": [
+    {
+      "do": "call",
+      "as": "c1",
+      "op": "tools.call",
+      "args": [
+        "t",
+        {}
+      ]
+    },
+    {
+      "server": "result",
+      "result": {
+        "content": [],
+        "structuredContent": [
+          1,
+          2,
+          3
+        ]
+      }
+    },
+    {
+      "do": "call",
+      "as": "c2",
+      "op": "tools.call",
+      "args": [
+        "t",
+        {}
+      ]
+    },
+    {
+      "server": "result",
+      "result": {
+        "content": [],
+        "structuredContent": null
+      }
+    }
+  ],
+  "expect": {
+    "outcome": {
+      "c1": {
+        "kind": "ok",
+        "value.structuredContent.length": 3
+      },
+      "c2": {
+        "kind": "ok",
+        "value.structuredContent": null
+      }
+    }
+  },
+  "mutants": []
+}

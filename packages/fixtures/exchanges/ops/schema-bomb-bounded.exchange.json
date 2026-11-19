@@ -1,0 +1,402 @@
+{
+  "id": "ops/schema-bomb-bounded",
+  "requirements": [
+    "OPS-SCHEMA-6"
+  ],
+  "pin": "tag",
+  "source": [
+    "S/basic/index.md#Composition-Keyword Resource Use"
+  ],
+  "tier": "A",
+  "binding": "any",
+  "client": {
+    "clock": "fake"
+  },
+  "script": [
+    {
+      "do": "call",
+      "as": "l",
+      "op": "tools.list",
+      "args": []
+    },
+    {
+      "server": "result",
+      "result": {
+        "tools": [
+          {
+            "name": "bomb",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "n": {
+                  "type": "object",
+                  "properties": {
+                    "n": {
+                      "type": "object",
+                      "properties": {
+                        "n": {
+                          "type": "object",
+                          "properties": {
+                            "n": {
+                              "type": "object",
+                              "properties": {
+                                "n": {
+                                  "type": "object",
+                                  "properties": {
+                                    "n": {
+                                      "type": "object",
+                                      "properties": {
+                                        "n": {
+                                          "type": "object",
+                                          "properties": {
+                                            "n": {
+                                              "type": "object",
+                                              "properties": {
+                                                "n": {
+                                                  "type": "object",
+                                                  "properties": {
+                                                    "n": {
+                                                      "type": "object",
+                                                      "properties": {
+                                                        "n": {
+                                                          "type": "object",
+                                                          "properties": {
+                                                            "n": {
+                                                              "type": "object",
+                                                              "properties": {
+                                                                "n": {
+                                                                  "type": "object",
+                                                                  "properties": {
+                                                                    "n": {
+                                                                      "type": "object",
+                                                                      "properties": {
+                                                                        "n": {
+                                                                          "type": "object",
+                                                                          "properties": {
+                                                                            "n": {
+                                                                              "type": "object",
+                                                                              "properties": {
+                                                                                "n": {
+                                                                                  "type": "object",
+                                                                                  "properties": {
+                                                                                    "n": {
+                                                                                      "type": "object",
+                                                                                      "properties": {
+                                                                                        "n": {
+                                                                                          "type": "object",
+                                                                                          "properties": {
+                                                                                            "n": {
+                                                                                              "type": "object",
+                                                                                              "properties": {
+                                                                                                "n": {
+                                                                                                  "type": "object",
+                                                                                                  "properties": {
+                                                                                                    "n": {
+                                                                                                      "type": "object",
+                                                                                                      "properties": {
+                                                                                                        "n": {
+                                                                                                          "type": "object",
+                                                                                                          "properties": {
+                                                                                                            "n": {
+                                                                                                              "type": "object",
+                                                                                                              "properties": {
+                                                                                                                "n": {
+                                                                                                                  "type": "object",
+                                                                                                                  "properties": {
+                                                                                                                    "n": {
+                                                                                                                      "type": "object",
+                                                                                                                      "properties": {
+                                                                                                                        "n": {
+                                                                                                                          "type": "object",
+                                                                                                                          "properties": {
+                                                                                                                            "n": {
+                                                                                                                              "type": "object",
+                                                                                                                              "properties": {
+                                                                                                                                "n": {
+                                                                                                                                  "type": "object",
+                                                                                                                                  "properties": {
+                                                                                                                                    "n": {
+                                                                                                                                      "type": "object",
+                                                                                                                                      "properties": {
+                                                                                                                                        "n": {
+                                                                                                                                          "type": "object",
+                                                                                                                                          "properties": {
+                                                                                                                                            "n": {
+                                                                                                                                              "type": "object",
+                                                                                                                                              "properties": {
+                                                                                                                                                "n": {
+                                                                                                                                                  "type": "object",
+                                                                                                                                                  "properties": {
+                                                                                                                                                    "n": {
+                                                                                                                                                      "type": "object",
+                                                                                                                                                      "properties": {
+                                                                                                                                                        "n": {
+                                                                                                                                                          "type": "object",
+                                                                                                                                                          "properties": {
+                                                                                                                                                            "n": {
+                                                                                                                                                              "type": "object",
+                                                                                                                                                              "properties": {
+                                                                                                                                                                "n": {
+                                                                                                                                                                  "type": "object",
+                                                                                                                                                                  "properties": {
+                                                                                                                                                                    "n": {
+                                                                                                                                                                      "type": "object",
+                                                                                                                                                                      "properties": {
+                                                                                                                                                                        "n": {
+                                                                                                                                                                          "type": "object",
+                                                                                                                                                                          "properties": {
+                                                                                                                                                                            "n": {
+                                                                                                                                                                              "type": "object",
+                                                                                                                                                                              "properties": {
+                                                                                                                                                                                "n": {
+                                                                                                                                                                                  "type": "object",
+                                                                                                                                                                                  "properties": {
+                                                                                                                                                                                    "n": {
+                                                                                                                                                                                      "type": "object",
+                                                                                                                                                                                      "properties": {
+                                                                                                                                                                                        "n": {
+                                                                                                                                                                                          "type": "object",
+                                                                                                                                                                                          "properties": {
+                                                                                                                                                                                            "n": {
+                                                                                                                                                                                              "type": "object",
+                                                                                                                                                                                              "properties": {
+                                                                                                                                                                                                "n": {
+                                                                                                                                                                                                  "type": "object",
+                                                                                                                                                                                                  "properties": {
+                                                                                                                                                                                                    "n": {
+                                                                                                                                                                                                      "type": "object",
+                                                                                                                                                                                                      "properties": {
+                                                                                                                                                                                                        "n": {
+                                                                                                                                                                                                          "type": "object",
+                                                                                                                                                                                                          "properties": {
+                                                                                                                                                                                                            "n": {
+                                                                                                                                                                                                              "type": "object",
+                                                                                                                                                                                                              "properties": {
+                                                                                                                                                                                                                "n": {
+                                                                                                                                                                                                                  "type": "object",
+                                                                                                                                                                                                                  "properties": {
+                                                                                                                                                                                                                    "n": {
+                                                                                                                                                                                                                      "type": "object",
+                                                                                                                                                                                                                      "properties": {
+                                                                                                                                                                                                                        "n": {
+                                                                                                                                                                                                                          "type": "object",
+                                                                                                                                                                                                                          "properties": {
+                                                                                                                                                                                                                            "n": {
+                                                                                                                                                                                                                              "type": "object",
+                                                                                                                                                                                                                              "properties": {
+                                                                                                                                                                                                                                "n": {
+                                                                                                                                                                                                                                  "type": "object",
+                                                                                                                                                                                                                                  "properties": {
+                                                                                                                                                                                                                                    "n": {
+                                                                                                                                                                                                                                      "type": "object",
+                                                                                                                                                                                                                                      "properties": {
+                                                                                                                                                                                                                                        "n": {
+                                                                                                                                                                                                                                          "type": "object",
+                                                                                                                                                                                                                                          "properties": {
+                                                                                                                                                                                                                                            "n": {
+                                                                                                                                                                                                                                              "type": "object",
+                                                                                                                                                                                                                                              "properties": {
+                                                                                                                                                                                                                                                "n": {
+                                                                                                                                                                                                                                                  "type": "object",
+                                                                                                                                                                                                                                                  "properties": {
+                                                                                                                                                                                                                                                    "n": {
+                                                                                                                                                                                                                                                      "type": "object",
+                                                                                                                                                                                                                                                      "properties": {
+                                                                                                                                                                                                                                                        "n": {
+                                                                                                                                                                                                                                                          "type": "object",
+                                                                                                                                                                                                                                                          "properties": {
+                                                                                                                                                                                                                                                            "n": {
+                                                                                                                                                                                                                                                              "type": "object",
+                                                                                                                                                                                                                                                              "properties": {
+                                                                                                                                                                                                                                                                "n": {
+                                                                                                                                                                                                                                                                  "type": "object",
+                                                                                                                                                                                                                                                                  "properties": {
+                                                                                                                                                                                                                                                                    "n": {
+                                                                                                                                                                                                                                                                      "type": "object",
+                                                                                                                                                                                                                                                                      "properties": {
+                                                                                                                                                                                                                                                                        "n": {
+                                                                                                                                                                                                                                                                          "type": "object",
+                                                                                                                                                                                                                                                                          "properties": {
+                                                                                                                                                                                                                                                                            "n": {
+                                                                                                                                                                                                                                                                              "type": "object",
+                                                                                                                                                                                                                                                                              "properties": {
+                                                                                                                                                                                                                                                                                "n": {
+                                                                                                                                                                                                                                                                                  "type": "object",
+                                                                                                                                                                                                                                                                                  "properties": {
+                                                                                                                                                                                                                                                                                    "n": {
+                                                                                                                                                                                                                                                                                      "type": "object",
+                                                                                                                                                                                                                                                                                      "properties": {
+                                                                                                                                                                                                                                                                                        "n": {
+                                                                                                                                                                                                                                                                                          "type": "object",
+                                                                                                                                                                                                                                                                                          "properties": {
+                                                                                                                                                                                                                                                                                            "n": {
+                                                                                                                                                                                                                                                                                              "type": "object",
+                                                                                                                                                                                                                                                                                              "properties": {
+                                                                                                                                                                                                                                                                                                "n": {
+                                                                                                                                                                                                                                                                                                  "type": "object",
+                                                                                                                                                                                                                                                                                                  "properties": {
+                                                                                                                                                                                                                                                                                                    "n": {
+                                                                                                                                                                                                                                                                                                      "type": "string"
+                                                                                                                                                                                                                                                                                                    }
+                                                                                                                                                                                                                                                                                                  }
+                                                                                                                                                                                                                                                                                                }
+                                                                                                                                                                                                                                                                                              }
+                                                                                                                                                                                                                                                                                            }
+                                                                                                                                                                                                                                                                                          }
+                                                                                                                                                                                                                                                                                        }
+                                                                                                                                                                                                                                                                                      }
+                                                                                                                                                                                                                                                                                    }
+                                                                                                                                                                                                                                                                                  }
+                                                                                                                                                                                                                                                                                }
+                                                                                                                                                                                                                                                                              }
+                                                                                                                                                                                                                                                                            }
+                                                                                                                                                                                                                                                                          }
+                                                                                                                                                                                                                                                                        }
+                                                                                                                                                                                                                                                                      }
+                                                                                                                                                                                                                                                                    }
+                                                                                                                                                                                                                                                                  }
+                                                                                                                                                                                                                                                                }
+                                                                                                                                                                                                                                                              }
+                                                                                                                                                                                                                                                            }
+                                                                                                                                                                                                                                                          }
+                                                                                                                                                                                                                                                        }
+                                                                                                                                                                                                                                                      }
+                                                                                                                                                                                                                                                    }
+                                                                                                                                                                                                                                                  }
+                                                                                                                                                                                                                                                }
+                                                                                                                                                                                                                                              }
+                                                                                                                                                                                                                                            }
+                                                                                                                                                                                                                                          }
+                                                                                                                                                                                                                                        }
+                                                                                                                                                                                                                                      }
+                                                                                                                                                                                                                                    }
+                                                                                                                                                                                                                                  }
+                                                                                                                                                                                                                                }
+                                                                                                                                                                                                                              }
+                                                                                                                                                                                                                            }
+                                                                                                                                                                                                                          }
+                                                                                                                                                                                                                        }
+                                                                                                                                                                                                                      }
+                                                                                                                                                                                                                    }
+                                                                                                                                                                                                                  }
+                                                                                                                                                                                                                }
+                                                                                                                                                                                                              }
+                                                                                                                                                                                                            }
+                                                                                                                                                                                                          }
+                                                                                                                                                                                                        }
+                                                                                                                                                                                                      }
+                                                                                                                                                                                                    }
+                                                                                                                                                                                                  }
+                                                                                                                                                                                                }
+                                                                                                                                                                                              }
+                                                                                                                                                                                            }
+                                                                                                                                                                                          }
+                                                                                                                                                                                        }
+                                                                                                                                                                                      }
+                                                                                                                                                                                    }
+                                                                                                                                                                                  }
+                                                                                                                                                                                }
+                                                                                                                                                                              }
+                                                                                                                                                                            }
+                                                                                                                                                                          }
+                                                                                                                                                                        }
+                                                                                                                                                                      }
+                                                                                                                                                                    }
+                                                                                                                                                                  }
+                                                                                                                                                                }
+                                                                                                                                                              }
+                                                                                                                                                            }
+                                                                                                                                                          }
+                                                                                                                                                        }
+                                                                                                                                                      }
+                                                                                                                                                    }
+                                                                                                                                                  }
+                                                                                                                                                }
+                                                                                                                                              }
+                                                                                                                                            }
+                                                                                                                                          }
+                                                                                                                                        }
+                                                                                                                                      }
+                                                                                                                                    }
+                                                                                                                                  }
+                                                                                                                                }
+                                                                                                                              }
+                                                                                                                            }
+                                                                                                                          }
+                                                                                                                        }
+                                                                                                                      }
+                                                                                                                    }
+                                                                                                                  }
+                                                                                                                }
+                                                                                                              }
+                                                                                                            }
+                                                                                                          }
+                                                                                                        }
+                                                                                                      }
+                                                                                                    }
+                                                                                                  }
+                                                                                                }
+                                                                                              }
+                                                                                            }
+                                                                                          }
+                                                                                        }
+                                                                                      }
+                                                                                    }
+                                                                                  }
+                                                                                }
+                                                                              }
+                                                                            }
+                                                                          }
+                                                                        }
+                                                                      }
+                                                                    }
+                                                                  }
+                                                                }
+                                                              }
+                                                            }
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "name": "ok",
+            "inputSchema": {
+              "type": "object"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "expect": {
+    "outcome": {
+      "l": {
+        "kind": "ok",
+        "value.tools.length": 1,
+        "value.excluded.0.name": "bomb"
+      }
+    }
+  },
+  "mutants": []
+}

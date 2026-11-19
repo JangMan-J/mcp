@@ -1,0 +1,21 @@
+{
+  "id": "stdio/launch-and-lazy-discover",
+  "requirements": ["STDIO-LAUNCH-1", "STDIO-LAZY-1", "STDIO-DISC-1", "STDIO-AUTH-1"],
+  "pin": "tag",
+  "source": ["S/basic/transports/stdio.md#Sending Messages", "S/basic/transports/stdio.md#Backward Compatibility", "S/basic/index.md#Auth"],
+  "tier": "B",
+  "binding": "stdio",
+  "client": { "clock": "realtime" },
+  "script": [
+    { "do": "call", "as": "c1", "method": "server/discover", "idempotent": true },
+    { "expect": "wire", "index": 0, "match": { "method": "server/discover" } },
+    { "server": "result", "for": "c1", "result": { "resultType": "complete", "cacheScope": "private", "capabilities": { "tools": {} }, "supportedVersions": ["2026-07-28"], "ttlMs": 60000 } }
+  ],
+  "expect": {
+    "outcome": {
+      "c1": { "kind": "ok", "value.cacheScope": "private" }
+    },
+    "wire": { "totalRequests": 1, "never": ["initialize"] }
+  },
+  "mutants": ["spawn-with-shell-true", "eager-spawn-before-first-request"]
+}

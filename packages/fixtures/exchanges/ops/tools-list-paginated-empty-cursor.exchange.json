@@ -1,0 +1,68 @@
+{
+  "id": "ops/tools-list-paginated-empty-cursor",
+  "requirements": [
+    "PAGE-2"
+  ],
+  "pin": "tag",
+  "source": [
+    "S/server/utilities/pagination.md#Implementation Guidelines"
+  ],
+  "tier": "A",
+  "binding": "any",
+  "client": {
+    "clock": "fake"
+  },
+  "script": [
+    {
+      "do": "call",
+      "as": "c1",
+      "op": "tools.listAll",
+      "args": []
+    },
+    {
+      "server": "result",
+      "result": {
+        "tools": [
+          {
+            "name": "a",
+            "inputSchema": {
+              "type": "object"
+            }
+          }
+        ],
+        "nextCursor": ""
+      }
+    },
+    {
+      "server": "result",
+      "result": {
+        "tools": [
+          {
+            "name": "b",
+            "inputSchema": {
+              "type": "object"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "expect": {
+    "outcome": {
+      "c1": {
+        "kind": "ok",
+        "value.items.length": 2,
+        "value.pages": 2
+      }
+    },
+    "wire": {
+      "totalRequests": 2,
+      "params": {
+        "1": {
+          "cursor": ""
+        }
+      }
+    }
+  },
+  "mutants": []
+}

@@ -1,0 +1,59 @@
+{
+  "id": "ops/content-invalid-base64",
+  "requirements": [
+    "OPS-TOOLS-14"
+  ],
+  "pin": "tag",
+  "source": [
+    "S/server/tools.md#Image Content"
+  ],
+  "tier": "A",
+  "binding": "any",
+  "client": {
+    "clock": "fake"
+  },
+  "script": [
+    {
+      "do": "call",
+      "as": "c1",
+      "op": "tools.call",
+      "args": [
+        "t",
+        {}
+      ]
+    },
+    {
+      "server": "result",
+      "result": {
+        "content": [
+          {
+            "type": "image",
+            "data": "!!notbase64",
+            "mimeType": "image/png"
+          },
+          {
+            "type": "image",
+            "data": "iVBORw0KGgo=",
+            "mimeType": "image/png"
+          },
+          {
+            "type": "audio",
+            "data": "iVBORw0KGgo=",
+            "mimeType": "nope"
+          }
+        ]
+      }
+    }
+  ],
+  "expect": {
+    "outcome": {
+      "c1": {
+        "kind": "ok",
+        "value.content.0.issues.0": "invalid-base64",
+        "value.content.1.issues.length": 0,
+        "value.content.2.issues.0": "invalid-mimeType"
+      }
+    }
+  },
+  "mutants": []
+}

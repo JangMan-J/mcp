@@ -1,0 +1,70 @@
+{
+  "id": "ops/resources-read-text-or-blob",
+  "requirements": [
+    "OPS-RES-3"
+  ],
+  "pin": "tag",
+  "source": [
+    "S/server/resources.md#Reading Resources"
+  ],
+  "tier": "A",
+  "binding": "any",
+  "client": {
+    "clock": "fake"
+  },
+  "script": [
+    {
+      "do": "call",
+      "as": "c1",
+      "op": "resources.read",
+      "args": [
+        "file:///a"
+      ]
+    },
+    {
+      "server": "result",
+      "result": {
+        "contents": [
+          {
+            "uri": "file:///a",
+            "text": "x",
+            "blob": "iVBORw0KGgo="
+          }
+        ]
+      }
+    },
+    {
+      "do": "call",
+      "as": "c2",
+      "op": "resources.read",
+      "args": [
+        "file:///a"
+      ]
+    },
+    {
+      "server": "result",
+      "result": {
+        "contents": [
+          {
+            "uri": "file:///a",
+            "mimeType": "text/plain",
+            "text": "x"
+          }
+        ]
+      }
+    }
+  ],
+  "expect": {
+    "outcome": {
+      "c1": {
+        "kind": "protocol-violation"
+      },
+      "c2": {
+        "kind": "ok",
+        "value.contents.0.text": "x",
+        "value.empty": false
+      }
+    }
+  },
+  "mutants": []
+}

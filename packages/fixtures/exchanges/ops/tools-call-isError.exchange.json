@@ -1,0 +1,47 @@
+{
+  "id": "ops/tools-call-isError",
+  "requirements": [
+    "OPS-TOOLS-8"
+  ],
+  "pin": "tag",
+  "source": [
+    "S/server/tools.md#Error Handling"
+  ],
+  "tier": "A",
+  "binding": "any",
+  "client": {
+    "clock": "fake"
+  },
+  "script": [
+    {
+      "do": "call",
+      "as": "c1",
+      "op": "tools.call",
+      "args": [
+        "t",
+        {}
+      ]
+    },
+    {
+      "server": "result",
+      "result": {
+        "isError": true,
+        "content": [
+          {
+            "type": "text",
+            "text": "boom"
+          }
+        ]
+      }
+    }
+  ],
+  "expect": {
+    "outcome": {
+      "c1": {
+        "kind": "tool-isError",
+        "result.content.0.text": "boom"
+      }
+    }
+  },
+  "mutants": []
+}

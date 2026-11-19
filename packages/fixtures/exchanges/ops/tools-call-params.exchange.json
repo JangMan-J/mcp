@@ -1,0 +1,62 @@
+{
+  "id": "ops/tools-call-params",
+  "requirements": [
+    "OPS-TOOLS-7"
+  ],
+  "pin": "tag",
+  "source": [
+    "S/server/tools.md#Calling Tools"
+  ],
+  "tier": "A",
+  "binding": "any",
+  "client": {
+    "clock": "fake"
+  },
+  "script": [
+    {
+      "do": "call",
+      "as": "c1",
+      "op": "tools.call",
+      "args": [
+        "echo",
+        {
+          "msg": "hi"
+        }
+      ]
+    },
+    {
+      "server": "result",
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "hi"
+          }
+        ]
+      }
+    }
+  ],
+  "expect": {
+    "outcome": {
+      "c1": {
+        "kind": "ok",
+        "value.content.0.type": "text"
+      }
+    },
+    "wire": {
+      "totalRequests": 1,
+      "methods": [
+        "tools/call"
+      ],
+      "params": {
+        "0": {
+          "name": "echo",
+          "arguments": {
+            "msg": "hi"
+          }
+        }
+      }
+    }
+  },
+  "mutants": []
+}

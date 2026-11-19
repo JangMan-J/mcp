@@ -1,0 +1,20 @@
+{
+  "id": "stdio/stderr-not-error",
+  "requirements": ["STDIO-STDERR-1", "STDIO-STDERR-2"],
+  "pin": "tag",
+  "source": ["S/basic/transports/stdio.md#Sending Messages"],
+  "tier": "B",
+  "binding": "stdio",
+  "client": { "clock": "realtime" },
+  "script": [
+    { "do": "call", "as": "c1", "method": "tools/list", "idempotent": true },
+    { "expect": "wire", "index": 0, "match": { "method": "tools/list" } },
+    { "server": "result", "for": "c1", "result": { "resultType": "complete", "stderrEmitted": true } }
+  ],
+  "expect": {
+    "outcome": {
+      "c1": { "kind": "ok", "value.stderrEmitted": true }
+    }
+  },
+  "mutants": ["treat-stderr-as-protocol-error"]
+}
