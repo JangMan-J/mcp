@@ -1,6 +1,10 @@
 import type { ClientRequest, JsonRpcNotification, Outcome, ProgressEvent } from "@mcp-client/core";
 import { loadExchangeFiles, type ExchangeFixture } from "@mcp-client/fixtures";
 import { createCoreAdapter, type HarnessAdapter } from "./adapter.js";
+import { runTierAProvider } from "./tier-a.js";
+
+class ObservationMismatch extends Error {}
+const coreAreas = new Set(["wire", "ver", "prog", "smoke"]);
 
 export interface RunOptions {
   readonly exchangesDir: string;
@@ -17,6 +21,8 @@ export interface FixtureResult {
   readonly ok: boolean;
   readonly mutant?: string;
   readonly error?: string;
+  /** Only an observed expectation mismatch can kill a mutant. */
+  readonly failure?: "assertion";
 }
 
 export interface RunSummary {
@@ -57,10 +63,13 @@ export async function runOneFixture(
   adapter: HarnessAdapter,
   mutant?: string,
 ): Promise<FixtureResult> {
-  const harness = adapter.create({
-    ...(fixture.client?.setup ?? {}),
-    ...(mutant ? { mutant } : {}),
-  });
+  const result = { id: fixture.id, ...(mutant !== undefined ? { mutant } : {}) };
+  let harness;
+  try {
+    harness = adapter.create({ ...fixture.client?.setup, ...(mutant !== undefined ? { mutant } : {}) });
+  } catch (err) {
+    return { ...result, ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
 
   const handles = new Map<string, ClientRequest<unknown>>();
   const settled = new Map<string, Outcome<unknown>>();
@@ -148,13 +157,13 @@ export async function runOneFixture(
         const idx = step.index ?? 0;
         const sent = harness.transport.sent[idx];
         if (!sent) {
-          throw new Error(`Expected outbound message at index ${idx}, saw ${harness.transport.sent.length}`);
+          throw new ObservationMismatch(`Expected outbound message at index ${idx}, saw ${harness.transport.sent.length}`);
         }
         if (step.match) {
           for (const [path, expected] of Object.entries(step.match)) {
             const actual = getByDotPath(sent.request, path);
             if (JSON.stringify(actual) !== JSON.stringify(expected)) {
-              throw new Error(`Wire match mismatch at ${path}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
+              throw new ObservationMismatch(`Wire match mismatch at ${path}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
             }
           }
         }
@@ -180,7 +189,7 @@ export async function runOneFixture(
           }
         }
         if (targetId === undefined) {
-          throw new Error("Server step could not resolve target request id");
+          throw new ObservationMismatch("Server step could not resolve target request id");
         }
         if (step.server === "result") {
           harness.transport.deliverResult(targetId, step.result ?? {});
@@ -216,7 +225,7 @@ export async function runOneFixture(
         for (const [k, v] of Object.entries(expectedFields)) {
           const got = getByDotPath(actualJson, k);
           if (JSON.stringify(got) !== JSON.stringify(v)) {
-            throw new Error(
+            throw new ObservationMismatch(
               `Outcome mismatch for ${callName}.${k}: expected ${JSON.stringify(v)}, got ${JSON.stringify(got)}`,
             );
           }
@@ -230,7 +239,7 @@ export async function runOneFixture(
       for (const [callName, values] of Object.entries(expectProgress)) {
         const got = (progressLog.get(callName) ?? []).map((e) => e.progress);
         if (JSON.stringify(got) !== JSON.stringify(values)) {
-          throw new Error(`Progress mismatch for ${callName}: expected ${JSON.stringify(values)}, got ${JSON.stringify(got)}`);
+          throw new ObservationMismatch(`Progress mismatch for ${callName}: expected ${JSON.stringify(values)}, got ${JSON.stringify(got)}`);
         }
       }
     }
@@ -240,7 +249,7 @@ export async function runOneFixture(
       for (const [path, v] of Object.entries(expectStats)) {
         const got = getByDotPath(stats, path);
         if (JSON.stringify(got) !== JSON.stringify(v)) {
-          throw new Error(`Stats mismatch at ${path}: expected ${JSON.stringify(v)}, got ${JSON.stringify(got)}`);
+          throw new ObservationMismatch(`Stats mismatch at ${path}: expected ${JSON.stringify(v)}, got ${JSON.stringify(got)}`);
         }
       }
     }
@@ -252,7 +261,7 @@ export async function runOneFixture(
         let n = 0;
         for await (const _ of handle.notifications) n += 1;
         if (n !== count) {
-          throw new Error(`Notification count mismatch for ${callName}: expected ${count}, got ${n}`);
+          throw new ObservationMismatch(`Notification count mismatch for ${callName}: expected ${count}, got ${n}`);
         }
       }
     }
@@ -263,7 +272,7 @@ export async function runOneFixture(
         for (const [method, count] of Object.entries(fixture.expect.wire.count)) {
           const got = sentList.filter((s) => s.request.method === method).length;
           if (got !== count) {
-            throw new Error(`Wire count mismatch for ${method}: expected ${count}, got ${got}`);
+            throw new ObservationMismatch(`Wire count mismatch for ${method}: expected ${count}, got ${got}`);
           }
         }
       }
@@ -271,7 +280,7 @@ export async function runOneFixture(
         fixture.expect.wire.totalRequests !== undefined &&
         sentList.length !== fixture.expect.wire.totalRequests
       ) {
-        throw new Error(
+        throw new ObservationMismatch(
           `Wire totalRequests mismatch: expected ${fixture.expect.wire.totalRequests}, got ${sentList.length}`,
         );
       }
@@ -280,7 +289,7 @@ export async function runOneFixture(
         for (const s of sentList) {
           const k = `${typeof s.request.id}:${String(s.request.id)}`;
           if (seen.has(k)) {
-            throw new Error(`Duplicate wire request id detected: ${k}`);
+            throw new ObservationMismatch(`Duplicate wire request id detected: ${k}`);
           }
           seen.add(k);
         }
@@ -289,27 +298,50 @@ export async function runOneFixture(
         const blob = sentList.map((s) => s.rawText).join("\n");
         for (const forbidden of fixture.expect.wire.never) {
           if (blob.includes(forbidden)) {
-            throw new Error(`Forbidden wire substring '${forbidden}' found in outbound traffic`);
+            throw new ObservationMismatch(`Forbidden wire substring '${forbidden}' found in outbound traffic`);
           }
         }
       }
     }
 
     await harness.client.close();
-    return { id: fixture.id, ok: true, ...(mutant ? { mutant } : {}) };
+    return { ...result, ok: true };
   } catch (err) {
-    await harness.client.close().catch(() => {});
+    try {
+      await harness.client.close();
+    } catch (closeError) {
+      return { ...result, ok: false, error: closeError instanceof Error ? closeError.message : String(closeError) };
+    }
     return {
-      id: fixture.id,
+      ...result,
       ok: false,
-      ...(mutant ? { mutant } : {}),
+      ...(err instanceof ObservationMismatch ? { failure: "assertion" as const } : {}),
       error: err instanceof Error ? err.message : String(err),
     };
   }
 }
 
+async function runSelectedFixture(fixture: ExchangeFixture, adapter?: HarnessAdapter, mutant?: string): Promise<FixtureResult> {
+  if (adapter) return runOneFixture(fixture, adapter, mutant);
+  if (fixture.tier === "A") {
+    const result = await runTierAProvider(fixture, mutant);
+    if (result) return result;
+    if (coreAreas.has(fixture.id.split("/", 1)[0]!)) {
+      if (!Array.isArray(fixture.script) || fixture.script.length === 0) {
+        return { id: fixture.id, ok: false, error: "empty core script" };
+      }
+      return runOneFixture(fixture, createCoreAdapter(), mutant);
+    }
+  }
+  return {
+    id: fixture.id,
+    ok: false,
+    ...(mutant !== undefined ? { mutant } : {}),
+    error: `Unhandled Tier ${fixture.tier} fixture '${fixture.id}'`,
+  };
+}
+
 export async function runConformance(opts: RunOptions): Promise<RunSummary> {
-  const adapter = opts.adapter ?? createCoreAdapter();
   const all = loadExchangeFiles(opts.exchangesDir);
   const selected = all.filter((f) => {
     if (opts.tier && f.tier !== opts.tier) return false;
@@ -335,8 +367,13 @@ export async function runConformance(opts: RunOptions): Promise<RunSummary> {
         results.push({ id: fx.id, ok: false, error: "fixture defines 0 mutants (FIX-2)" });
         continue;
       }
+      const baseline = await runSelectedFixture(fx, opts.adapter);
+      if (!baseline.ok) {
+        results.push({ ...baseline, error: `Baseline failed: ${baseline.error ?? "unknown error"}` });
+        continue;
+      }
       for (const m of fx.mutants) {
-        const res = await runOneFixture(fx, adapter, m);
+        const res = await runSelectedFixture(fx, opts.adapter, m);
         if (res.ok) {
           results.push({
             id: fx.id,
@@ -344,12 +381,14 @@ export async function runConformance(opts: RunOptions): Promise<RunSummary> {
             mutant: m,
             error: `VACUOUS: fixture passed under mutant '${m}'`,
           });
-        } else {
+        } else if (res.failure === "assertion") {
           results.push({ id: fx.id, ok: true, mutant: m });
+        } else {
+          results.push(res);
         }
       }
     } else {
-      results.push(await runOneFixture(fx, adapter));
+      results.push(await runSelectedFixture(fx, opts.adapter));
     }
   }
 

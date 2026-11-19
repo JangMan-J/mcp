@@ -4,7 +4,7 @@ Every dependency in `package.json` and `package-lock.json` is justified, exact-p
 
 ## Production dependencies (`packages/*`)
 
-`@mcp-client/core`, `@mcp-client/fixtures`, `@mcp-client/conformance`, `@mcp-client/transport-stdio`, and `@mcp-client/transport-http` have zero third-party runtime dependencies.
+`@mcp-client/core`, `@mcp-client/fixtures`, `@mcp-client/transport-stdio`, and `@mcp-client/transport-http` have zero third-party runtime dependencies. `@mcp-client/conformance` depends directly on workspace packages only; its Ops driver uses Ajv through `@mcp-client/ops`.
 
 | Package | Version | Purpose | Why not hand-written / platform | License | Last release | Integrity (npm) | Removal boundary | Security note |
 |---|---|---|---|---|---|---|---|---|

@@ -187,9 +187,26 @@ export interface HarnessAdapter {
   create(setup: HarnessSetup): HarnessInstance;
 }
 
+// The core adapter accepts only mutants that it actually implements; an unknown
+// name must not silently run the baseline implementation.
+const coreMutants = new Set([
+  "lax-progress-registry", "keep-token-after-complete", "integer-only-progress",
+  "pass-all-notifications", "no-settle-on-abort", "treat-all-methods-read-only",
+  "treat-no-methods-read-only", "drop-error-refinement", "no-unsupported-version-mapping",
+  "classify-any-discover-reply-modern", "branch-on-server-info", "no-era-cache",
+  "allow-duplicate-id", "reject-missing-resulttype", "ignore-version-retry",
+  "send-cancel-when-aborted-before-send", "cross-talk-responses", "omit-protocol-version",
+  "claim-unimplemented-version", "client-info-default-on", "client-info-off",
+  "ignore-extension-registry", "register-catchall-resulttype", "ignore-per-request-timeout",
+  "always-mint-progress-token",
+]);
+
 export function createCoreAdapter(): HarnessAdapter {
   return {
     create(setup) {
+      if (setup.mutant !== undefined && !coreMutants.has(setup.mutant)) {
+        throw new Error(`Unknown core mutant '${setup.mutant}'`);
+      }
       const clock = createFakeClock();
       const mutantFlags: InprocMutants = {
         ...(setup.mutant === "allow-duplicate-id" ? { allowDuplicateId: true } : {}),

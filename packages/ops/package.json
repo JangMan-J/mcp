@@ -7,6 +7,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./conformance": {
+      "types": "./dist/conformance.d.ts",
+      "default": "./dist/conformance.js"
     }
   },
   "dependencies": {

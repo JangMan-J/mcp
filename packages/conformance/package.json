@@ -16,7 +16,10 @@
     "@mcp-client/auth": "*",
     "@mcp-client/core": "*",
     "@mcp-client/fixtures": "*",
-    "@mcp-client/mrtr-cache": "*"
+    "@mcp-client/mrtr-cache": "*",
+    "@mcp-client/ops": "*",
+    "@mcp-client/transport-http": "*",
+    "@mcp-client/transport-stdio": "*"
   },
   "scripts": {
     "build": "tsc -b"

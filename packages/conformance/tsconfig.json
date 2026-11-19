@@ -6,8 +6,13 @@
     "types": ["node"]
   },
   "references": [
+    { "path": "../auth" },
     { "path": "../core" },
-    { "path": "../fixtures" }
+    { "path": "../fixtures" },
+    { "path": "../mrtr-cache" },
+    { "path": "../ops" },
+    { "path": "../transport-http" },
+    { "path": "../transport-stdio" }
   ],
   "include": ["src/**/*.ts"]
 }

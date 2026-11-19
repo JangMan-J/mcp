@@ -1,4 +1,4 @@
-import { deepStrictEqual, equal, ok } from 'node:assert/strict';
+import { deepStrictEqual, equal, ok, AssertionError } from 'node:assert/strict';
 import type { AuthChallenge, FetchPort } from '@mcp-client/core';
 import { AuthError, ConfiguredBearer, MemoryCredentialStore, OAuthAuthorization, SafeFetch, canonicalResource, parseBearerChallenges, pkceChallenge } from './index.js';
 import type { AuthorizationPrompt, OAuthOptions } from './index.js';
@@ -161,6 +161,9 @@ export async function runExchange(fixture: unknown, mutant?: string): Promise<vo
       ok(failure instanceof AuthError, 'expected a typed authorization error');
       equal(failure.message, error);
     } else {
+      if (failure instanceof AuthError) {
+        throw new AssertionError({ message: `Expected authorization to succeed, got ${failure.message}` });
+      }
       if (failure) throw failure;
       deepStrictEqual(got, expected);
     }

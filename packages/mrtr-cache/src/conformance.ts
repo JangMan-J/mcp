@@ -60,6 +60,8 @@ class FakeClock implements Clock {
     throw Error("timer loop");
   }
 }
+export class MrtrObservationMismatch extends Error {}
+
 export async function runExchange(
   fixture: unknown,
   mutant?: string,
@@ -404,11 +406,11 @@ export async function runExchange(
     let value: unknown = observations;
     for (const k of path.split(".")) {
       if (!value || typeof value !== "object" || !Object.hasOwn(value, k))
-        throw Error(`assertion path not found: ${path}`);
+        throw new MrtrObservationMismatch(`assertion path not found: ${path}`);
       value = (value as Obj)[k];
     }
     if (!isDeepStrictEqual(JSON.parse(JSON.stringify(value)), want))
-      throw Error(
+      throw new MrtrObservationMismatch(
         `${String(fx.id)}: ${path} expected ${JSON.stringify(want)}, got ${JSON.stringify(value)}`,
       );
   }
