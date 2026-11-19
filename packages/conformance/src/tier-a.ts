@@ -1,6 +1,7 @@
 import { AssertionError } from "node:assert/strict";
 import type { ExchangeFixture } from "@mcp-client/fixtures";
-import { writeTranscript, type FixtureResult, type TranscriptFrame } from "./run.js";
+import type { FixtureResult } from "./run.js";
+import { writeTranscript, type TranscriptFrame } from "./transcript.js";
 
 type Observation = void | { frames: readonly TranscriptFrame[]; mcpEndpoint?: string; zeroWire?: boolean };
 function record(fixture: ExchangeFixture, mutant: string | undefined, obs: Observation) {

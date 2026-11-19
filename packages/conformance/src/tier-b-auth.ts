@@ -2,7 +2,8 @@ import { isDeepStrictEqual } from 'node:util';
 import { AuthError, ConfiguredBearer, OAuthAuthorization, SafeFetch, type AuthorizationPrompt } from '@mcp-client/auth';
 import { HttpTransport } from '@mcp-client/transport-http';
 import type { ExchangeFixture } from '@mcp-client/fixtures';
-import { writeTranscript, type FixtureResult, type TranscriptFrame } from './run.js';
+import type { FixtureResult } from "./run.js";
+import { writeTranscript, type TranscriptFrame } from "./transcript.js";
 
 const mutants = new Map(Object.entries({
   '401-retry': 'reuse-wire-id', 'consent-decline': 'ignore-consent', 'consent-cancel': 'ignore-consent',

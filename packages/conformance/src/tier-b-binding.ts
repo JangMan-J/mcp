@@ -9,7 +9,7 @@ import { openListenStream, ResultCache, SubscriptionManager, SUBSCRIPTION_ID, ty
 import { StdioTransport } from "@mcp-client/transport-stdio";
 import { HttpTransport } from "@mcp-client/transport-http";
 import type { ExchangeFixture } from "@mcp-client/fixtures";
-import { writeTranscript, type TranscriptFrame } from "./run.js";
+import { writeTranscript, type TranscriptFrame } from "./transcript.js";
 import { recordTransport } from "./tier-b-stdio.js";
 
 async function bounded<T>(p: PromiseLike<T>, operation: string): Promise<T> {

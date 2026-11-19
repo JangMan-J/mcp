@@ -2,7 +2,8 @@ import { createServer } from "node:http";
 import { McpClient, META_PROGRESS_TOKEN } from "@mcp-client/core";
 import { HttpTransport } from "@mcp-client/transport-http";
 import type { ExchangeFixture } from "@mcp-client/fixtures";
-import { writeTranscript, type FixtureResult, type Transcript, type TranscriptFrame } from "./run.js";
+import type { FixtureResult } from "./run.js";
+import { writeTranscript, type Transcript, type TranscriptFrame } from "./transcript.js";
 
 /** Fixture id (without the "http/" prefix) -> supported client-side fault injections. */
 const OWNED: Record<string, readonly string[]> = {

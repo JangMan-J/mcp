@@ -6,7 +6,8 @@ import { fileURLToPath } from "node:url";
 import { McpClient, type Exchange, type ExchangeEnd, type Transport } from "@mcp-client/core";
 import { StdioTransport } from "@mcp-client/transport-stdio";
 import type { ExchangeFixture } from "@mcp-client/fixtures";
-import { writeTranscript, type FixtureResult, type TranscriptFrame } from "./run.js";
+import type { FixtureResult } from "./run.js";
+import { writeTranscript, type TranscriptFrame } from "./transcript.js";
 
 class Mismatch extends Error {}
 
