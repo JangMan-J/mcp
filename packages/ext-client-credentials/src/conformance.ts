@@ -47,8 +47,43 @@ function decode(jwt: string): { header: Json; payload: Json } {
   return { header: parse(h), payload: parse(p) };
 }
 
+export interface WireFrame {
+  direction: "client" | "server";
+  endpoint: "mcp" | "oauth" | "registration" | "other";
+  method?: string;
+  url?: string;
+  headers?: Record<string, string>;
+  message?: unknown;
+}
+
+export interface ExchangeObservation {
+  frames: WireFrame[];
+  mcpEndpoint?: string;
+  zeroWire?: boolean;
+}
+
+/** Map synthetic `*.test` hosts to loopback `*.test.localhost` for recorded transcripts. */
+function loopback<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value).replace(/([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.test)(?![A-Za-z0-9.-])/gu, "$1.localhost")) as T;
+}
+
+function classify(url: string, resource: string): WireFrame["endpoint"] {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return "other";
+  }
+  const r = new URL(resource);
+  if (u.origin === r.origin && u.pathname === r.pathname && !u.search) return "mcp";
+  if (/\/register\/?$/u.test(u.pathname)) return "registration";
+  if (/\.well-known|\/(token|authorize)\/?$|metadata\.json$/u.test(u.pathname)) return "oauth";
+  return "other";
+}
+
 interface World {
   requests: Logged[];
+  frames: WireFrame[];
   diagnostics: string[];
   tokens: string[];
   now: number;
@@ -61,7 +96,7 @@ interface World {
 function makeWorld(client: Json, mutant: string | undefined): World {
   const issuer = str(client["issuer"] ?? ISSUER, "issuer");
   const world: World = {
-    requests: [], diagnostics: [], tokens: [], now: T0, frozen: false,
+    requests: [], frames: [], diagnostics: [], tokens: [], now: T0, frozen: false,
     prm: rec(client["prm"] ?? { resource: RESOURCE, authorization_servers: [issuer] }, "prm"),
     metadata: rec(client["metadata"] ?? {}, "metadata"),
     fetchPort: undefined as never,
@@ -73,22 +108,45 @@ function makeWorld(client: Json, mutant: string | undefined): World {
   const real: FetchPort = {
     async fetch(url, init) {
       const headers = Object.fromEntries(new Headers(init.headers).entries());
-      const entry: Logged = { method: init.method ?? "GET", url, headers };
+      const method = init.method ?? "GET";
+      const entry: Logged = { method, url, headers };
       if (entry.method === "POST" && typeof init.body === "string") entry.form = new URLSearchParams(init.body);
       world.requests.push(entry);
+      const endpoint = classify(url, RESOURCE);
+      world.frames.push(loopback({
+        direction: "client" as const,
+        endpoint,
+        method,
+        url,
+        ...(Object.keys(headers).length ? { headers } : {}),
+      }));
+      let res: Response;
       if (entry.method === "GET") {
-        if (url === "https://mcp.test/.well-known/oauth-protected-resource/rpc") return json(world.prm);
-        if (url === "https://as.test/.well-known/oauth-authorization-server/tenant") return json(asDoc(ISSUER));
-        if (url === `${OTHER}/.well-known/oauth-authorization-server`) return json(asDoc(OTHER));
-        return new Response(null, { status: 404 });
-      }
-      if (url === "https://as.test/token" || url === `${OTHER}/token`) {
+        if (url === "https://mcp.test/.well-known/oauth-protected-resource/rpc") res = json(world.prm);
+        else if (url === "https://as.test/.well-known/oauth-authorization-server/tenant") res = json(asDoc(ISSUER));
+        else if (url === `${OTHER}/.well-known/oauth-authorization-server`) res = json(asDoc(OTHER));
+        else res = new Response(null, { status: 404 });
+      } else if (url === "https://as.test/token" || url === `${OTHER}/token`) {
         const token = `tok-${world.tokens.length + 1}`;
         world.tokens.push(token);
-        return json({ access_token: token, token_type: "Bearer", expires_in: expiresIn });
+        res = json({ access_token: token, token_type: "Bearer", expires_in: expiresIn });
+      } else if (url.endsWith("/register")) {
+        res = json({ client_id: "dyn" }, 201);
+      } else {
+        res = new Response(null, { status: 404 });
       }
-      if (url.endsWith("/register")) return json({ client_id: "dyn" }, 201);
-      return new Response(null, { status: 404 });
+      let message: unknown;
+      if (/json/iu.test(res.headers.get("content-type") ?? "")) {
+        try { message = await res.clone().json(); } catch { /* not JSON */ }
+      }
+      world.frames.push(loopback({
+        direction: "server" as const,
+        endpoint,
+        url,
+        headers: { ...Object.fromEntries(res.headers.entries()), status: String(res.status) },
+        ...(message !== undefined ? { message } : {}),
+      }));
+      return res;
     },
   };
   world.fetchPort = {
@@ -176,7 +234,7 @@ function form(world: World, index: unknown): URLSearchParams {
   return hit.form;
 }
 
-async function runClient(fixture: Json, mutant: string | undefined): Promise<void> {
+async function runClient(fixture: Json, mutant: string | undefined): Promise<ExchangeObservation> {
   const client = rec(fixture["client"] ?? {}, "client");
   const world = makeWorld(client, mutant);
   const config = await configFor(client, world, mutant);
@@ -240,6 +298,7 @@ async function runClient(fixture: Json, mutant: string | undefined): Promise<voi
       for (const text of seen) for (const s of secrets) if (text.includes(s)) mismatch("secret material appeared in diagnostics or errors");
     } else bad(`unknown step ${JSON.stringify(step)}`);
   }
+  return world.frames.length === 0 ? { frames: [], zeroWire: true } : { frames: world.frames, mcpEndpoint: loopback(RESOURCE) };
 }
 
 function wrap(ext: ClientCredentialsExtension, mutant: string | undefined): Extension {
@@ -275,10 +334,13 @@ function runExtension(fixture: Json, mutant: string | undefined): void {
   }
 }
 
-export async function runExchange(fixture: unknown, mutant?: string): Promise<void> {
+export async function runExchange(fixture: unknown, mutant?: string): Promise<ExchangeObservation> {
   const fx = rec(fixture, "fixture");
   if (mutant !== undefined && !supportsMutant(mutant)) throw new Error(`unknown client-credentials mutant '${mutant}'`);
   if (fx["tier"] !== "A" || fx["binding"] !== "http" || !Array.isArray(fx["script"])) bad("tier A http fixture with script required");
-  if (typeof fx["client"] === "object" && (fx["client"] as Json)["kind"] === "extension") runExtension(fx, mutant);
-  else await runClient(fx, mutant);
+  if (typeof fx["client"] === "object" && (fx["client"] as Json)["kind"] === "extension") {
+    runExtension(fx, mutant);
+    return { frames: [], zeroWire: true };
+  }
+  return await runClient(fx, mutant);
 }
