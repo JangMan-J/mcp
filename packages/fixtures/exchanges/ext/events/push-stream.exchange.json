@@ -1,0 +1,185 @@
+{
+  "id": "ext/events/push-stream",
+  "tier": "A",
+  "binding": "any",
+  "pin": "wiki",
+  "source": [
+    "W/seps/3415-events-extension.md"
+  ],
+  "requirements": [
+    "EXT-events-7",
+    "EXT-events-12",
+    "EXT-events-13",
+    "EXT-events-14",
+    "EXT-events-15",
+    "EXT-events-16",
+    "EXT-events-17",
+    "EXT-events-27",
+    "EXT-events-30"
+  ],
+  "client": {},
+  "script": [
+    {
+      "do": "enable",
+      "value": true
+    },
+    {
+      "do": "peer",
+      "value": {}
+    },
+    {
+      "do": "push"
+    },
+    {
+      "do": "frame",
+      "method": "event",
+      "params": {
+        "name": "mail",
+        "eventId": "e1",
+        "timestamp": "2026-02-19T16:00:00Z",
+        "data": {
+          "body": "${untrusted}"
+        },
+        "cursor": "c1"
+      }
+    },
+    {
+      "do": "advance",
+      "ms": 10
+    },
+    {
+      "do": "frame",
+      "method": "active",
+      "params": {
+        "cursor": "a",
+        "heartbeatMs": 30,
+        "truncated": true
+      }
+    },
+    {
+      "do": "advance",
+      "ms": 20
+    },
+    {
+      "do": "frame",
+      "method": "event",
+      "params": {
+        "name": "mail",
+        "eventId": "e1",
+        "timestamp": "2026-02-19T16:00:00Z",
+        "data": {
+          "body": "${untrusted}"
+        },
+        "cursor": "c1"
+      }
+    },
+    {
+      "do": "frame",
+      "method": "event",
+      "params": {
+        "name": "mail",
+        "eventId": "e1",
+        "timestamp": "2026-02-19T16:00:00Z",
+        "data": {
+          "body": "${untrusted}"
+        },
+        "cursor": "c1"
+      }
+    },
+    {
+      "do": "advance",
+      "ms": 20
+    },
+    {
+      "do": "frame",
+      "method": "heartbeat",
+      "params": {
+        "cursor": "quiet"
+      }
+    },
+    {
+      "do": "advance",
+      "ms": 40
+    },
+    {
+      "do": "cancel"
+    },
+    {
+      "do": "advance",
+      "ms": 100
+    }
+  ],
+  "expect": {
+    "frames": [
+      {
+        "type": "error"
+      },
+      {
+        "type": "active",
+        "cursor": "a",
+        "heartbeatMs": 30,
+        "truncated": true,
+        "gap": true
+      },
+      {
+        "type": "event",
+        "subscriptionId": 2,
+        "event": {
+          "name": "mail",
+          "eventId": "e1",
+          "timestamp": "2026-02-19T16:00:00Z",
+          "data": {
+            "body": "${untrusted}"
+          },
+          "cursor": "c1"
+        }
+      }
+    ],
+    "wire": [
+      {
+        "method": "events/stream",
+        "params": {
+          "name": "mail",
+          "arguments": {
+            "folder": "inbox"
+          },
+          "cursor": null
+        },
+        "name": "mail",
+        "time": 0
+      },
+      {
+        "method": "events/stream",
+        "params": {
+          "name": "mail",
+          "arguments": {
+            "folder": "inbox"
+          },
+          "cursor": null
+        },
+        "name": "mail",
+        "time": 10
+      },
+      {
+        "method": "events/stream",
+        "params": {
+          "name": "mail",
+          "arguments": {
+            "folder": "inbox"
+          },
+          "cursor": "quiet"
+        },
+        "name": "mail",
+        "time": 90
+      }
+    ],
+    "aborts": [
+      0,
+      80,
+      90
+    ]
+  },
+  "mutants": [
+    "events-skip-jitter"
+  ]
+}

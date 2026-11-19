@@ -1,0 +1,205 @@
+{
+  "id": "ext/events/poll-and-list",
+  "tier": "A",
+  "binding": "any",
+  "pin": "wiki",
+  "source": [
+    "W/seps/3415-events-extension.md"
+  ],
+  "requirements": [
+    "EXT-events-5",
+    "EXT-events-6",
+    "EXT-events-7",
+    "EXT-events-10",
+    "EXT-events-11",
+    "EXT-events-12",
+    "EXT-events-27",
+    "EXT-events-29",
+    "EXT-events-30",
+    "EXT-events-31"
+  ],
+  "client": {},
+  "script": [
+    {
+      "do": "enable",
+      "value": true
+    },
+    {
+      "do": "peer",
+      "value": {}
+    },
+    {
+      "do": "caps"
+    },
+    {
+      "do": "list",
+      "reply": {
+        "events": [],
+        "nextCursor": "page2"
+      }
+    },
+    {
+      "do": "list",
+      "reply": {
+        "events": []
+      }
+    },
+    {
+      "do": "poll",
+      "reply": {
+        "events": [
+          {
+            "name": "mail",
+            "eventId": "e1",
+            "timestamp": "2026-02-19T16:00:00Z",
+            "data": {
+              "body": "${untrusted}"
+            },
+            "cursor": "c1"
+          }
+        ],
+        "cursor": "c1",
+        "hasMore": true,
+        "truncated": true
+      }
+    },
+    {
+      "do": "poll",
+      "reply": {
+        "events": [
+          {
+            "name": "mail",
+            "eventId": "e1",
+            "timestamp": "2026-02-19T16:00:00Z",
+            "data": {
+              "body": "${untrusted}"
+            },
+            "cursor": "c1"
+          }
+        ],
+        "nextPollMs": 12
+      }
+    },
+    {
+      "do": "poll",
+      "reply": {
+        "events": [],
+        "cursor": "quiet",
+        "nextPollMs": 3400
+      }
+    },
+    {
+      "do": "local"
+    }
+  ],
+  "expect": {
+    "observations": [
+      [
+        "working",
+        {},
+        {
+          "extensions": {
+            "io.modelcontextprotocol/events": {}
+          }
+        },
+        false
+      ],
+      "page2",
+      null,
+      {
+        "events": [
+          {
+            "name": "mail",
+            "eventId": "e1",
+            "timestamp": "2026-02-19T16:00:00Z",
+            "data": {
+              "body": "${untrusted}"
+            },
+            "cursor": "c1"
+          }
+        ],
+        "cursor": "c1",
+        "nextDelayMs": 0,
+        "gap": true,
+        "truncated": true
+      },
+      {
+        "events": [],
+        "cursor": null,
+        "nextDelayMs": 1000,
+        "gap": false,
+        "truncated": false
+      },
+      {
+        "events": [],
+        "cursor": "quiet",
+        "nextDelayMs": 3400,
+        "gap": false,
+        "truncated": false
+      },
+      [
+        {
+          "id": 1,
+          "name": "mail",
+          "cursor": "quiet"
+        }
+      ]
+    ],
+    "wire": [
+      {
+        "method": "events/list",
+        "params": {},
+        "name": null,
+        "time": 0
+      },
+      {
+        "method": "events/list",
+        "params": {
+          "cursor": "page2"
+        },
+        "name": null,
+        "time": 0
+      },
+      {
+        "method": "events/poll",
+        "params": {
+          "name": "mail",
+          "arguments": {
+            "folder": "inbox"
+          },
+          "cursor": null
+        },
+        "name": "mail",
+        "time": 0
+      },
+      {
+        "method": "events/poll",
+        "params": {
+          "name": "mail",
+          "arguments": {
+            "folder": "inbox"
+          },
+          "cursor": "c1"
+        },
+        "name": "mail",
+        "time": 0
+      },
+      {
+        "method": "events/poll",
+        "params": {
+          "name": "mail",
+          "arguments": {
+            "folder": "inbox"
+          },
+          "cursor": null
+        },
+        "name": "mail",
+        "time": 0
+      }
+    ]
+  },
+  "mutants": [
+    "events-drop-name",
+    "events-lose-cursor"
+  ]
+}

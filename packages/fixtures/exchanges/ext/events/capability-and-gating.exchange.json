@@ -1,0 +1,125 @@
+{
+  "id": "ext/events/capability-and-gating",
+  "tier": "A",
+  "binding": "any",
+  "pin": "wiki",
+  "source": [
+    "W/seps/3415-events-extension.md"
+  ],
+  "requirements": [
+    "EXT-events-1",
+    "EXT-events-2",
+    "EXT-events-3",
+    "EXT-events-4",
+    "EXT-events-6",
+    "EXT-REMOVE-events"
+  ],
+  "client": {},
+  "script": [
+    {
+      "do": "peer",
+      "value": {}
+    },
+    {
+      "do": "caps"
+    },
+    {
+      "do": "list"
+    },
+    {
+      "do": "enable",
+      "value": true
+    },
+    {
+      "do": "peer",
+      "value": null
+    },
+    {
+      "do": "list"
+    },
+    {
+      "do": "peer",
+      "value": {
+        "revision": "future"
+      }
+    },
+    {
+      "do": "list"
+    },
+    {
+      "do": "peer",
+      "value": {
+        "listChanged": true
+      }
+    },
+    {
+      "do": "caps"
+    },
+    {
+      "do": "list"
+    },
+    {
+      "do": "healthy",
+      "value": false
+    },
+    {
+      "do": "caps"
+    },
+    {
+      "do": "list"
+    },
+    {
+      "do": "healthy",
+      "value": true
+    },
+    {
+      "do": "remove"
+    },
+    {
+      "do": "list"
+    }
+  ],
+  "expect": {
+    "observations": [
+      [
+        "unavailable",
+        null,
+        {},
+        false
+      ],
+      "unavailable",
+      "unavailable",
+      "unavailable",
+      [
+        "working",
+        {},
+        {
+          "extensions": {
+            "io.modelcontextprotocol/events": {}
+          }
+        },
+        true
+      ],
+      null,
+      [
+        "unavailable",
+        null,
+        {},
+        false
+      ],
+      "unavailable",
+      "unavailable"
+    ],
+    "wire": [
+      {
+        "method": "events/list",
+        "params": {},
+        "name": null,
+        "time": 0
+      }
+    ]
+  },
+  "mutants": [
+    "events-force-peer"
+  ]
+}
