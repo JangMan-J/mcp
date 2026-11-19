@@ -431,7 +431,7 @@ describe("AuthProvider interceptor hook", () => {
   it("surfaces 401 as a definitive failure when there is no provider / no retry", async () => {
     const t = new HttpTransport({ url: URL1, fetchPort: capture(() => new Response("", { status: 401 })).fetchPort });
     const { end } = await run(t, req(1, "tools/call", { name: "w" }));
-    expect(end).toMatchObject({ kind: "failure", failure: { kind: "forbidden", status: 401 }, delivery: "not-sent" });
+    expect(end).toMatchObject({ kind: "failure", failure: { kind: "auth-failure", reason: "unauthorized", status: 401 }, delivery: "not-sent" });
   });
 });
 

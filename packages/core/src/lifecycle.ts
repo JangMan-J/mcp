@@ -523,7 +523,11 @@ export class LifecycleTransport implements Transport {
       for await (const n of inner.notifications) handle(n);
     })().catch(() => {});
 
-    return { notifications: out, done: guarded.done };
+    return {
+      notifications: out,
+      done: guarded.done,
+      ...(inner.abortDelivery ? { abortDelivery: () => inner.abortDelivery!() } : {}),
+    };
   }
 
   notify(msg: JsonRpcNotification, ctx: TransportCall): Promise<void> {
@@ -627,6 +631,7 @@ export class LifecycleClient {
         : undefined;
     this.manager = new RequestManager({
       transport: this.wire,
+      serverLabel: opts.server.label ?? opts.server.key,
       ...(opts.ports ? { ports: opts.ports } : {}),
       ...(clientInfo !== undefined ? { clientInfo } : {}),
       extensions: this.extensions,

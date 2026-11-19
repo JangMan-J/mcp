@@ -9,12 +9,15 @@ export type TransportFailureKind =
   | "closed"
   | "timeout"
   | "forbidden"
+  | "auth-failure"
+  | "auth-unavailable"
   | "too-large";
 
 export interface TransportFailure {
   readonly kind: TransportFailureKind;
   readonly message: string;
   readonly status?: number;
+  readonly reason?: string;
   readonly cause?: unknown;
 }
 

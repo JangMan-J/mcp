@@ -16,6 +16,8 @@ export interface TransportCall {
     readonly params?: Readonly<Record<string, string | number | boolean>>;
   };
   readonly timeoutMs: number;
+  readonly consent?: ConsentPort;
+  readonly serverLabel?: string;
 }
 
 export type ExchangeEnd =
@@ -27,6 +29,8 @@ export type ExchangeEnd =
     };
 
 export interface Exchange {
+  /** Current delivery evidence if interrupted before done settles. */
+  abortDelivery?(): Extract<ExchangeEnd, { kind: "failure" }>["delivery"];
   readonly notifications: AsyncIterable<JsonRpcNotification>;
   readonly done: Promise<ExchangeEnd>;
 }
@@ -70,8 +74,15 @@ export interface LoggerPort {
 }
 
 export interface ConsentPrompt {
-  readonly kind: "auth" | "url-elicitation" | "form-elicitation" | "tool-call";
+  readonly kind: "auth" | "authorize" | "client-info" | "url-elicitation" | "form-elicitation" | "tool-call";
   readonly serverLabel: string;
+  readonly issuer?: string;
+  readonly issuerHost?: string;
+  readonly resource?: string;
+  readonly scopes?: readonly string[];
+  readonly redirectUri?: string;
+  readonly redirectHost?: string;
+  readonly localhostWarning?: boolean;
   readonly url?: string;
   readonly message?: string;
   readonly schema?: Record<string, unknown>;

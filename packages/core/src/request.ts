@@ -84,6 +84,7 @@ export function validateMetaEntries(meta: Record<string, unknown>): void {
 
 export interface RequestManagerConfig {
   readonly transport: Transport;
+  readonly serverLabel?: string;
   readonly ports?: Partial<PortRegistry>;
   readonly clientInfo?: { readonly name: string; readonly version: string; readonly title?: string } | false;
   readonly extensions?: ExtensionRegistry;
@@ -101,6 +102,7 @@ export class RequestManager {
   private readonly nextId: IdGenerator;
   private readonly limits: Limits;
   private readonly ports: Partial<PortRegistry>;
+  private readonly serverLabel?: string;
   private readonly clientInfo?: { readonly name: string; readonly version: string; readonly title?: string } | false;
   private readonly supportedVersions: readonly string[];
   private activeProtocolVersion: string;
@@ -110,6 +112,7 @@ export class RequestManager {
   constructor(cfg: RequestManagerConfig) {
     this.transport = cfg.transport;
     this.ports = cfg.ports ?? {};
+    if (cfg.serverLabel !== undefined) this.serverLabel = cfg.serverLabel;
     this.clock = cfg.ports?.clock ?? systemClock;
     if (cfg.ports?.logger) {
       this.logger = cfg.ports.logger;
@@ -286,6 +289,8 @@ export class RequestManager {
           idempotent,
           ...(opts.headersHint ? { headersHint: opts.headersHint } : {}),
           timeoutMs,
+          ...(this.ports.consent ? { consent: this.ports.consent } : {}),
+          ...(this.serverLabel !== undefined ? { serverLabel: this.serverLabel } : {}),
         });
 
         const pump = (async () => {
@@ -317,8 +322,9 @@ export class RequestManager {
         cancelTimer?.();
         await pump.catch(() => {});
 
-        if (race === "timeout" || (timedOut && race.kind === "failure")) {
-          if (!idempotent) {
+        if (race === "timeout" || (race.kind === "failure" && (timedOut || race.failure.kind === "timeout"))) {
+          const delivery = race === "timeout" ? exchange.abortDelivery?.() : race.delivery;
+          if (!idempotent && delivery !== "not-sent") {
             const uncertain: UncertainWrite = {
               requestId: currentId,
               method,
@@ -356,6 +362,13 @@ export class RequestManager {
               kind: "cancelled",
               wasSent: race.delivery !== "not-sent",
               phase: "wire",
+              meta: baseMeta(currentId, attempts),
+            };
+          }
+          if (race.failure.kind === "auth-failure" || race.failure.kind === "auth-unavailable") {
+            return {
+              kind: race.failure.kind,
+              detail: { reason: race.failure.reason, status: race.failure.status },
               meta: baseMeta(currentId, attempts),
             };
           }

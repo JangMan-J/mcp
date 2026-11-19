@@ -144,9 +144,9 @@ export function guardExchangeDone(
           kind: "failure",
           failure: {
             kind: reason === "timeout" ? "timeout" : "closed",
-            message: `request aborted locally${typeof reason === "string" ? `: ${reason}` : ""}`,
+            message: "request aborted locally",
           },
-          delivery: "maybe-delivered",
+          delivery: inner.abortDelivery?.() ?? "maybe-delivered",
         },
         "abort",
       );

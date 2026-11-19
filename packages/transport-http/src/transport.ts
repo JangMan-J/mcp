@@ -1,5 +1,8 @@
 import {
   SUPPORTED_PROTOCOL_VERSION,
+  AuthError,
+  parseBearerChallenges,
+  type AuthRequestContext,
   parseInboundMessage,
   systemClock,
   type AuthProvider,
@@ -58,8 +61,41 @@ export interface HttpTransportOptions {
 
 type AttemptOutcome =
   | { readonly kind: "final"; readonly end: ExchangeEnd }
-  | { readonly kind: "auth-retry" }
+  | { readonly kind: "auth-retry"; readonly status: 401 | 403 }
   | { readonly kind: "header-mismatch"; readonly message: JsonRpcErrorResponse };
+
+type Delivery = Extract<ExchangeEnd, { kind: "failure" }>["delivery"];
+type AttemptState = { delivery: Delivery; authRetries: number; stepUps: number };
+const attemptState = (): AttemptState => ({ delivery: "not-sent", authRetries: 0, stepUps: 0 });
+
+function failed(failure: TransportFailure, delivery: Delivery = "not-sent"): AttemptOutcome & { kind: "final" } {
+  return { kind: "final", end: { kind: "failure", failure, delivery } };
+}
+
+function authFailed(reason: string, status?: 401 | 403, kind: "auth-failure" | "auth-unavailable" = "auth-failure") {
+  return failed({ kind, reason, message: `${kind}/${reason}`, ...(status !== undefined ? { status } : {}) });
+}
+
+function providerFailed(error: unknown, fallback: string, status?: 401 | 403) {
+  return error instanceof AuthError ? authFailed(error.reason, status, error.kind) : authFailed(fallback, status);
+}
+
+/** Detach from auth work even when a host callback does not honor its signal. */
+function waitForAuth<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const abort = () => {
+      signal.removeEventListener("abort", abort);
+      reject(new Error("auth wait aborted"));
+    };
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) abort();
+    void work.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+  });
+}
+
+function discardBody(response: Response): void {
+  void response.body?.cancel().catch(() => undefined);
+}
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -122,36 +158,32 @@ export class HttpTransport implements Transport {
 
   start(msg: JsonRpcRequest, ctx: TransportCall): Exchange {
     const notifications = new NotificationQueue();
-    const done = this.execute(msg, ctx, notifications).then(
+    const state = attemptState();
+    const done = this.execute(msg, ctx, notifications, state).then(
       (end) => {
         notifications.close();
         return end;
       },
-      (err: unknown) => {
+      () => {
         notifications.close();
-        return {
-          kind: "failure",
-          failure: { kind: "stream-broken", message: err instanceof Error ? err.message : String(err), cause: err },
-          delivery: "maybe-delivered",
-        } satisfies ExchangeEnd;
+        return failed({ kind: "stream-broken", message: "HTTP exchange failed" }, state.delivery).end;
       },
     );
-    return { notifications, done };
+    return { notifications, done, abortDelivery: () => state.delivery };
   }
 
   async notify(msg: JsonRpcNotification, ctx: TransportCall): Promise<void> {
     if (this.closed) throw new Error("HttpTransport is closed");
     if (ctx.signal.aborted) return;
     // Extension notifications only: same version/method headers, expect 202 (HTTP-NOTIF-1).
-    const outcome = await this.performOnce(msg, ctx, new NotificationQueue(), msg.method, undefined);
-    if (outcome.kind === "auth-retry") {
-      const retry = await this.performOnce(msg, ctx, new NotificationQueue(), msg.method, undefined);
-      if (retry.kind !== "final") throw new Error("notification rejected after auth retry");
-      if (retry.end.kind === "failure") throw new Error(retry.end.failure.message);
-      return;
+    const state = attemptState();
+    for (;;) {
+      const outcome = await this.performOnce(msg, ctx, new NotificationQueue(), undefined, state);
+      if (outcome.kind === "auth-retry") continue;
+      if (outcome.kind === "header-mismatch") throw new Error("notification rejected: header mismatch");
+      if (outcome.end.kind === "failure") throw new Error(outcome.end.failure.message);
+      break;
     }
-    if (outcome.kind === "header-mismatch") throw new Error("notification rejected: header mismatch");
-    if (outcome.end.kind === "failure") throw new Error(outcome.end.failure.message);
     // A response payload to a notification is tolerated/logged by performOnce classification.
   }
 
@@ -167,6 +199,7 @@ export class HttpTransport implements Transport {
     msg: JsonRpcRequest,
     ctx: TransportCall,
     notifications: NotificationQueue,
+    state: AttemptState,
   ): Promise<ExchangeEnd> {
     if (this.closed) {
       return { kind: "failure", failure: { kind: "closed", message: "HttpTransport is closed" }, delivery: "not-sent" };
@@ -174,22 +207,13 @@ export class HttpTransport implements Transport {
     if (ctx.signal.aborted) {
       return { kind: "failure", failure: { kind: "closed", message: "aborted before send" }, delivery: "not-sent" };
     }
-    let authRetried = false;
     let headerRetried = false;
     let wireId: JsonRpcRequest["id"] = msg.id;
     for (;;) {
       const wireMsg: JsonRpcRequest = wireId === msg.id ? msg : { ...msg, id: wireId };
-      const outcome = await this.performOnce(wireMsg, ctx, notifications, msg.method, msg.id);
+      const outcome = await this.performOnce(wireMsg, ctx, notifications, msg.id, state);
       if (outcome.kind === "auth-retry") {
-        if (authRetried) {
-          return {
-            kind: "failure",
-            failure: { kind: "forbidden", message: "auth challenge retry exhausted", status: 401 },
-            delivery: "not-sent",
-          };
-        }
-        authRetried = true;
-        wireId = `${String(msg.id)}~auth-retry-1`;
+        wireId = outcome.status === 401 ? `${String(msg.id)}~auth-retry-1` : `${String(msg.id)}~step-up-${state.stepUps}`;
         continue;
       }
       if (outcome.kind === "header-mismatch") {
@@ -198,7 +222,8 @@ export class HttpTransport implements Transport {
         }
         headerRetried = true;
         // HTTP-PARAM-6: refresh tools/list, rebuild headers, retry once with a new id.
-        await this.refreshToolsList(msg, ctx);
+        state.delivery = "not-sent";
+        if (!await this.refreshToolsList(msg, ctx)) return { kind: "response", message: outcome.message };
         wireId = `${String(msg.id)}~header-retry-1`;
         continue;
       }
@@ -206,7 +231,7 @@ export class HttpTransport implements Transport {
     }
   }
 
-  private async refreshToolsList(original: JsonRpcRequest, ctx: TransportCall): Promise<void> {
+  private async refreshToolsList(original: JsonRpcRequest, ctx: TransportCall): Promise<boolean> {
     const params = isRecord(original.params) ? original.params : {};
     const refresh: JsonRpcRequest = {
       jsonrpc: "2.0",
@@ -214,17 +239,20 @@ export class HttpTransport implements Transport {
       method: "tools/list",
       params: { ...(isRecord(params["_meta"]) ? { _meta: params["_meta"] } : {}) },
     };
-    await this.performOnce(refresh, ctx, new NotificationQueue(), "tools/list", refresh.id).catch(() => undefined);
+    const end = await this.execute(refresh, ctx, new NotificationQueue(), attemptState());
+    return end.kind === "response" && "result" in end.message;
   }
 
   private async performOnce(
     wireMsg: JsonRpcRequest | JsonRpcNotification,
     ctx: TransportCall,
     notifications: NotificationQueue,
-    method: string,
     expectedId: JsonRpcRequest["id"] | undefined,
+    state: AttemptState,
   ): Promise<AttemptOutcome> {
     const isRequest = "id" in wireMsg;
+    const method = wireMsg.method;
+    if (this.closed || ctx.signal.aborted) return failed({ kind: "closed", message: "request aborted before send" });
     const controller = new AbortController();
     this.inFlight.add(controller);
     const onCallerAbort = () => controller.abort(ctx.signal.reason);
@@ -258,13 +286,42 @@ export class HttpTransport implements Transport {
       }
     };
 
+    const authContext: AuthRequestContext = {
+      signal: controller.signal,
+      ...(ctx.consent ? { consent: ctx.consent } : {}),
+      ...(ctx.serverLabel !== undefined ? { serverLabel: ctx.serverLabel } : {}),
+    };
+    const aborted = () => failed({ kind: timedOut ? "timeout" : "closed", message: "HTTP request interrupted" }, state.delivery);
     try {
-      const headers = await this.buildHeaders(wireMsg, ctx);
+      const baseHeaders = this.buildHeaders(wireMsg, ctx);
       const body = JSON.stringify(wireMsg);
       let currentUrl = this.url;
       let response: Response | undefined;
       let redirects = 0;
+      let credentialVersion: object | null | undefined;
+      const credentials = new Set<string>();
       for (;;) {
+        if (controller.signal.aborted) return aborted();
+        const headers = new Headers(baseHeaders);
+        if (this.authProvider || redirects > 0) headers.delete("Authorization");
+        if (this.authProvider) {
+          try {
+            const auth = await waitForAuth(this.authProvider.headerFor(currentUrl, method, authContext), controller.signal);
+            credentialVersion = auth?.credentialVersion;
+            if (auth) headers.set("Authorization", auth.authorization);
+          } catch (error) {
+            return controller.signal.aborted ? aborted() : providerFailed(error, "credentials-unavailable");
+          }
+        }
+        if (controller.signal.aborted) return aborted();
+        const authorization = headers.get("Authorization");
+        if (authorization) credentials.add(authorization.replace(/^\S+\s+/u, ""));
+        else credentialVersion = null;
+        const query = new URL(currentUrl).searchParams;
+        if (query.has("access_token") || [...query.values()].some(value => credentials.has(value))) {
+          return authFailed("credentials-in-query");
+        }
+        state.delivery = "maybe-delivered";
         try {
           response = await this.doFetch(currentUrl, {
             method: "POST", // POST only: never GET/DELETE (HTTP-NOGET-1)
@@ -273,34 +330,14 @@ export class HttpTransport implements Transport {
             redirect: "manual",
             signal: controller.signal,
           });
-        } catch (err) {
-          if (ctx.signal.aborted || controller.signal.aborted) {
-            return {
-              kind: "final",
-              end: {
-                kind: "failure",
-                failure: {
-                  kind: timedOut ? "timeout" : "closed",
-                  message: timedOut ? `request timed out after ${String(timeoutMs)}ms` : "request aborted",
-                  cause: err,
-                },
-                delivery: "maybe-delivered",
-              },
-            };
-          }
-          return {
-            kind: "final",
-            end: {
-              kind: "failure",
-              failure: { kind: "connect", message: `fetch failed: ${err instanceof Error ? err.message : String(err)}`, cause: err },
-              delivery: "maybe-delivered",
-            },
-          };
+        } catch {
+          return controller.signal.aborted ? aborted() : failed({ kind: "connect", message: "HTTP fetch failed" }, state.delivery);
         }
         const status = response.status;
         if (status >= 300 && status < 400) {
+          state.delivery = "not-sent";
           const location = response.headers.get("location");
-          await response.body?.cancel().catch(() => undefined);
+          discardBody(response);
           if (!location || (status !== 307 && status !== 308)) {
             return {
               kind: "final",
@@ -321,15 +358,17 @@ export class HttpTransport implements Transport {
               },
             };
           }
-          const next = new URL(location, currentUrl);
+          let next: URL;
+          try { next = new URL(location, currentUrl); }
+          catch { return failed({ kind: "http-status", message: "invalid redirect location", status }); }
           const prev = new URL(currentUrl);
-          if (next.origin !== prev.origin || (prev.protocol === "https:" && next.protocol === "http:")) {
-            this.emit("violation", `refused cross-origin/downgrade redirect to ${next.origin}`);
+          if (next.origin !== prev.origin || next.protocol !== prev.protocol || next.username || next.password) {
+            this.emit("violation", "refused cross-origin, downgrade or credentialed redirect");
             return {
               kind: "final",
               end: {
                 kind: "failure",
-                failure: { kind: "forbidden", message: `cross-origin redirect refused: ${next.origin}`, status },
+                failure: { kind: "forbidden", message: "cross-origin, downgrade or credentialed redirect refused", status },
                 delivery: "not-sent",
               },
             };
@@ -351,6 +390,11 @@ export class HttpTransport implements Transport {
         controller,
         timedOut: () => timedOut,
         armIdle,
+        state,
+        resource: currentUrl,
+        credentialVersion,
+        credentials,
+        authContext,
       });
     } finally {
       if (timeoutTimer) clearTimeout(timeoutTimer);
@@ -372,6 +416,11 @@ export class HttpTransport implements Transport {
       controller: AbortController;
       timedOut: () => boolean;
       armIdle: () => void;
+      state: AttemptState;
+      resource: string;
+      credentialVersion: object | null | undefined;
+      credentials: ReadonlySet<string>;
+      authContext: AuthRequestContext;
     },
   ): Promise<AttemptOutcome> {
     const { isRequest, method, expectedId } = args;
@@ -380,39 +429,46 @@ export class HttpTransport implements Transport {
 
     // Auth challenges (AUTH-HTTP-1/2): 401 always; 403 only with insufficient_scope.
     const wwwAuth = response.headers.get("www-authenticate") ?? undefined;
-    const insufficientScope = wwwAuth?.toLowerCase().includes("insufficient_scope") ?? false;
-    if (status === 401 || (status === 403 && insufficientScope)) {
-      await response.body?.cancel().catch(() => undefined);
-      if (this.authProvider?.onChallenge) {
-        let retry = false;
-        try {
-          retry = await this.authProvider.onChallenge(
-            { status: status as 401 | 403, ...(wwwAuth ? { wwwAuthenticate: wwwAuth } : {}), resource: this.url, operation: method },
-            args.controller.signal,
-          );
-        } catch {
-          retry = false;
-        }
-        if (retry) return { kind: "auth-retry" };
+    if (status === 401 || (status === 403 && parseBearerChallenges(wwwAuth ?? "").some(ch => ch.error === "insufficient_scope"))) {
+      const { state, controller, authContext, credentialVersion, resource } = args;
+      state.delivery = "not-sent"; // Definitive rejection; nothing was executed.
+      discardBody(response);
+      const aborted = () => failed({ kind: args.timedOut() ? "timeout" : "closed", message: "auth wait interrupted" });
+      if (controller.signal.aborted) return aborted();
+      const reason = status === 403 ? "insufficient-scope" : "unauthorized";
+      const provider = this.authProvider;
+      if (!provider?.onChallenge) return authFailed(reason, status);
+      if (status === 401) {
+        if (state.authRetries >= 1) return authFailed("retry-exhausted", status);
+        state.authRetries++;
+      } else {
+        const limit = provider.stepUpLimit ?? 3;
+        if (state.stepUps >= (Number.isSafeInteger(limit) && limit >= 0 ? limit : 3)) return authFailed(reason, status);
+        state.stepUps++;
       }
-      return {
-        kind: "final",
-        end: {
-          kind: "failure",
-          failure: { kind: "forbidden", message: `HTTP ${status} auth challenge not resolved`, status },
-          delivery: "not-sent",
-        },
-      };
+      try {
+        const retry = await waitForAuth(provider.onChallenge({ status, resource, operation: method,
+          ...(wwwAuth ? { wwwAuthenticate: wwwAuth } : {}),
+          ...(credentialVersion !== undefined ? { credentialVersion } : {}),
+        }, controller.signal, authContext), controller.signal);
+        if (controller.signal.aborted) return aborted();
+        if (retry === true) return { kind: "auth-retry", status };
+      } catch (error) {
+        return controller.signal.aborted ? aborted() : providerFailed(error, reason, status);
+      }
+      return authFailed(reason, status);
     }
     if (status === 403) {
-      await response.body?.cancel().catch(() => undefined);
+      args.state.delivery = "not-sent";
+      discardBody(response);
       return {
         kind: "final",
         end: { kind: "failure", failure: { kind: "forbidden", message: "HTTP 403 forbidden", status }, delivery: "not-sent" },
       };
     }
     if (status === 413 || status === 431) {
-      await response.body?.cancel().catch(() => undefined);
+      args.state.delivery = "not-sent";
+      discardBody(response);
       return {
         kind: "final",
         end: {
@@ -423,8 +479,10 @@ export class HttpTransport implements Transport {
       };
     }
     if (status === 429 || status === 408 || status >= 500) {
-      const retryAfter = response.headers.get("retry-after") ?? undefined;
-      if (retryAfter) this.lastRetryAfter = retryAfter;
+      const rawRetryAfter = response.headers.get("retry-after");
+      const retryAfter = rawRetryAfter && (/^\d+$/u.test(rawRetryAfter) || Number.isFinite(Date.parse(rawRetryAfter))) &&
+        ![...args.credentials].some(secret => rawRetryAfter.includes(secret)) ? rawRetryAfter : undefined;
+      this.lastRetryAfter = retryAfter;
       await response.body?.cancel().catch(() => undefined);
       return {
         kind: "final",
@@ -491,7 +549,7 @@ export class HttpTransport implements Transport {
           kind: "final",
           end: {
             kind: "failure",
-            failure: { kind: args.timedOut() ? "timeout" : "closed", message: "aborted while reading body", cause: err },
+            failure: { kind: args.timedOut() ? "timeout" : "closed", message: "aborted while reading body" },
             delivery: "delivered-no-response",
           },
         };
@@ -500,7 +558,7 @@ export class HttpTransport implements Transport {
         kind: "final",
         end: {
           kind: "failure",
-          failure: { kind: "stream-broken", message: `truncated-json: ${err instanceof Error ? err.message : String(err)}`, cause: err },
+          failure: { kind: "stream-broken", message: "truncated-json: failed to read JSON response" },
           delivery: "delivered-no-response",
         },
       };
@@ -508,12 +566,12 @@ export class HttpTransport implements Transport {
 
     if (status >= 200 && status < 300) {
       if (!contentType.includes("application/json") && !contentType.includes("+json")) {
-        this.emit("violation", `unexpected content-type '${contentType}' on 2xx`);
+        this.emit("violation", "unexpected content-type on 2xx");
         return {
           kind: "final",
           end: {
             kind: "failure",
-            failure: { kind: "stream-broken", message: `protocol-violation: unexpected content-type '${contentType}'` },
+            failure: { kind: "stream-broken", message: "protocol-violation: unexpected content-type" },
             delivery: "delivered-no-response",
           },
         };
@@ -572,7 +630,7 @@ export class HttpTransport implements Transport {
     }
     const message = this.normalizeResponseId(inbound.message as JsonRpcResponse | JsonRpcErrorResponse, args.wireId, expectedId);
     if (expectedId !== undefined && "id" in message && message.id !== expectedId) {
-      this.emit("violation", `response id mismatch: expected ${String(expectedId)}, got ${String(message.id)}`);
+      this.emit("violation", "response id mismatch");
       return {
         kind: "final",
         end: {
@@ -596,7 +654,7 @@ export class HttpTransport implements Transport {
       };
     }
     if (method === "tools/list" && !("error" in message)) {
-      this.processToolsList(message as JsonRpcResponse);
+      this.processToolsList(message as JsonRpcResponse, args.credentials);
     }
     return { kind: "final", end: { kind: "response", message } };
   }
@@ -612,6 +670,7 @@ export class HttpTransport implements Transport {
       controller: AbortController;
       timedOut: () => boolean;
       armIdle: () => void;
+      credentials: ReadonlySet<string>;
     },
   ): Promise<AttemptOutcome> {
     const { method, expectedId, notifications } = args;
@@ -635,15 +694,15 @@ export class HttpTransport implements Transport {
         let chunk: ReadableStreamReadResult<Uint8Array>;
         try {
           chunk = await reader.read();
-        } catch (err) {
+        } catch {
           if (finalMessage) break;
           if (args.ctx.signal.aborted || args.controller.signal.aborted) {
             return fail(
-              { kind: args.timedOut() ? "timeout" : "closed", message: "stream aborted", cause: err },
+              { kind: args.timedOut() ? "timeout" : "closed", message: "stream aborted" },
               "delivered-no-response",
             );
           }
-          return fail({ kind: "stream-broken", message: `SSE stream broke: ${err instanceof Error ? err.message : String(err)}`, cause: err }, "delivered-no-response");
+          return fail({ kind: "stream-broken", message: "SSE stream broke" }, "delivered-no-response");
         }
         if (chunk.done) break;
         args.armIdle();
@@ -655,13 +714,13 @@ export class HttpTransport implements Transport {
         let events;
         try {
           events = parser.push(chunk.value);
-        } catch (err) {
+        } catch {
           await reader.cancel().catch(() => undefined);
-          return fail({ kind: "too-large", message: err instanceof Error ? err.message : String(err), cause: err }, "delivered-no-response");
+          return fail({ kind: "too-large", message: "SSE event exceeds size limit" }, "delivered-no-response");
         }
         for (const ev of events) {
           if (ev.event !== "" && ev.event !== "message") {
-            this.emit("violation", `ignored non-message SSE event '${ev.event}' (HTTP-SSE-2)`);
+            this.emit("violation", "ignored non-message SSE event (HTTP-SSE-2)");
             continue;
           }
           // ev.id / ev.retry are parsed and deliberately discarded (HTTP-SSE-3).
@@ -678,7 +737,7 @@ export class HttpTransport implements Transport {
           }
           const inbound = parseInboundMessage(payload);
           if ("error" in inbound) {
-            this.emit("violation", `invalid JSON-RPC message on SSE stream: ${inbound.error}`);
+            this.emit("violation", "invalid JSON-RPC message on SSE stream");
             continue;
           }
           if (inbound.kind === "server-request") {
@@ -690,7 +749,7 @@ export class HttpTransport implements Transport {
             const notif = inbound.message as JsonRpcNotification;
             if (!this.isRelatedNotification(notif, args, method)) {
               notifications.droppedUnrelated += 1;
-              this.emit("violation", `dropped unrelated SSE notification '${notif.method}' (HTTP-SSE-5)`);
+              this.emit("violation", "dropped unrelated SSE notification (HTTP-SSE-5)");
               continue;
             }
             notifications.push(notif);
@@ -698,7 +757,7 @@ export class HttpTransport implements Transport {
           }
           const message = this.normalizeResponseId(inbound.message as JsonRpcResponse | JsonRpcErrorResponse, args.wireId, expectedId);
           if (expectedId !== undefined && message.id !== expectedId) {
-            this.emit("violation", `dropped SSE response with mismatched id ${String(message.id)}`);
+            this.emit("violation", "dropped SSE response with mismatched id");
             continue;
           }
           if (finalMessage) {
@@ -708,7 +767,7 @@ export class HttpTransport implements Transport {
           finalMessage = message;
           // Final response should terminate the stream: cancel body, ignore later events (HTTP-SSE-6).
           await reader.cancel().catch(() => undefined);
-          if (method === "tools/list" && !("error" in finalMessage)) this.processToolsList(finalMessage as JsonRpcResponse);
+          if (method === "tools/list" && !("error" in finalMessage)) this.processToolsList(finalMessage as JsonRpcResponse, args.credentials);
           if ("error" in finalMessage && finalMessage.error.code === -32020) {
             return { kind: "header-mismatch", message: finalMessage };
           }
@@ -765,7 +824,7 @@ export class HttpTransport implements Transport {
     return message;
   }
 
-  private processToolsList(message: JsonRpcResponse): void {
+  private processToolsList(message: JsonRpcResponse, credentials: ReadonlySet<string>): void {
     const result = message.result;
     if (!isRecord(result) || !Array.isArray(result["tools"])) return;
     const kept: unknown[] = [];
@@ -778,7 +837,9 @@ export class HttpTransport implements Transport {
       const validation = validateXmcpHeaderSchema(tool["inputSchema"]);
       if (!validation.valid) {
         for (const v of validation.violations) {
-          this.emit("violation", `x-mcp-header: tool '${name}' excluded: ${v}`);
+          const detail = `x-mcp-header: tool '${name}' excluded: ${v}`;
+          this.emit("violation", [...credentials].some(secret => detail.includes(secret))
+            ? "x-mcp-header: tool excluded due to invalid header annotations" : detail);
           this.logger?.warn("x-mcp-header tool excluded", { tool: name, violation: v });
         }
         continue; // HTTP-PARAM-2
@@ -789,10 +850,10 @@ export class HttpTransport implements Transport {
     (result as Record<string, unknown>)["tools"] = kept;
   }
 
-  private async buildHeaders(
+  private buildHeaders(
     wireMsg: JsonRpcRequest | JsonRpcNotification,
     ctx: TransportCall,
-  ): Promise<Headers> {
+  ): Headers {
     const headers = new Headers();
     headers.set("Content-Type", "application/json");
     headers.set("Accept", "application/json, text/event-stream");
@@ -842,15 +903,6 @@ export class HttpTransport implements Transport {
         continue;
       }
       headers.set(k, v);
-    }
-    // AuthProvider interceptor hook (core auth-types; no auth implementation here).
-    if (this.authProvider) {
-      try {
-        const auth = await this.authProvider.headerFor(this.url, wireMsg.method);
-        if (auth?.authorization) headers.set("Authorization", auth.authorization);
-      } catch (err) {
-        this.emit("violation", `auth headerFor failed: ${err instanceof Error ? err.message : String(err)}`);
-      }
     }
     // Hard guarantee for the wire scan: these are never emitted.
     headers.delete("Mcp-Session-Id");

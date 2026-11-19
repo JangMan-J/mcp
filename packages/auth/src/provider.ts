@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import type { AuthChallenge, AuthHeaderResult, AuthProvider, CredentialStore, FetchPort, RandomPort } from '@mcp-client/core';
+import type { AuthChallenge, AuthHeaderResult, AuthProvider, AuthRequestContext, CredentialStore, FetchPort, RandomPort } from '@mcp-client/core';
 import { discover, getDocument, object, strings, type DiscoveryOptions, type Metadata } from './discovery.js';
 import { AuthError, bearerValue, canonicalResource, detach, fail, hash, isLoopback, parseBearerChallenges, pkceChallenge, secureUrl, type BearerChallenge } from './protocol.js';
 import { SafeFetch } from './safe-fetch.js';
@@ -27,6 +27,7 @@ export interface ConfiguredBearerOptions extends ResourceOptions {
 export class ConfiguredBearer implements AuthProvider {
   readonly #resource: string;
   #context = 'anonymous';
+  #credentialVersion: object = {};
   #pending: Promise<boolean> | undefined;
   readonly #options: ConfiguredBearerOptions;
   constructor(options: ConfiguredBearerOptions) {
@@ -39,14 +40,20 @@ export class ConfiguredBearer implements AuthProvider {
     if (!matches(this.#options, this.#resource, url)) return undefined;
     try {
       const token = bearerValue(typeof this.#options.token === 'string' ? this.#options.token : await this.#options.token());
-      this.#context = hash(JSON.stringify([this.#resource, 'bearer', hash(token)]));
-      return { authorization: `Bearer ${token}`, contextId: this.#context };
+      const context = hash(JSON.stringify([this.#resource, 'bearer', hash(token)]));
+      if (context !== this.#context) this.#credentialVersion = {};
+      this.#context = context;
+      return { authorization: `Bearer ${token}`, contextId: context, credentialVersion: this.#credentialVersion };
     } catch { return fail('configured-bearer-unavailable'); }
   }
   async onChallenge(challenge: AuthChallenge, signal: AbortSignal): Promise<boolean> {
     if (challenge.status !== 401 || !this.#options.refresh || signal.aborted ||
       (challenge.resource !== undefined && !matches(this.#options, this.#resource, challenge.resource))) return false;
-    this.#pending ??= Promise.resolve().then(this.#options.refresh).then(() => true, () => false).finally(() => { this.#pending = undefined; });
+    if (challenge.credentialVersion && challenge.credentialVersion !== this.#credentialVersion) return true;
+    this.#pending ??= Promise.resolve().then(this.#options.refresh).then(() => {
+      this.#credentialVersion = {};
+      return true;
+    }, () => false).finally(() => { this.#pending = undefined; });
     return detach(this.#pending, signal);
   }
 }
@@ -91,6 +98,7 @@ interface Session {
 }
 interface Grant extends Session {
   readonly context: string;
+  readonly version: object;
   readonly token: string;
   readonly expires: number;
   readonly scopes: readonly string[];
@@ -103,12 +111,16 @@ export class OAuthAuthorization implements AuthProvider {
   readonly #fetch: FetchPort;
   readonly #store: CredentialStore;
   readonly #stepUps = new Map<string, number>();
+  readonly stepUpLimit: number;
   #grant: Grant | undefined;
+  #resourceMetadataHint: string | undefined;
   #pending: { readonly scopeKey?: string; readonly work: Promise<void> } | undefined;
 
   readonly #options: OAuthOptions;
   constructor(options: OAuthOptions) {
     this.#options = options;
+    this.stepUpLimit = options.stepUpLimit ?? 3;
+    if (!Number.isSafeInteger(this.stepUpLimit) || this.stepUpLimit < 0) fail('invalid-step-up-limit');
     secureUrl(options.resource, options.allowInsecureDev);
     this.#resource = canonicalResource(options.resource, options.preserveTrailingSlash);
     this.#redirect = secureUrl(options.redirectUri, options.allowInsecureDev);
@@ -117,23 +129,26 @@ export class OAuthAuthorization implements AuthProvider {
     this.#store = options.credentials ?? new MemoryCredentialStore();
   }
   contextId() { return this.#grant?.context ?? 'anonymous'; }
-  async headerFor(url: string): Promise<AuthHeaderResult | undefined> {
+  async headerFor(url: string, _operation?: string, context?: AuthRequestContext): Promise<AuthHeaderResult | undefined> {
     if (!matches(this.#options, this.#resource, url)) return undefined;
+    context?.signal.throwIfAborted();
     const grant = this.#grant;
-    if (this.#pending) await this.#pending.work;
-    else if (grant && grant.expires - (this.#options.skewMs ?? 30_000) <= this.now()) {
-      await this.start(undefined, signal => this.renew(grant, grant.scopes, signal));
-    }
-    return this.#grant && { authorization: `Bearer ${this.#grant.token}`, contextId: this.#grant.context };
+    const work = this.#pending?.work ?? (grant && grant.expires - (this.#options.skewMs ?? 30_000) <= this.now()
+      ? this.start(undefined, signal => this.renew(grant, grant.scopes, signal, context)) : undefined);
+    if (work) await (context ? detach(work, context.signal) : work);
+    return this.#grant && { authorization: `Bearer ${this.#grant.token}`, contextId: this.#grant.context, credentialVersion: this.#grant.version };
   }
 
-  async onChallenge(challenge: AuthChallenge, signal: AbortSignal): Promise<boolean> {
+  async onChallenge(challenge: AuthChallenge, signal: AbortSignal, context?: AuthRequestContext): Promise<boolean> {
     if (signal.aborted) fail('cancelled');
     if (challenge.resource !== undefined && !matches(this.#options, this.#resource, challenge.resource)) return false;
     const parsed = parseBearerChallenges(challenge.wwwAuthenticate ?? '');
     const bearer = challenge.status === 403 ? parsed.find(x => x.error === 'insufficient_scope') :
       parsed.find(x => x.resource_metadata !== undefined) ?? parsed[0];
     if (challenge.status === 403 && !bearer) return false;
+    if (challenge.status === 401 && !this.#pending && this.#grant && challenge.credentialVersion !== undefined &&
+        challenge.credentialVersion !== this.#grant.version &&
+        (bearer?.resource_metadata === undefined || bearer.resource_metadata === this.#resourceMetadataHint)) return true;
     if (challenge.status === 401 && !bearer && /^\s*Basic(?:\s|$)/iu.test(challenge.wwwAuthenticate ?? '')) fail('unsupported-scheme');
     const operation = challenge.operation ?? '';
     const scopeKey = challenge.status === 403 ? JSON.stringify([operation, bearer?.scope, bearer?.resource_metadata]) : undefined;
@@ -146,10 +161,10 @@ export class OAuthAuthorization implements AuthProvider {
     }
     if (scopeKey !== undefined) {
       const used = this.#stepUps.get(operation) ?? 0;
-      if (used >= (this.#options.stepUpLimit ?? 3)) fail('insufficient-scope');
+      if (used >= this.stepUpLimit) fail('insufficient-scope');
       this.#stepUps.set(operation, used + 1);
     }
-    await detach(this.start(scopeKey, flowSignal => this.challenge(challenge, bearer, flowSignal)), signal);
+    await detach(this.start(scopeKey, flowSignal => this.challenge(challenge, bearer, flowSignal, context)), signal);
     return true;
   }
 
@@ -165,7 +180,7 @@ export class OAuthAuthorization implements AuthProvider {
     return work;
   }
 
-  private async challenge(challenge: AuthChallenge, bearer: BearerChallenge | undefined, signal: AbortSignal) {
+  private async challenge(challenge: AuthChallenge, bearer: BearerChallenge | undefined, signal: AbortSignal, context?: AuthRequestContext) {
     const previous = this.#grant;
     const step = challenge.status === 403;
     if (!step) this.#grant = undefined;
@@ -177,12 +192,13 @@ export class OAuthAuthorization implements AuthProvider {
       ...(bearer?.scope !== undefined ? scopesOf(bearer.scope) : step && sameIssuer ? [] : scopes.flatMap(scopesOf)),
     ])].filter(scope => scope !== 'offline_access');
     if (this.#options.offlineAccess && metadata.scopes.includes('offline_access')) selected.push('offline_access');
-    const session = { metadata, registration: await this.registration(metadata, signal) };
+    const session = { metadata, registration: await this.registration(metadata, signal, context) };
     if (!step && (!previous || sameIssuer)) {
-      await this.renew(session, selected, signal, sameIssuer ? previous : undefined);
+      await this.renew(session, selected, signal, context, sameIssuer ? previous : undefined);
     } else {
-      await this.interactive(session, selected, signal);
+      await this.interactive(session, selected, signal, context);
     }
+    this.#resourceMetadataHint = bearer?.resource_metadata;
   }
 
   private key(session: Session, type: 'registration' | 'refresh') {
@@ -190,12 +206,12 @@ export class OAuthAuthorization implements AuthProvider {
   }
 
   private validateRegistration(reg: ClientRegistration): ClientRegistration {
-    if (typeof reg.clientId !== 'string' || !reg.clientId || !strings(reg.redirectUris).includes(this.#options.redirectUri) ||
+    if (!reg || typeof reg.clientId !== 'string' || !reg.clientId || !strings(reg.redirectUris).includes(this.#options.redirectUri) ||
       (reg.clientSecret !== undefined && typeof reg.clientSecret !== 'string')) fail('invalid-client-registration');
     return { clientId: reg.clientId, redirectUris: [...reg.redirectUris], ...(reg.clientSecret !== undefined ? { clientSecret: reg.clientSecret } : {}) };
   }
 
-  private async registration(metadata: Metadata, signal: AbortSignal): Promise<ClientRegistration> {
+  private async registration(metadata: Metadata, signal: AbortSignal, context?: AuthRequestContext): Promise<ClientRegistration> {
     const registrations = this.#options.registrations;
     const preset = registrations && Object.hasOwn(registrations, metadata.issuer) ? registrations[metadata.issuer] : undefined;
     if (preset) return this.validateRegistration(preset);
@@ -215,9 +231,9 @@ export class OAuthAuthorization implements AuthProvider {
     const key = JSON.stringify(['registration', this.#resource, metadata.issuer, null]);
     const cached = await this.#store.get(key);
     if (cached) return this.validateRegistration(JSON.parse(cached) as ClientRegistration);
-    if (!this.#options.consent) fail('no-registration-mechanism');
-    const result = await this.consent({ kind: 'client-info', serverLabel: this.#options.serverLabel ?? this.#resource,
-      issuer: metadata.issuer, redirectUri: this.#options.redirectUri }, signal);
+    if (!this.#options.consent && !context?.consent) fail('no-registration-mechanism');
+    const result = await this.consent({ kind: 'client-info', serverLabel: this.#options.serverLabel ?? context?.serverLabel ?? this.#resource,
+      issuer: metadata.issuer, redirectUri: this.#options.redirectUri }, signal, context);
     if (!result.registration) fail('no-registration-mechanism');
     const registration = this.validateRegistration(result.registration);
     signal.throwIfAborted();
@@ -225,16 +241,25 @@ export class OAuthAuthorization implements AuthProvider {
     return registration;
   }
 
-  private async consent(prompt: AuthorizationPrompt, signal: AbortSignal) {
-    if (!this.#options.consent) throw new AuthError('auth-unavailable', prompt.kind);
+  private async consent(prompt: AuthorizationPrompt, signal: AbortSignal, context?: AuthRequestContext) {
     signal.throwIfAborted();
-    const result = await this.#options.consent.request(prompt, signal);
+    if (this.#options.consent) {
+      const result = await this.#options.consent.request(prompt, signal);
+      if (result.decision !== 'accept') fail(result.decision === 'decline' ? 'declined' : 'cancelled');
+      signal.throwIfAborted();
+      return result;
+    }
+    if (!context?.consent) throw new AuthError('auth-unavailable', prompt.kind);
+    const result = await context.consent.request(prompt, signal);
     if (result.decision !== 'accept') fail(result.decision === 'decline' ? 'declined' : 'cancelled');
     signal.throwIfAborted();
-    return result;
+    if (prompt.kind === 'client-info' && result.content) {
+      return { registration: this.validateRegistration(result.content as unknown as ClientRegistration) };
+    }
+    return { registration: undefined };
   }
 
-  private async renew(session: Session, scopes: readonly string[], signal: AbortSignal, previous = this.#grant) {
+  private async renew(session: Session, scopes: readonly string[], signal: AbortSignal, context?: AuthRequestContext, previous = this.#grant) {
     const refresh = await this.#store.get(this.key(session, 'refresh'));
     if (refresh) {
       const form = new URLSearchParams({ grant_type: 'refresh_token', refresh_token: refresh });
@@ -242,7 +267,7 @@ export class OAuthAuthorization implements AuthProvider {
       await this.#store.delete(this.key(session, 'refresh'));
       this.#grant = undefined;
     }
-    await this.interactive(session, scopes, signal);
+    await this.interactive(session, scopes, signal, context);
   }
 
   private nonce(size: number) {
@@ -250,13 +275,13 @@ export class OAuthAuthorization implements AuthProvider {
     if (bytes.length !== size) fail('invalid-random-source');
     return Buffer.from(bytes).toString('base64url');
   }
-  private async interactive(session: Session, scopes: readonly string[], signal: AbortSignal) {
+  private async interactive(session: Session, scopes: readonly string[], signal: AbortSignal, context?: AuthRequestContext) {
     const { metadata, registration } = session;
     const { browser, redirect, redirectUri } = this.#options;
     if (!browser || !redirect) throw new AuthError('auth-unavailable', 'authorize');
-    await this.consent({ kind: 'authorize', serverLabel: this.#options.serverLabel ?? this.#resource,
+    await this.consent({ kind: 'authorize', serverLabel: this.#options.serverLabel ?? context?.serverLabel ?? this.#resource,
       issuerHost: new URL(metadata.issuer).hostname, resource: this.#resource, scopes: Object.freeze([...scopes]),
-      redirectHost: this.#redirect.hostname, localhostWarning: isLoopback(this.#redirect.hostname) }, signal);
+      redirectHost: this.#redirect.hostname, localhostWarning: isLoopback(this.#redirect.hostname) }, signal, context);
     const verifier = this.nonce(32), state = this.nonce(24);
     const url = new URL(metadata.authorizationEndpoint);
     const parameters = { response_type: 'code', client_id: registration.clientId, redirect_uri: redirectUri,
@@ -317,7 +342,7 @@ export class OAuthAuthorization implements AuthProvider {
     else if (!refresh) await this.#store.delete(key);
     signal.throwIfAborted();
     const context = refresh && previous?.metadata.issuer === metadata.issuer && previous.registration.clientId === registration.clientId ? previous.context : randomBytes(18).toString('base64url');
-    this.#grant = { ...session, token, context, expires: lifetime === undefined ? Infinity : this.now() + lifetime * 1000,
+    this.#grant = { ...session, token, context, version: {}, expires: lifetime === undefined ? Infinity : this.now() + lifetime * 1000,
       scopes: [...new Set([...scopes, ...scopesOf(typeof doc['scope'] === 'string' ? doc['scope'] : undefined)])] };
     return true;
   }

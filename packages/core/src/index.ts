@@ -11,6 +11,7 @@ export * from "./outcome.js";
 export * from "./ports.js";
 export * from "./telemetry.js";
 export * from "./auth-types.js";
+export * from "./bearer-challenge.js";
 export * from "./extension.js";
 export * from "./request.js";
 export * from "./lifecycle.js";
@@ -51,6 +52,7 @@ export class McpClient {
     }
     this.manager = new RequestManager({
       transport: opts.transport,
+      serverLabel: opts.server.label ?? opts.server.key,
       ...(opts.ports ? { ports: opts.ports } : {}),
       ...(opts.clientInfo !== undefined ? { clientInfo: opts.clientInfo } : {}),
       extensions: this.extensions,
