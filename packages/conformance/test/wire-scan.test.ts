@@ -222,4 +222,26 @@ describe("wire-scan CLI", () => {
     write(d, "t.json", { fixture: "ok", frames: [okClient] });
     expect(run(d).out).toContain("limitation: DCR detection relies on endpoint:'registration'");
   });
+
+  it("accepts zeroWire: true with empty frames", () => {
+    const d = tmp();
+    write(d, "zero.json", { fixture: "negative/zero-wire", zeroWire: true, frames: [] });
+    const r = run(d);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("clean (1 transcripts, 0 client frames)");
+  });
+
+  it("rejects zeroWire: true with non-empty frames and non-boolean zeroWire", () => {
+    for (const doc of [
+      { fixture: "negative/non-empty", zeroWire: true, frames: [okClient] },
+      { fixture: "negative/bad-type", zeroWire: "yes", frames: [] },
+      { fixture: "negative/bad-type-frames", zeroWire: "yes", frames: [okClient] },
+    ]) {
+      const d = tmp();
+      const p = write(d, "t.json", doc);
+      const r = run(p);
+      expect(r.code, JSON.stringify(doc)).toBe(1);
+      expect(r.out).toContain("error");
+    }
+  });
 });

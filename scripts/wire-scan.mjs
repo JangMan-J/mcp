@@ -3,7 +3,7 @@
 // Usage: node scripts/wire-scan.mjs <file-or-dir>...
 //
 // Input: JSON files
-//   { fixture: string, incomplete?: false, mcpEndpoint?: string,
+//   { fixture: string, incomplete?: false, zeroWire?: boolean, mcpEndpoint?: string,
 //     frames: [{ direction: "client"|"server", endpoint?: "mcp"|"oauth"|"registration"|"other",
 //                message?: JSON-RPC, method?: HTTP method, headers?: object, url?: string, incomplete?: false }] }
 //
@@ -142,6 +142,9 @@ export function scanTranscript(doc, label = "<input>") {
   if (!isObj(doc)) return { errors: [`${label}: transcript is not a JSON object`], violations, clientFrames };
   if (typeof doc.fixture !== "string" || doc.fixture.length === 0) errors.push(`${label}: missing 'fixture' string`);
   if (doc.incomplete !== undefined && doc.incomplete !== false) errors.push(`${label}: transcript marked incomplete`);
+  if (doc.zeroWire !== undefined && typeof doc.zeroWire !== "boolean") {
+    errors.push(`${label}: 'zeroWire' must be a boolean`);
+  }
   if (doc.mcpEndpoint !== undefined && typeof doc.mcpEndpoint !== "string") {
     errors.push(`${label}: 'mcpEndpoint' must be a string`);
   }
@@ -149,7 +152,11 @@ export function scanTranscript(doc, label = "<input>") {
     errors.push(`${label}: missing 'frames' array`);
     return { errors, violations, clientFrames };
   }
-  if (doc.frames.length === 0) errors.push(`${label}: empty 'frames' (no evidence)`);
+  if (doc.zeroWire === true && doc.frames.length > 0) {
+    errors.push(`${label}: 'zeroWire' transcript must have empty 'frames'`);
+  } else if (doc.zeroWire !== true && doc.frames.length === 0) {
+    errors.push(`${label}: empty 'frames' (no evidence)`);
+  }
   const name = typeof doc.fixture === "string" ? doc.fixture : "?";
   const mcpEndpoint = typeof doc.mcpEndpoint === "string" ? doc.mcpEndpoint : undefined;
   doc.frames.forEach((frame, i) => {
@@ -194,20 +201,25 @@ export function scanPaths(paths) {
     }
   }
   if (paths.length > 0 && files.length === 0 && errors.length === 0) errors.push("no transcript files found (no evidence)");
+  let allZeroWire = true;
   for (const f of files) {
     let doc;
     try {
       doc = JSON.parse(readFileSync(f, "utf8"));
     } catch {
       errors.push(`${f}: invalid JSON`);
+      allZeroWire = false;
       continue;
     }
+    if (doc?.zeroWire !== true) allZeroWire = false;
     const r = scanTranscript(doc, f);
     errors.push(...r.errors);
     violations.push(...r.violations);
     clientFrames += r.clientFrames;
   }
-  if (files.length > 0 && errors.length === 0 && clientFrames === 0) errors.push("no client frames in any transcript (no evidence)");
+  if (files.length > 0 && errors.length === 0 && clientFrames === 0 && !allZeroWire) {
+    errors.push("no client frames in any transcript (no evidence)");
+  }
   return { errors, violations, files: files.length, clientFrames };
 }
 
