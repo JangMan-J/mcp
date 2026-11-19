@@ -3,8 +3,9 @@
 #
 # Stages:
 #   1. prereq (dev toolchain): export HEAD into a scratch tree, `npm ci` with dev
-#      deps, build every workspace (needs TypeScript), and run the remove:ext-*
-#      checks (they rebuild with tsc). Results land in $GATE_PREREQ_DIR; nothing
+#      deps, build every workspace (needs TypeScript), run pinned workspace
+#      validation (check:deps-doc, check:forbidden, check:deps -> validate.json)
+#      and all eight remove:ext-* checks (they rebuild with tsc -> remove-ext.json). Results land in $GATE_PREREQ_DIR; nothing
 #      from this tree's node_modules reaches the production runtime.
 #   2. prod: export HEAD again, copy only built dist/ output in, `npm ci --omit=dev`.
 #   3. run: assert-no-pi + packages/conformance/dist/gate.js in a fresh session
@@ -95,14 +96,39 @@ isolated "$DEV" "$GATE_PREREQ_DIR/npm-ci-dev.log" -- "$NPM_BIN" ci --prefer-offl
 isolated "$DEV" "$GATE_PREREQ_DIR/build.log" -- "$NODE_BIN" scripts/build-workspaces.mjs \
   || { echo "gate: build failed (see $GATE_PREREQ_DIR/build.log)" >&2; exit 1; }
 
+# Pinned workspace validation needs dev deps (dependency-cruiser), so it runs
+# here, not in the production tree. Results: $GATE_PREREQ_DIR/validate.json.
+validate_rc=0
+validate_json="$GATE_PREREQ_DIR/validate.json"
+printf '[' >"$validate_json"
+sep=""
+for check in check-deps-doc check-forbidden check-deps; do
+  rc=0
+  isolated "$DEV" "$GATE_PREREQ_DIR/$check.log" -- "$NODE_BIN" "scripts/$check.mjs" || rc=$?
+  printf '%s{"script":"%s","exitCode":%d,"log":"%s"}' "$sep" "${check/-/:}" "$rc" "$check.log" >>"$validate_json"
+  sep=","
+  echo "gate: prereq ${check/-/:} exit $rc"
+  [ "$rc" -eq 0 ] || validate_rc=1
+done
+printf ']\n' >>"$validate_json"
+
+# Explicit removal set; must match ALL_EXTENSIONS in packages/conformance/src/gate.ts
+# and the remove:ext-* aliases in package.json.
+REMOVE_EXTS=(ext-apps ext-client-credentials ext-enterprise-auth ext-events
+  ext-events-webhook ext-server-cards ext-skills ext-tasks)
 remove_json="$GATE_PREREQ_DIR/remove-ext.json"
 printf '[' >"$remove_json"
 sep=""
-for script in $(cd "$DEV" && "$NODE_BIN" -e 'for (const k of Object.keys(JSON.parse(require("fs").readFileSync("package.json","utf8")).scripts)) if (k.startsWith("remove:")) console.log(k)'); do
-  ext="${script#remove:}"
+for ext in "${REMOVE_EXTS[@]}"; do
+  script="remove:$ext"
   log="$GATE_PREREQ_DIR/$ext.log"
   rc=0
-  isolated "$DEV" "$log" -- "$NODE_BIN" scripts/check-remove-ext.mjs "$ext" || rc=$?
+  if (cd "$DEV" && "$NODE_BIN" -e 'process.exit(require("./package.json").scripts?.[process.argv[1]] ? 0 : 1)' "$script"); then
+    isolated "$DEV" "$log" -- "$NODE_BIN" scripts/check-remove-ext.mjs "$ext" || rc=$?
+  else
+    echo "gate: package.json lacks script $script" >"$log"
+    rc=127
+  fi
   printf '%s{"script":"%s","ext":"%s","exitCode":%d,"log":"%s"}' "$sep" "$script" "$ext" "$rc" "$ext.log" >>"$remove_json"
   sep=","
   echo "gate: prereq $script exit $rc"
@@ -117,7 +143,7 @@ for d in "$DEV"/packages/*/dist; do
 done
 isolated "$PROD" "$GATE_PREREQ_DIR/npm-ci-prod.log" -- "$NPM_BIN" ci --omit=dev --prefer-offline --ignore-scripts \
   || { echo "gate: production npm ci failed (see $GATE_PREREQ_DIR/npm-ci-prod.log)" >&2; exit 1; }
-rm -rf "$DEV"
+# $DEV stays until cleanup: gate.js reruns the removal suite there via GATE_DEV_WORKSPACE.
 
 GATE_JS="$PROD/packages/conformance/dist/gate.js"
 if [ ! -f "$GATE_JS" ]; then
@@ -132,8 +158,15 @@ gate_env=(
   GATE_PREREQ_DIR="$GATE_PREREQ_DIR"
   GATE_CHECKOUT="$ROOT"
   GATE_RUNTIME_ROOT="$PROD"
+  GATE_DEV_WORKSPACE="$DEV"
   GATE_NO_DOWNLOAD=1
   npm_config_offline=true
 )
 isolated "$PROD" - "${gate_env[@]}" -- "$NODE_BIN" scripts/assert-no-pi.mjs
-isolated "$PROD" - "${gate_env[@]}" -- "$NODE_BIN" "$GATE_JS" "$@"
+gate_rc=0
+isolated "$PROD" - "${gate_env[@]}" -- "$NODE_BIN" "$GATE_JS" "$@" || gate_rc=$?
+if [ "$validate_rc" -ne 0 ]; then
+  echo "gate: pinned workspace validation failed (see $GATE_PREREQ_DIR/validate.json)" >&2
+  [ "$gate_rc" -ne 0 ] || gate_rc=1
+fi
+exit "$gate_rc"
