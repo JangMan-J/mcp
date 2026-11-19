@@ -1,0 +1,53 @@
+{
+  "id": "sub/graceful-close",
+  "requirements": [
+    "SUB-END-2"
+  ],
+  "pin": "tag",
+  "source": [
+    "specification/2026-07-28/basic/patterns/subscriptions.md#Graceful Closure"
+  ],
+  "tier": "A",
+  "binding": "http",
+  "client": {
+    "clock": "fake",
+    "setup": {}
+  },
+  "script": [
+    {
+      "do": "listen",
+      "as": "a",
+      "filter": {
+        "tools": true
+      }
+    },
+    {
+      "do": "notify",
+      "target": "a",
+      "method": "notifications/subscriptions/acknowledged",
+      "params": {
+        "notifications": {
+          "toolsListChanged": true
+        }
+      }
+    },
+    {
+      "do": "end",
+      "abrupt": false,
+      "target": "a"
+    },
+    {
+      "do": "advance",
+      "ms": 60000
+    }
+  ],
+  "expect": {
+    "observe": {
+      "a.reason": "server-graceful",
+      "wire.length": 1
+    }
+  },
+  "mutants": [
+    "drop-route"
+  ]
+}

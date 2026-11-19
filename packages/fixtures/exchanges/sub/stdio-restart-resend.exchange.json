@@ -1,0 +1,67 @@
+{
+  "id": "sub/stdio-restart-resend",
+  "requirements": [
+    "SUB-REST-1",
+    "SUB-REST-3"
+  ],
+  "pin": "tag",
+  "source": [
+    "specification/2026-07-28/basic/patterns/subscriptions.md#Graceful Closure"
+  ],
+  "tier": "A",
+  "binding": "stdio",
+  "client": {
+    "clock": "fake",
+    "setup": {}
+  },
+  "script": [
+    {
+      "do": "listen",
+      "as": "a",
+      "filter": {
+        "tools": true
+      }
+    },
+    {
+      "do": "notify",
+      "target": "a",
+      "method": "notifications/subscriptions/acknowledged",
+      "params": {
+        "notifications": {
+          "toolsListChanged": true
+        }
+      }
+    },
+    {
+      "do": "end",
+      "abrupt": true,
+      "target": "a"
+    },
+    {
+      "do": "reconnected"
+    },
+    {
+      "do": "notify",
+      "target": "a",
+      "method": "notifications/subscriptions/acknowledged",
+      "params": {
+        "notifications": {
+          "toolsListChanged": true
+        }
+      }
+    }
+  ],
+  "expect": {
+    "observe": {
+      "wire.length": 2,
+      "wire.1.id": 2,
+      "wire.1.method": "subscriptions/listen",
+      "aEvents": [
+        "resync-needed"
+      ]
+    }
+  },
+  "mutants": [
+    "drop-reconnect"
+  ]
+}

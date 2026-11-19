@@ -1,0 +1,67 @@
+{
+  "id": "elic/url-full-url-shown",
+  "requirements": [
+    "ELIC-URL-4",
+    "ELIC-URL-5",
+    "ELIC-URL-6",
+    "ELIC-URL-7"
+  ],
+  "pin": "tag",
+  "source": [
+    "specification/2026-07-28/client/elicitation.md#Safe URL Handling"
+  ],
+  "tier": "A",
+  "binding": "any",
+  "client": {
+    "clock": "fake",
+    "setup": {
+      "url": true,
+      "browser": true,
+      "replies": [
+        {
+          "resultType": "input_required",
+          "inputRequests": {
+            "visit": {
+              "method": "elicitation/create",
+              "params": {
+                "message": "Visit",
+                "mode": "url",
+                "url": "https://xn--bcher-kva.example/path?q=1#fragment"
+              }
+            }
+          }
+        }
+      ],
+      "decisions": [
+        "accept"
+      ]
+    }
+  },
+  "script": [
+    {
+      "do": "call",
+      "method": "tools/call",
+      "params": {}
+    }
+  ],
+  "expect": {
+    "observe": {
+      "opened": [
+        "https://xn--bcher-kva.example/path?q=1#fragment"
+      ],
+      "ui.0": {
+        "message": "Visit",
+        "serverLabel": "configured server",
+        "url": "https://xn--bcher-kva.example/path?q=1#fragment",
+        "hostHighlight": "xn--bcher-kva.example",
+        "punycodeWarning": true
+      },
+      "wire.1.params.inputResponses.visit": {
+        "action": "accept"
+      }
+    }
+  },
+  "mutants": [
+    "no-ports"
+  ]
+}

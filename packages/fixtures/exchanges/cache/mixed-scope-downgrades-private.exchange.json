@@ -1,0 +1,79 @@
+{
+  "id": "cache/mixed-scope-downgrades-private",
+  "requirements": [
+    "CACHE-PAGE-3"
+  ],
+  "pin": "tag",
+  "source": [
+    "specification/2026-07-28/server/utilities/caching.md#Interaction with Pagination"
+  ],
+  "tier": "A",
+  "binding": "any",
+  "client": {
+    "clock": "fake",
+    "setup": {
+      "sharePublic": true,
+      "replies": [
+        {
+          "resultType": "complete",
+          "cacheScope": "public",
+          "ttlMs": 100,
+          "v": 1
+        },
+        {
+          "resultType": "complete",
+          "cacheScope": "private",
+          "ttlMs": 100,
+          "v": 2
+        },
+        {
+          "resultType": "complete",
+          "cacheScope": "private",
+          "ttlMs": 100,
+          "v": 3
+        }
+      ]
+    }
+  },
+  "script": [
+    {
+      "do": "call",
+      "method": "tools/list",
+      "params": {},
+      "cacheOnly": true,
+      "as": "call"
+    },
+    {
+      "do": "call",
+      "method": "tools/list",
+      "params": {
+        "cursor": "next"
+      },
+      "cacheOnly": true,
+      "as": "call"
+    },
+    {
+      "do": "auth",
+      "context": "b"
+    },
+    {
+      "do": "call",
+      "method": "tools/list",
+      "params": {},
+      "cacheOnly": true,
+      "as": "call"
+    }
+  ],
+  "expect": {
+    "observe": {
+      "wire.length": 3,
+      "call.value.v": 3,
+      "diags": [
+        "mixed-cache-scope"
+      ]
+    }
+  },
+  "mutants": [
+    "ignore-cursor"
+  ]
+}

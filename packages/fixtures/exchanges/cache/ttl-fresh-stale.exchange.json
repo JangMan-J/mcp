@@ -1,0 +1,75 @@
+{
+  "id": "cache/ttl-fresh-stale",
+  "requirements": [
+    "CACHE-TTL-3",
+    "CACHE-SCOPE-1"
+  ],
+  "pin": "tag",
+  "source": [
+    "specification/2026-07-28/server/utilities/caching.md#Freshness Calculation",
+    "specification/2026-07-28/server/utilities/caching.md#Cacheable Results"
+  ],
+  "tier": "A",
+  "binding": "any",
+  "client": {
+    "clock": "fake",
+    "setup": {
+      "replies": [
+        {
+          "resultType": "complete",
+          "cacheScope": "private",
+          "ttlMs": 100,
+          "v": 1
+        },
+        {
+          "resultType": "complete",
+          "cacheScope": "private",
+          "ttlMs": 100,
+          "v": 2
+        }
+      ]
+    }
+  },
+  "script": [
+    {
+      "do": "call",
+      "method": "tools/list",
+      "params": {},
+      "cacheOnly": true,
+      "as": "call"
+    },
+    {
+      "do": "advance",
+      "ms": 99
+    },
+    {
+      "do": "call",
+      "method": "tools/list",
+      "params": {},
+      "cacheOnly": true,
+      "as": "fresh"
+    },
+    {
+      "do": "advance",
+      "ms": 1
+    },
+    {
+      "do": "call",
+      "method": "tools/list",
+      "params": {},
+      "cacheOnly": true,
+      "as": "call"
+    }
+  ],
+  "expect": {
+    "observe": {
+      "fresh.meta.cache": "hit",
+      "call.meta.cache": "miss",
+      "call.value.v": 2
+    }
+  },
+  "mutants": [
+    "ignore-ttl",
+    "no-cache"
+  ]
+}

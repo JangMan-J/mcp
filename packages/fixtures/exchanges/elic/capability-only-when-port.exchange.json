@@ -1,0 +1,28 @@
+{
+  "id": "elic/capability-only-when-port",
+  "requirements": [
+    "ELIC-CAP-1",
+    "ELIC-CAP-2"
+  ],
+  "pin": "tag",
+  "source": [
+    "specification/2026-07-28/client/elicitation.md#Capabilities"
+  ],
+  "tier": "A",
+  "binding": "any",
+  "client": {
+    "clock": "fake",
+    "setup": {
+      "url": true
+    }
+  },
+  "script": [],
+  "expect": {
+    "observe": {
+      "caps": {}
+    }
+  },
+  "mutants": [
+    "advertise-all"
+  ]
+}

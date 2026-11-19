@@ -1,0 +1,69 @@
+{
+  "id": "mrtr/no-state-no-echo",
+  "requirements": [
+    "MRTR-C-5"
+  ],
+  "pin": "tag",
+  "source": [
+    "specification/2026-07-28/basic/patterns/mrtr.md#Client Requirements (Basic Workflow)"
+  ],
+  "tier": "A",
+  "binding": "any",
+  "client": {
+    "clock": "fake",
+    "setup": {
+      "form": true,
+      "replies": [
+        {
+          "resultType": "input_required",
+          "requestState": " \tΔ\r\n "
+        },
+        {
+          "resultType": "input_required",
+          "inputRequests": {
+            "pick": {
+              "method": "elicitation/create",
+              "params": {
+                "message": "Choose a city",
+                "requestedSchema": {
+                  "type": "object",
+                  "properties": {
+                    "city": {
+                      "type": "string",
+                      "minLength": 1,
+                      "default": "Oslo"
+                    }
+                  },
+                  "required": [
+                    "city"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "script": [
+    {
+      "do": "call",
+      "method": "tools/call",
+      "params": {}
+    }
+  ],
+  "expect": {
+    "observe": {
+      "wire.2.params": {
+        "inputResponses": {
+          "pick": {
+            "action": "cancel"
+          }
+        }
+      }
+    }
+  },
+  "mutants": [
+    "raw-result"
+  ]
+}

@@ -1,0 +1,60 @@
+{
+  "id": "sub/unrequested-type-dropped",
+  "requirements": [
+    "SUB-FILTER-1"
+  ],
+  "pin": "tag",
+  "source": [
+    "specification/2026-07-28/basic/patterns/subscriptions.md#Opening a Stream"
+  ],
+  "tier": "A",
+  "binding": "any",
+  "client": {
+    "clock": "fake",
+    "setup": {}
+  },
+  "script": [
+    {
+      "do": "listen",
+      "as": "a",
+      "filter": {
+        "tools": true
+      }
+    },
+    {
+      "do": "notify",
+      "target": "a",
+      "method": "notifications/subscriptions/acknowledged",
+      "params": {
+        "notifications": {
+          "toolsListChanged": true
+        }
+      }
+    },
+    {
+      "do": "notify",
+      "target": "a",
+      "method": "notifications/prompts/list_changed",
+      "params": {}
+    },
+    {
+      "do": "notify",
+      "target": "a",
+      "method": "notifications/tools/list_changed",
+      "params": {}
+    }
+  ],
+  "expect": {
+    "observe": {
+      "aEvents": [
+        "notifications/tools/list_changed"
+      ],
+      "diags": [
+        "ungranted-notification"
+      ]
+    }
+  },
+  "mutants": [
+    "drop-route"
+  ]
+}

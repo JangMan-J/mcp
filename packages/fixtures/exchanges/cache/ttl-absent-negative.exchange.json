@@ -1,0 +1,83 @@
+{
+  "id": "cache/ttl-absent-negative",
+  "requirements": [
+    "CACHE-TTL-1",
+    "CACHE-TTL-2",
+    "CACHE-TTL-4"
+  ],
+  "pin": "tag",
+  "source": [
+    "specification/2026-07-28/server/utilities/caching.md#Time-to-Live (TTL) Field"
+  ],
+  "tier": "A",
+  "binding": "any",
+  "client": {
+    "clock": "fake",
+    "setup": {
+      "replies": [
+        {
+          "resultType": "complete",
+          "v": 0
+        },
+        {
+          "resultType": "complete",
+          "cacheScope": "private",
+          "ttlMs": -3,
+          "v": 1
+        },
+        {
+          "resultType": "complete",
+          "cacheScope": "private",
+          "ttlMs": 0,
+          "v": 2
+        },
+        {
+          "resultType": "complete",
+          "cacheScope": "private",
+          "ttlMs": 100,
+          "v": 3
+        }
+      ]
+    }
+  },
+  "script": [
+    {
+      "do": "call",
+      "method": "tools/list",
+      "params": {},
+      "cacheOnly": true,
+      "as": "call"
+    },
+    {
+      "do": "call",
+      "method": "tools/list",
+      "params": {},
+      "cacheOnly": true,
+      "as": "call"
+    },
+    {
+      "do": "call",
+      "method": "tools/list",
+      "params": {},
+      "cacheOnly": true,
+      "as": "call"
+    },
+    {
+      "do": "call",
+      "method": "tools/list",
+      "params": {},
+      "cacheOnly": true,
+      "as": "call"
+    }
+  ],
+  "expect": {
+    "observe": {
+      "wire.length": 4,
+      "call.value.v": 3,
+      "call.meta.cache": "miss"
+    }
+  },
+  "mutants": [
+    "positive-ttl"
+  ]
+}

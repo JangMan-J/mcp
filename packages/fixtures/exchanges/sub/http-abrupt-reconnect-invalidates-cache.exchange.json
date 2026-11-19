@@ -1,0 +1,98 @@
+{
+  "id": "sub/http-abrupt-reconnect-invalidates-cache",
+  "requirements": [
+    "SUB-REST-2",
+    "CACHE-INV-3"
+  ],
+  "pin": "tag",
+  "source": [
+    "specification/2026-07-28/basic/patterns/subscriptions.md#Graceful Closure",
+    "specification/2026-07-28/server/utilities/caching.md#Interaction with Notifications"
+  ],
+  "tier": "A",
+  "binding": "http",
+  "client": {
+    "clock": "fake",
+    "setup": {
+      "replies": [
+        {
+          "resultType": "complete",
+          "cacheScope": "private",
+          "ttlMs": 60000,
+          "v": 1
+        },
+        {
+          "resultType": "complete",
+          "cacheScope": "private",
+          "ttlMs": 100,
+          "v": 2
+        }
+      ]
+    }
+  },
+  "script": [
+    {
+      "do": "listen",
+      "as": "a",
+      "filter": {
+        "tools": true
+      }
+    },
+    {
+      "do": "notify",
+      "target": "a",
+      "method": "notifications/subscriptions/acknowledged",
+      "params": {
+        "notifications": {
+          "toolsListChanged": true
+        }
+      }
+    },
+    {
+      "do": "call",
+      "method": "tools/list",
+      "params": {},
+      "cacheOnly": true,
+      "as": "call"
+    },
+    {
+      "do": "end",
+      "abrupt": true,
+      "target": "a"
+    },
+    {
+      "do": "advance",
+      "ms": 500
+    },
+    {
+      "do": "notify",
+      "target": "a",
+      "method": "notifications/subscriptions/acknowledged",
+      "params": {
+        "notifications": {
+          "toolsListChanged": true
+        }
+      }
+    },
+    {
+      "do": "call",
+      "method": "tools/list",
+      "params": {},
+      "cacheOnly": true,
+      "as": "call"
+    }
+  ],
+  "expect": {
+    "observe": {
+      "wire.length": 4,
+      "aEvents": [
+        "resync-needed"
+      ],
+      "call.value.v": 2
+    }
+  },
+  "mutants": [
+    "skip-invalidation",
+    "drop-reconnect"
+  ]
+}

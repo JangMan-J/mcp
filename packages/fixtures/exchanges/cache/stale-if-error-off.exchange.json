@@ -1,0 +1,56 @@
+{
+  "id": "cache/stale-if-error-off",
+  "requirements": [
+    "CACHE-STALE-1"
+  ],
+  "pin": "tag",
+  "source": [
+    "specification/2026-07-28/server/utilities/caching.md#Freshness Calculation"
+  ],
+  "tier": "A",
+  "binding": "any",
+  "client": {
+    "clock": "fake",
+    "setup": {
+      "replies": [
+        {
+          "resultType": "complete",
+          "cacheScope": "private",
+          "ttlMs": 100,
+          "v": 1
+        },
+        {
+          "failure": 500
+        }
+      ]
+    }
+  },
+  "script": [
+    {
+      "do": "call",
+      "method": "tools/list",
+      "params": {},
+      "cacheOnly": true,
+      "as": "call"
+    },
+    {
+      "do": "advance",
+      "ms": 100
+    },
+    {
+      "do": "call",
+      "method": "tools/list",
+      "params": {},
+      "cacheOnly": true,
+      "as": "call"
+    }
+  ],
+  "expect": {
+    "observe": {
+      "call.kind": "transport-failure"
+    }
+  },
+  "mutants": [
+    "ignore-ttl"
+  ]
+}

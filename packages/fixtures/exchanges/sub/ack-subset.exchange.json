@@ -1,0 +1,75 @@
+{
+  "id": "sub/ack-subset",
+  "requirements": [
+    "SUB-ACK-4",
+    "SUB-REQ-1"
+  ],
+  "pin": "tag",
+  "source": [
+    "specification/2026-07-28/basic/patterns/subscriptions.md#Acknowledgment",
+    "specification/2026-07-28/basic/patterns/subscriptions.md#Opening a Stream"
+  ],
+  "tier": "A",
+  "binding": "any",
+  "client": {
+    "clock": "fake",
+    "setup": {}
+  },
+  "script": [
+    {
+      "do": "listen",
+      "as": "a",
+      "filter": {
+        "tools": true,
+        "resources": true,
+        "resourceUris": [
+          "u",
+          "v"
+        ]
+      }
+    },
+    {
+      "do": "notify",
+      "target": "a",
+      "method": "notifications/subscriptions/acknowledged",
+      "params": {
+        "notifications": {
+          "toolsListChanged": true,
+          "resourceSubscriptions": [
+            "u",
+            "unsolicited"
+          ]
+        }
+      }
+    }
+  ],
+  "expect": {
+    "observe": {
+      "aAck": {
+        "granted": {
+          "toolsListChanged": true,
+          "resourceSubscriptions": [
+            "u"
+          ]
+        },
+        "unsupported": {
+          "resourcesListChanged": true,
+          "resourceSubscriptions": [
+            "v"
+          ]
+        }
+      },
+      "wire.0.params.notifications": {
+        "toolsListChanged": true,
+        "resourcesListChanged": true,
+        "resourceSubscriptions": [
+          "u",
+          "v"
+        ]
+      }
+    }
+  },
+  "mutants": [
+    "drop-route"
+  ]
+}

@@ -1,0 +1,69 @@
+{
+  "id": "cache/discover-invalidated",
+  "requirements": [
+    "CACHE-DISC-1"
+  ],
+  "pin": "tag",
+  "source": [
+    "specification/2026-07-28/server/utilities/caching.md#Cacheable Results"
+  ],
+  "tier": "A",
+  "binding": "any",
+  "client": {
+    "clock": "fake",
+    "setup": {
+      "replies": [
+        {
+          "resultType": "complete",
+          "cacheScope": "private",
+          "ttlMs": 100,
+          "v": 1
+        },
+        {
+          "error": {
+            "code": -32021,
+            "message": "capability"
+          }
+        },
+        {
+          "resultType": "complete",
+          "cacheScope": "private",
+          "ttlMs": 100,
+          "v": 2
+        }
+      ]
+    }
+  },
+  "script": [
+    {
+      "do": "call",
+      "method": "server/discover",
+      "params": {},
+      "cacheOnly": true,
+      "as": "call"
+    },
+    {
+      "do": "call",
+      "method": "tools/call",
+      "params": {},
+      "cacheOnly": true,
+      "as": "call"
+    },
+    {
+      "do": "call",
+      "method": "server/discover",
+      "params": {},
+      "cacheOnly": true,
+      "as": "call"
+    }
+  ],
+  "expect": {
+    "observe": {
+      "wire.length": 3,
+      "call.value.v": 2
+    }
+  },
+  "mutants": [
+    "ignore-error"
+  ]
+}
