@@ -97,15 +97,25 @@ export function checkFile(file, wiki, seen) {
   const text = fs.readFileSync(file, 'utf8');
   if (!text.trim()) { err(0, 'file is empty'); return errors; }
   const lines = text.split('\n');
-  let rows = 0, tables = 0;
+  let tables = 0, fence = false;
+  const isSep = (c) => c && c.length > 0 && c.every((x) => /^:?-+:?$/.test(x));
   for (let i = 0; i < lines.length; i++) {
+    if (/^\s*(```|~~~)/.test(lines[i])) { fence = !fence; continue; }
+    if (fence) continue;
     const hdr = splitRow(lines[i]);
-    if (!hdr || hdr.length !== HEADER.length || hdr.some((c, k) => c !== HEADER[k])) {
-      // A table-looking first line that is near-miss header? Only flag when it looks like a conformance header.
-      if (hdr && hdr[0] === 'ID') err(i + 1, `bad header: expected "| ${HEADER.join(' | ')} |"`);
+    if (!hdr) continue;
+    if (hdr.length !== HEADER.length || hdr.some((c, k) => c !== HEADER[k])) {
+      if (hdr[0] === 'ID') { err(i + 1, `bad header: expected "| ${HEADER.join(' | ')} |"`); continue; }
+      if (isSep(splitRow(lines[i + 1] ?? ''))) {
+        // ordinary non-requirement table: skip it whole
+        let k = i + 2;
+        while (k < lines.length && lines[k].trim().startsWith('|')) k++;
+        i = k - 1;
+      } else err(i + 1, 'detached table row outside any table (requirement rows must follow the header and separator)');
       continue;
     }
     tables++;
+    let rows = 0;
     const sep = splitRow(lines[i + 1] ?? '');
     if (!sep || sep.length !== 9 || !sep.every((c) => /^:?-{3,}:?$/.test(c) || /^:?-+:?$/.test(c))) err(i + 2, 'missing or malformed separator row (9 cells)');
     let j = i + 2;
@@ -125,10 +135,10 @@ export function checkFile(file, wiki, seen) {
       if (!acc) err(ln, `${id}: Acceptance check is blank`);
       if (q !== '' && !/^Q\d+$/.test(q)) err(ln, `${id}: Open question must be empty or Q<number>, got "${q}"`);
     }
+    if (!rows) err(i + 1, 'table has no rows');
     i = j - 1;
   }
   if (!tables && !errors.length) err(0, 'no conformance table with the exact header found');
-  else if (tables && !rows) err(0, 'table has no rows');
   return errors;
 }
 
@@ -189,6 +199,12 @@ function selfTest() {
   t('anchor escapes wiki', [w('a5.md', hdr + mut(1, 'S/../../../../v1.md#X'))], 'page not found');
   t('anchor blank', [w('a6.md', hdr + mut(1, ''))], 'anchor is blank');
   t('malformed row not skipped among good rows', [w('mx.md', hdr + good('M-1') + '| M-2 | only |\n' + good('M-3'))], 'expected 9');
+  t('fenced example table alone', [w('fx.md', '# T\n\n```md\n' + hdr + good('F-1') + '```\n')], 'no conformance table');
+  t('fenced example plus real table is fine', [w('fx2.md', '```md\n' + hdr + good('F-2') + '```\n' + hdr + good('F-3'))], null);
+  t('later empty table after rows', [w('le.md', hdr + good('L-1') + '\ntext\n\n' + hdr)], 'table has no rows');
+  t('detached bad requirement row', [w('dr.md', hdr + good('R-1') + '\n| R-2 | only |\n')], 'detached table row');
+  t('detached full-width row', [w('dr2.md', hdr + good('R-3') + '\n' + good('R-4'))], 'detached table row');
+  t('ordinary prose table stays legal', [w('pt.md', '| a | b |\n|---|---|\n| 1 | 2 |\n\n' + hdr + good('P-1'))], null);
   const miss = run([v1], path.join(tmp, 'nowiki'));
   if (!miss.some((e) => e.includes('wiki root not found'))) { fail++; console.error('FAIL missing wiki root'); } else console.log('ok   missing wiki root');
   if (!run([], wiki).length) { fail++; console.error('FAIL no files'); } else console.log('ok   no files given');
