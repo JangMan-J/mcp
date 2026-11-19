@@ -1,0 +1,35 @@
+{
+  "id": "auth/http-binding-consent-decline",
+  "requirements": [
+    "CONSENT-2"
+  ],
+  "pin": "tag",
+  "source": [
+    "specification/2026-07-28/client/elicitation.md#Response Actions"
+  ],
+  "tier": "B",
+  "binding": "http",
+  "script": [
+    {
+      "do": "call",
+      "as": "write1",
+      "method": "tools/call",
+      "params": {
+        "name": "fixture-write"
+      }
+    }
+  ],
+  "expect": {
+    "wire": {
+      "distinctIds": true,
+      "totalRequests": 1,
+      "statuses": [
+        401
+      ],
+      "authorizeScopes": []
+    }
+  },
+  "mutants": [
+    "ignore-consent"
+  ]
+}

@@ -1,0 +1,35 @@
+{
+  "id": "auth/http-binding-plain-403",
+  "requirements": [
+    "AUTH-HTTP-2"
+  ],
+  "pin": "tag",
+  "source": [
+    "specification/2026-07-28/basic/authorization/index.md#Runtime Insufficient Scope Errors"
+  ],
+  "tier": "B",
+  "binding": "http",
+  "script": [
+    {
+      "do": "call",
+      "as": "write1",
+      "method": "tools/call",
+      "params": {
+        "name": "fixture-write"
+      }
+    }
+  ],
+  "expect": {
+    "wire": {
+      "distinctIds": true,
+      "totalRequests": 1,
+      "statuses": [
+        403
+      ],
+      "authorizeScopes": []
+    }
+  },
+  "mutants": [
+    "force-step-up"
+  ]
+}

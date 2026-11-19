@@ -1,0 +1,49 @@
+{
+  "id": "auth/http-binding-step-up",
+  "requirements": [
+    "AUTH-STEP-2"
+  ],
+  "pin": "tag",
+  "source": [
+    "specification/2026-07-28/basic/authorization/index.md#Step-Up Authorization Flow"
+  ],
+  "tier": "B",
+  "binding": "http",
+  "script": [
+    {
+      "do": "call",
+      "as": "write1",
+      "method": "tools/call",
+      "params": {
+        "name": "fixture-write"
+      }
+    },
+    {
+      "do": "call",
+      "as": "write2",
+      "method": "tools/call",
+      "params": {
+        "name": "fixture-write"
+      }
+    }
+  ],
+  "expect": {
+    "wire": {
+      "distinctIds": true,
+      "totalRequests": 4,
+      "statuses": [
+        401,
+        200,
+        403,
+        200
+      ],
+      "authorizeScopes": [
+        "read",
+        "read write"
+      ]
+    }
+  },
+  "mutants": [
+    "drop-prior-scope"
+  ]
+}
