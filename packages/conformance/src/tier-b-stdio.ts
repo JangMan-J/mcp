@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { McpClient, type Exchange, type ExchangeEnd, type Transport } from "@mcp-client/core";
 import { StdioTransport } from "@mcp-client/transport-stdio";
 import type { ExchangeFixture } from "@mcp-client/fixtures";
-import type { FixtureResult } from "./run.js";
+import { writeTranscript, type FixtureResult, type TranscriptFrame } from "./run.js";
 
 class Mismatch extends Error {}
 
@@ -49,6 +49,30 @@ function pick(obj: unknown, path: string): unknown {
 }
 
 type End = ExchangeEnd;
+
+/** Records the real JSON-RPC messages crossing a transport: outbound requests/notifications and inbound responses/notifications. */
+export function recordTransport(t: Transport, frames: TranscriptFrame[]): Transport {
+  return {
+    binding: t.binding,
+    diagnostics: t.diagnostics,
+    close: o => t.close(o),
+    notify(msg, ctx) {
+      frames.push({ direction: "client", message: msg });
+      return t.notify(msg, ctx);
+    },
+    start(msg, ctx): Exchange {
+      frames.push({ direction: "client", message: msg });
+      const ex = t.start(msg, ctx);
+      const notifications = {
+        async *[Symbol.asyncIterator]() {
+          for await (const n of ex.notifications) { frames.push({ direction: "server", message: n }); yield n; }
+        },
+      };
+      const done = ex.done.then(e => { if (e.kind === "response") frames.push({ direction: "server", message: e.message }); return e; });
+      return { ...(ex.abortDelivery && { abortDelivery: () => ex.abortDelivery!() }), notifications, done };
+    },
+  };
+}
 
 /** Client-side fault injection: wraps the real transport to emulate a faulty client. */
 function inject(t: Transport, mutant: string | undefined, onAbortResend: { msgs: unknown[] }): Transport {
@@ -122,6 +146,7 @@ async function exists(p: string): Promise<boolean> {
 }
 
 async function execute(fixture: ExchangeFixture, mode: string, mutant: string | undefined): Promise<void> {
+  const frames: TranscriptFrame[] = [];
   const dir = await mkdtemp(join(tmpdir(), "tier-b-stdio-"));
   const log = join(dir, "wire.log");
   const peer = fileURLToPath(new URL("../../fixtures/server/stdio-main.ts", import.meta.url));
@@ -139,7 +164,7 @@ async function execute(fixture: ExchangeFixture, mode: string, mutant: string | 
     termMs: 200,
   });
   let id = 0;
-  const client = new McpClient({ transport: inject(transport, mutant, { msgs: [] }), server: { key: "fixture" }, idGenerator: () => ++id });
+  const client = new McpClient({ transport: inject(mutant === undefined ? recordTransport(transport, frames) : transport, mutant, { msgs: [] }), server: { key: "fixture" }, idGenerator: () => ++id });
   const wire = async (): Promise<Array<Record<string, unknown>>> => {
     if (!(await exists(log))) return [];
     return (await readFile(log, "utf8")).split("\n").filter(l => l.startsWith("STDIN:"))
@@ -196,6 +221,7 @@ async function execute(fixture: ExchangeFixture, mode: string, mutant: string | 
     for (const [m, n] of Object.entries(w?.count ?? {})) check(reqs.filter(r => r["method"] === m).length === n, `count ${m}`);
     const raw = await exists(log) ? await readFile(log, "utf8") : "";
     for (const s of w?.never ?? []) check(!raw.includes(s), `wire contains ${s}`);
+    if (mutant === undefined) writeTranscript({ fixture: fixture.id, frames });
   } finally {
     for (const c of calls.values()) c.ctl.abort();
     try { await bounded(client.close(), "client close"); } catch { /* best effort */ }

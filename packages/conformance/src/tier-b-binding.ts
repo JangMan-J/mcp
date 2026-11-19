@@ -9,6 +9,8 @@ import { openListenStream, ResultCache, SubscriptionManager, SUBSCRIPTION_ID, ty
 import { StdioTransport } from "@mcp-client/transport-stdio";
 import { HttpTransport } from "@mcp-client/transport-http";
 import type { ExchangeFixture } from "@mcp-client/fixtures";
+import { writeTranscript, type TranscriptFrame } from "./run.js";
+import { recordTransport } from "./tier-b-stdio.js";
 
 async function bounded<T>(p: PromiseLike<T>, operation: string): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
@@ -68,7 +70,7 @@ function session(transport: Transport, mutant?: string) {
   };
 }
 
-async function stdio(action: string, mutant?: string) {
+async function stdio(action: string, frames: TranscriptFrame[], mutant?: string) {
   const dir = await mkdtemp(join(tmpdir(), "sub-binding-"));
   const log = join(dir, "wire.log");
   const peer = fileURLToPath(new URL("../../fixtures/server/stdio-main.ts", import.meta.url));
@@ -76,7 +78,7 @@ async function stdio(action: string, mutant?: string) {
   const transport = new StdioTransport({ command: process.execPath,
     args: ["--no-warnings", "--experimental-strip-types", peer, "--log", log, "--mode", restart ? "subscription-crash" : "subscription"],
   });
-  const s = session(transport, mutant);
+  const s = session(mutant === undefined ? recordTransport(transport, frames) : transport, mutant);
   const wire = async () => (await readFile(log, "utf8")).split("\n").filter(l => l.startsWith("STDIN:")).map(l => JSON.parse(l.slice(6)));
   const filter = { resourceUris: ["file:///a.txt"] };
   try {
@@ -85,8 +87,8 @@ async function stdio(action: string, mutant?: string) {
       const crash = await bounded(s.client.request("tools/call", {}), "child exit");
       assert.equal(crash.kind, "uncertain-write");
       assert.equal(a.state, "reconnecting");
-      // An on-demand ping starts the replacement child. Only then signal readiness.
-      assert.equal((await bounded(s.client.request("ping"), "new child ping")).kind, "ok");
+      // An on-demand request starts the replacement child. Only then signal readiness.
+      assert.equal((await bounded(s.client.request("tools/list"), "new child ping")).kind, "ok");
       if (mutant !== "skip-resend") s.manager.reconnected();
       let resync: string | undefined;
       if (a.state !== "reconnecting") resync = (await bounded(a.events[Symbol.asyncIterator]().next(), "resync")).value?.method;
@@ -96,11 +98,11 @@ async function stdio(action: string, mutant?: string) {
     if (action === "client-cancel-stdio") {
       a.close();
       // A reply to a subsequent request fences the peer's stdin log.
-      assert.equal((await bounded(s.client.request("ping"), "cancel fence")).kind, "ok");
+      assert.equal((await bounded(s.client.request("tools/list"), "cancel fence")).kind, "ok");
       return { reason: a.reason, cancelIds: (await wire()).filter(r => r.method === "notifications/cancelled").map(r => r.params.requestId) };
     }
     const listeners = action === "two-listeners-demux" ? [a, await s.listen(filter)] : [a];
-    assert.equal((await bounded(s.client.request("ping"), "peer update and completion")).kind, "ok");
+    assert.equal((await bounded(s.client.request("tools/list"), "peer update and completion")).kind, "ok");
     const events = await Promise.all(listeners.map(eventIds));
     if (action === "two-listeners-demux") return { events };
     assert.equal(action, "graceful-close-stdio");
@@ -110,17 +112,25 @@ async function stdio(action: string, mutant?: string) {
   }
 }
 
-async function http(action: string, mutant?: string) {
+async function http(action: string, frames: TranscriptFrame[], mutant?: string) {
   let stream: ServerResponse | undefined, cancelPosts = 0, version = 0;
   let onClose!: () => void;
   const closed = new Promise<void>(resolve => { onClose = resolve; });
   const ids: number[] = [];
   const streams = new Map<number, ServerResponse>();
-  const event = (msg: object) => `data: ${JSON.stringify({ jsonrpc: "2.0", ...msg })}\n\n`;
+  let mcpUrl = "";
+  const flat = (h: Record<string, string | string[] | undefined>) => Object.fromEntries(Object.entries(h).flatMap(([k, v]) => v === undefined ? [] : [[k, Array.isArray(v) ? v.join(", ") : v]]));
+  const event = (msg: object) => {
+    const message = { jsonrpc: "2.0", ...msg };
+    frames.push({ direction: "server", endpoint: "mcp", headers: { "content-type": "text/event-stream" }, message } as TranscriptFrame);
+    return `data: ${JSON.stringify(message)}\n\n`;
+  };
   const server = createServer(async (req, res) => {
     const chunks: Buffer[] = [];
     for await (const chunk of req) chunks.push(Buffer.from(chunk));
-    const { method, id } = JSON.parse(Buffer.concat(chunks).toString());
+    const body = JSON.parse(Buffer.concat(chunks).toString());
+    const { method, id } = body;
+    frames.push({ direction: "client", endpoint: "mcp", method: req.method, url: mcpUrl, headers: flat(req.headers), message: body } as TranscriptFrame);
     if (method === "subscriptions/listen") {
       stream = res;
       ids.push(id);
@@ -132,16 +142,20 @@ async function http(action: string, mutant?: string) {
       if (action === "graceful-close") res.end(event({ id, result: { resultType: "complete", _meta } }));
     } else if (method === "tools/list") {
       res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ jsonrpc: "2.0", id, result: { resultType: "complete", ttlMs: 60_000, cacheScope: "private", version: ++version } }));
+      const message = { jsonrpc: "2.0", id, result: { resultType: "complete", ttlMs: 60_000, cacheScope: "private", version: ++version } };
+      frames.push({ direction: "server", endpoint: "mcp", headers: { "content-type": "application/json" }, message } as TranscriptFrame);
+      res.end(JSON.stringify(message));
     } else {
       if (method === "notifications/cancelled") cancelPosts++;
+      frames.push({ direction: "server", endpoint: "mcp", headers: {} } as TranscriptFrame);
       res.writeHead(202).end();
     }
   });
   await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
   const addr = server.address();
   assert(addr && typeof addr === "object");
-  const transport = new HttpTransport({ url: `http://127.0.0.1:${addr.port}/mcp` });
+  mcpUrl = `http://127.0.0.1:${addr.port}/mcp`;
+  const transport = new HttpTransport({ url: mcpUrl });
   const s = session(transport, mutant);
   try {
     const l = await s.listen({ tools: true });
@@ -207,10 +221,12 @@ export async function runBinding(fx: ExchangeFixture, mutant?: string) {
   assert(action);
   if (mutant && supportedMutants[action] !== mutant) throw new Error(`Unsupported mutant ${mutant} for ${action}`);
   assert(fx.binding === "http" || fx.binding === "stdio");
-  const actual = await (fx.binding === "http" ? http : stdio)(action, mutant);
+  const frames: TranscriptFrame[] = [];
+  const actual = await (fx.binding === "http" ? http : stdio)(action, frames, mutant);
   try {
     assert.deepEqual(actual, (fx.expect as { observe?: unknown }).observe);
   } catch (error) {
     throw new ObservationMismatch(`Observation mismatch: ${error instanceof Error ? error.message : String(error)}`);
   }
+  if (mutant === undefined) writeTranscript({ fixture: fx.id, ...(fx.binding === "http" && { mcpEndpoint: frames.find(f => f.url)?.url }), frames } as Parameters<typeof writeTranscript>[0]);
 }

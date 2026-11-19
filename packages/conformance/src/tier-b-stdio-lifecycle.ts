@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { McpClient, type Exchange, type Transport } from "@mcp-client/core";
 import { StdioTransport, type StdioTransportOptions } from "@mcp-client/transport-stdio";
 import type { ExchangeFixture } from "@mcp-client/fixtures";
-import type { FixtureResult } from "./run.js";
+import { writeTranscript, type FixtureResult, type TranscriptFrame } from "./run.js";
 
 const MUTANTS: Record<string, readonly string[]> = {
   "stdio/noise-line": ["crash-on-first-noise-line", "ignore-noise-budget"],
@@ -143,6 +143,7 @@ export async function runTierBStdioLifecycleFixture(fixture: ExchangeFixture, mu
     return child;
   }) as unknown as typeof spawn;
   const wireOut: Record<string, unknown>[] = [];
+  const frames: TranscriptFrame[] = [];
   const raw = new StdioTransport({
     command: process.execPath, args, spawnFn, graceMs: 300, termMs: 300,
     onStderr: line => { stderrLines.push(line); },
@@ -154,10 +155,11 @@ export async function runTierBStdioLifecycleFixture(fixture: ExchangeFixture, mu
   const transport: Transport = {
     binding: raw.binding,
     diagnostics: raw.diagnostics,
-    notify: (m, c) => { wireOut.push(m as unknown as Record<string, unknown>); return raw.notify(m, c); },
+    notify: (m, c) => { wireOut.push(m as unknown as Record<string, unknown>); frames.push({ direction: "client", message: m }); return raw.notify(m, c); },
     close: o => raw.close(o),
     start(msg, ctx): Exchange {
       wireOut.push(msg as unknown as Record<string, unknown>);
+      frames.push({ direction: "client", message: msg });
       const ex = raw.start(msg, ctx);
       const key = msg.method;
       const sink = routed.get(key) ?? []; routed.set(key, sink);
@@ -170,11 +172,12 @@ export async function runTierBStdioLifecycleFixture(fixture: ExchangeFixture, mu
               if (mutant === "cross-route-progress" && other === undefined) { routed.get("tools/list")?.push(n.method) ?? (routed.set("tools/list", [n.method])); continue; }
             }
             sink.push(n.method);
+            frames.push({ direction: "server", message: n });
             yield n;
           }
         },
       };
-      return { ...(ex.abortDelivery && { abortDelivery: () => ex.abortDelivery!() }), notifications, done: ex.done };
+      return { ...(ex.abortDelivery && { abortDelivery: () => ex.abortDelivery!() }), notifications, done: ex.done.then(e => { if (e.kind === "response") frames.push({ direction: "server", message: e.message }); return e; }) };
     },
   };
   let id = 0;
@@ -218,6 +221,7 @@ export async function runTierBStdioLifecycleFixture(fixture: ExchangeFixture, mu
       check(eof >= 0, "stdin was not closed before escalation");
       check(term > eof, "SIGTERM did not follow stdin close");
     }
+    if (mutant === undefined) writeTranscript({ fixture: fixture.id, frames });
     return { ...base, ok: true };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

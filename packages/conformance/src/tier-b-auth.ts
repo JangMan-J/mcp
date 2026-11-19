@@ -2,7 +2,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { AuthError, ConfiguredBearer, OAuthAuthorization, SafeFetch, type AuthorizationPrompt } from '@mcp-client/auth';
 import { HttpTransport } from '@mcp-client/transport-http';
 import type { ExchangeFixture } from '@mcp-client/fixtures';
-import type { FixtureResult } from './run.js';
+import { writeTranscript, type FixtureResult, type TranscriptFrame } from './run.js';
 
 const mutants = new Map(Object.entries({
   '401-retry': 'reuse-wire-id', 'consent-decline': 'ignore-consent', 'consent-cancel': 'ignore-consent',
@@ -19,7 +19,22 @@ interface Peer {
 class Mismatch extends Error {}
 function check(condition: boolean, message: string) { if (!condition) throw new Mismatch(message); }
 
-async function exercise(fixture: ExchangeFixture, scenario: string, peer: Peer, mutant?: string) {
+type Frame = TranscriptFrame & { endpoint: 'mcp' | 'oauth' };
+const headerRecord = (h: HeadersInit | undefined) => Object.fromEntries(new Headers(h));
+const parseJson = (text: string): unknown => { try { return text ? JSON.parse(text) : undefined; } catch { return undefined; } };
+function recordRequest(frames: Frame[], endpoint: Frame['endpoint'], url: string, init: RequestInit) {
+  const message = typeof init.body === 'string' ? parseJson(init.body) : undefined;
+  frames.push({ direction: 'client', endpoint, method: init.method ?? 'GET', url, headers: headerRecord(init.headers), ...(message !== undefined && { message }) });
+}
+async function recordResponse(frames: Frame[], endpoint: Frame['endpoint'], response: Response) {
+  const message = parseJson(await response.clone().text());
+  const headers = headerRecord(response.headers);
+  // The challenge parameters are kept; the scheme token is redacted so no `Bearer <value>` appears in a transcript.
+  if (headers['www-authenticate']) headers['www-authenticate'] = headers['www-authenticate'].replace(/\bBearer\s+/i, 'Bearer [redacted] ');
+  frames.push({ direction: 'server', endpoint, headers, ...(message !== undefined && { message }) });
+}
+
+async function exercise(fixture: ExchangeFixture, scenario: string, peer: Peer, frames: Frame[], mutant?: string) {
   const resource = `${peer.origin}/mcp`, redirectUri = `${peer.origin}/callback`;
   const prompts: AuthorizationPrompt[] = [];
   let callback: ((p: URLSearchParams) => void) | undefined, portError: unknown;
@@ -36,7 +51,9 @@ async function exercise(fixture: ExchangeFixture, scenario: string, peer: Peer, 
         if (url.origin !== peer.origin.replace('http:', 'https:') || url.pathname !== '/authorize') throw Error('unexpected browser destination');
         url.protocol = 'http:'; // Translate only the synthetic browser's own loopback AS.
         if (mutant === 'drop-prior-scope' && prompts.length === 2) url.searchParams.set('scope', 'write');
+        recordRequest(frames, 'oauth', url.href, { method: 'GET' });
         const response = await fetch(url, { redirect: 'manual', signal });
+        await recordResponse(frames, 'oauth', response);
         const target = new URL(response.headers.get('location') ?? '');
         if (response.status !== 302 || target.origin + target.pathname !== redirectUri || !callback) throw Error('bad AS redirect');
         callback(target.searchParams);
@@ -60,7 +77,9 @@ async function exercise(fixture: ExchangeFixture, scenario: string, peer: Peer, 
     if (input !== resource) throw Error('unexpected resource URL');
     if (mutant === 'reuse-wire-id' && peer.posts.length === 1) init = { ...init, body: JSON.stringify({ ...JSON.parse(String(init.body)), id: peer.posts[0]!.id }) };
     if (mutant === 'token-in-query') input += '?access_token=fixture-configured';
+    recordRequest(frames, 'mcp', input, init);
     const response = await fetch(input, init);
+    await recordResponse(frames, 'mcp', response);
     if (mutant === 'force-step-up' && response.status === 403) return new Response(response.body, { status: 403, headers: { 'www-authenticate': 'Bearer error="insufficient_scope", scope="write"' } });
     return response;
   } } });
@@ -116,7 +135,8 @@ export async function runTierBAuthFixture(fixture: ExchangeFixture, mutant?: str
     const helper = new URL('../../fixtures/server/auth-binding-main.ts', import.meta.url);
     const { startBindingPeer } = await import(helper.href) as { startBindingPeer(scenario: string): Promise<Peer> };
     const peer = await startBindingPeer(scenario);
-    try { await exercise(fixture, scenario, peer, mutant); } finally { await peer.close(); }
+    const frames: Frame[] = [];
+    try { await exercise(fixture, scenario, peer, frames, mutant); if (mutant === undefined) writeTranscript({ fixture: fixture.id, mcpEndpoint: `${peer.origin}/mcp`, frames } as Parameters<typeof writeTranscript>[0]); } finally { await peer.close(); }
     return { ...result, ok: true };
   } catch (e) {
     return { ...result, ok: false, ...(e instanceof Mismatch ? { failure: 'assertion' as const } : {}), error: e instanceof Error ? e.message : String(e) };
