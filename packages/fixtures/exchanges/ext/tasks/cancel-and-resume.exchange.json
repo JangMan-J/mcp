@@ -1,0 +1,60 @@
+{
+  "id": "ext/tasks/cancel-and-resume",
+  "tier": "A",
+  "binding": "any",
+  "pin": "ext-page",
+  "source": [
+    "W/extensions/tasks/overview.md#For MCP clients"
+  ],
+  "requirements": [
+    "EXT-tasks-6",
+    "EXT-tasks-7",
+    "EXT-tasks-9"
+  ],
+  "client": {},
+  "script": [
+    {
+      "do": "create",
+      "reply": {
+        "resultType": "task",
+        "taskId": "t",
+        "status": "working"
+      }
+    },
+    {
+      "do": "restart"
+    },
+    {
+      "do": "cancel",
+      "reply": {
+        "resultType": "task",
+        "taskId": "t",
+        "status": "cancelled"
+      }
+    },
+    {
+      "do": "poll"
+    }
+  ],
+  "expect": {
+    "calls": [
+      "tools/call",
+      "tasks/cancel"
+    ],
+    "names": [
+      "t"
+    ],
+    "outcomes": [
+      "task-handle",
+      "ok",
+      {
+        "resultType": "task",
+        "taskId": "t",
+        "status": "cancelled"
+      }
+    ]
+  },
+  "mutants": [
+    "tasks-cancel-notification"
+  ]
+}

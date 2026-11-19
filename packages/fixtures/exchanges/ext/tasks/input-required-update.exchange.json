@@ -1,0 +1,73 @@
+{
+  "id": "ext/tasks/input-required-update",
+  "tier": "A",
+  "binding": "any",
+  "pin": "ext-page",
+  "source": [
+    "W/extensions/tasks/overview.md#For MCP clients"
+  ],
+  "requirements": [
+    "EXT-tasks-5",
+    "EXT-tasks-14"
+  ],
+  "client": {},
+  "script": [
+    {
+      "do": "create",
+      "reply": {
+        "resultType": "task",
+        "taskId": "t",
+        "status": "input_required",
+        "inputRequests": {
+          "q": {
+            "method": "elicitation/create",
+            "params": {
+              "message": "Choose",
+              "requestedSchema": {
+                "type": "object",
+                "properties": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "do": "poll",
+      "reply": {
+        "resultType": "task",
+        "taskId": "t",
+        "status": "completed",
+        "result": {
+          "done": true
+        }
+      }
+    }
+  ],
+  "expect": {
+    "calls": [
+      "tools/call",
+      "tasks/update"
+    ],
+    "outcomes": [
+      "task-handle",
+      {
+        "done": true
+      }
+    ],
+    "forms": 1,
+    "names": [
+      "t"
+    ],
+    "responses": [
+      {
+        "q": {
+          "action": "decline"
+        }
+      }
+    ]
+  },
+  "mutants": [
+    "tasks-skip-consent"
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "name": "@mcp-client/ext-tasks", "version": "0.1.0", "private": true, "type": "module",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+    "./conformance": { "types": "./dist/conformance.d.ts", "default": "./dist/conformance.js" }
+  },
+  "dependencies": { "@mcp-client/core": "*", "@mcp-client/mrtr-cache": "*" },
+  "scripts": { "build": "tsc -b", "test": "vitest run test" }
+}
