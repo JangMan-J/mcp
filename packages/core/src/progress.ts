@@ -1,4 +1,4 @@
-import type { ProgressEvent } from "./ports.js";
+import type { Clock, ProgressEvent } from "./ports.js";
 
 /**
  * Progress registry (S1.1, IMPLEMENTATION_PLAN.md §5.6; PROG-1..PROG-5).
@@ -214,5 +214,53 @@ export class NotificationQueue<T> implements AsyncIterable<T> {
         return Promise.resolve({ value: undefined, done: true });
       },
     };
+  }
+}
+
+/**
+ * LIM-PROG-1: rate-limits progress delivery to one callback per `intervalMs` (default 20 ms,
+ * i.e. 50/s). Faster events are coalesced to the latest; `flush()` delivers the pending latest
+ * value so the final progress is always observed before settlement. Uses the injected Clock.
+ */
+export class ProgressThrottle<T> {
+  private lastEmit: number | undefined;
+  private pending: { value: T } | undefined;
+  private cancelTimer: (() => void) | undefined;
+
+  constructor(
+    private readonly clock: Clock,
+    private readonly emit: (v: T) => void,
+    private readonly intervalMs = 20,
+  ) {}
+
+  push(v: T): void {
+    const now = this.clock.now();
+    if (this.cancelTimer === undefined && (this.lastEmit === undefined || now - this.lastEmit >= this.intervalMs)) {
+      this.lastEmit = now;
+      this.emit(v);
+      return;
+    }
+    this.pending = { value: v };
+    if (this.cancelTimer === undefined) {
+      const wait = Math.max(0, (this.lastEmit ?? now) + this.intervalMs - now);
+      this.cancelTimer = this.clock.setTimeout(() => {
+        this.cancelTimer = undefined;
+        this.deliverPending();
+      }, wait);
+    }
+  }
+
+  flush(): void {
+    this.cancelTimer?.();
+    this.cancelTimer = undefined;
+    this.deliverPending();
+  }
+
+  private deliverPending(): void {
+    const p = this.pending;
+    if (!p) return;
+    this.pending = undefined;
+    this.lastEmit = this.clock.now();
+    this.emit(p.value);
   }
 }

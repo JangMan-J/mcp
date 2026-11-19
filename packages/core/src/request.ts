@@ -23,6 +23,7 @@ import {
   type ProgressEvent,
   type Transport,
 } from "./ports.js";
+import { ProgressThrottle } from "./progress.js";
 import { noopTelemetry, validateTraceContext } from "./telemetry.js";
 
 export const META_PROTOCOL_VERSION = "io.modelcontextprotocol/protocolVersion" as const;
@@ -303,6 +304,9 @@ export class RequestManager {
     let currentId = firstId;
     let currentVersion = this.activeProtocolVersion;
     let retriedVersion = false;
+    const onProgress = opts.onProgress;
+    // LIM-PROG-1: <=50 callbacks/s, coalesced to latest; flushed before settlement.
+    const throttle = onProgress ? new ProgressThrottle<ProgressEvent>(this.clock, onProgress) : undefined;
 
     while (true) {
       attempts += 1;
@@ -344,7 +348,7 @@ export class RequestManager {
                 ...(typeof p["message"] === "string" ? { message: p["message"] } : {}),
               };
               progressBuf.push(ev);
-              opts.onProgress(ev);
+              throttle?.push(ev);
             }
           }
         })();
@@ -514,6 +518,7 @@ export class RequestManager {
         };
       } finally {
         cancelTimer?.();
+        throttle?.flush();
         this.inFlight.delete(ac);
         this.admitQueued();
       }
