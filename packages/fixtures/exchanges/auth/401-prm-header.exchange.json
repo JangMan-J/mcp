@@ -7,7 +7,7 @@
   "source": [
     "specification/2026-07-28/basic/authorization/authorization-server-discovery.md#Protected Resource Metadata Discovery Requirements"
   ],
-  "tier": "B",
+  "tier": "A",
   "binding": "http",
   "client": {},
   "script": [

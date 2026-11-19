@@ -7,7 +7,7 @@
   "source": [
     "specification/2026-07-28/client/elicitation.md#Safe URL Handling"
   ],
-  "tier": "B",
+  "tier": "A",
   "binding": "http",
   "client": {},
   "script": [

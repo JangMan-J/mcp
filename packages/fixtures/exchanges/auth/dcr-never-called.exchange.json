@@ -9,7 +9,7 @@
     "specification/2026-07-28/basic/authorization/client-registration.md#Dynamic Client Registration",
     "specification/2026-07-28/basic/authorization/client-registration.md#Application Type and Redirect URI Constraints"
   ],
-  "tier": "B",
+  "tier": "A",
   "binding": "http",
   "client": {
     "registration": "none",

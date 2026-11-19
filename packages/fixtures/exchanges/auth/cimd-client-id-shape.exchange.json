@@ -7,7 +7,7 @@
   "source": [
     "specification/2026-07-28/basic/authorization/client-registration.md#Implementation Requirements"
   ],
-  "tier": "B",
+  "tier": "A",
   "binding": "http",
   "client": {
     "registration": "cimd",

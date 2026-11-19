@@ -7,7 +7,7 @@
   "source": [
     "specification/2026-07-28/basic/authorization/client-registration.md#Client ID Metadata Documents"
   ],
-  "tier": "B",
+  "tier": "A",
   "binding": "http",
   "client": {
     "registration": "cimd",

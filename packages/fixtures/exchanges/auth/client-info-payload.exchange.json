@@ -7,7 +7,7 @@
   "source": [
     "specification/2026-07-28/basic/authorization/client-registration.md#Pre-registration"
   ],
-  "tier": "B",
+  "tier": "A",
   "binding": "http",
   "client": {
     "registration": "prompt"

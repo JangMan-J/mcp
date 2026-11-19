@@ -7,7 +7,7 @@
   "source": [
     "specification/2026-07-28/basic/authorization/index.md#Resource Parameter Implementation"
   ],
-  "tier": "B",
+  "tier": "A",
   "binding": "http",
   "client": {},
   "script": [

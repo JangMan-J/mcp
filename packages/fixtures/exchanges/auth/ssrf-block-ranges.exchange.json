@@ -7,7 +7,7 @@
   "source": [
     "docs/2026-07-28/tutorials/security/security_best_practices.md#Server-Side Request Forgery (SSRF)"
   ],
-  "tier": "B",
+  "tier": "A",
   "binding": "http",
   "client": {},
   "script": [

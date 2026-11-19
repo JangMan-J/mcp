@@ -7,7 +7,7 @@
   "source": [
     "specification/2026-07-28/basic/authorization/index.md#Refresh Tokens"
   ],
-  "tier": "B",
+  "tier": "A",
   "binding": "http",
   "client": {
     "registration": "cimd",

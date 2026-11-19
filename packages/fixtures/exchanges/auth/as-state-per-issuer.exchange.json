@@ -7,7 +7,7 @@
   "source": [
     "specification/2026-07-28/basic/authorization/authorization-server-discovery.md#Authorization Server Location"
   ],
-  "tier": "B",
+  "tier": "A",
   "binding": "http",
   "client": {
     "registration": "prompt"

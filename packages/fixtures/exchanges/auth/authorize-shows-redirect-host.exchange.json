@@ -7,7 +7,7 @@
   "source": [
     "specification/2026-07-28/basic/authorization/security-considerations.md#Localhost Redirect URI Risks"
   ],
-  "tier": "B",
+  "tier": "A",
   "binding": "http",
   "client": {},
   "script": [

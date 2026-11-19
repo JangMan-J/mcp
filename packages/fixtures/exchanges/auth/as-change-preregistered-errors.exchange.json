@@ -7,7 +7,7 @@
   "source": [
     "specification/2026-07-28/basic/authorization/client-registration.md#Authorization Server Binding"
   ],
-  "tier": "B",
+  "tier": "A",
   "binding": "http",
   "client": {},
   "script": [

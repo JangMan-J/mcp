@@ -7,7 +7,7 @@
   "source": [
     "specification/2026-07-28/client/elicitation.md#Response Actions"
   ],
-  "tier": "B",
+  "tier": "A",
   "binding": "http",
   "client": {
     "consent": "cancel"

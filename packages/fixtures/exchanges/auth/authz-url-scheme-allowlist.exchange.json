@@ -7,7 +7,7 @@
   "source": [
     "docs/2026-07-28/tutorials/security/security_best_practices.md#OAuth Authorization URL Validation"
   ],
-  "tier": "B",
+  "tier": "A",
   "binding": "http",
   "client": {
     "metadata": {

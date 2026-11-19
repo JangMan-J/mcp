@@ -7,7 +7,7 @@
   "source": [
     "specification/2026-07-28/basic/authorization/index.md#Step-Up Authorization Flow"
   ],
-  "tier": "B",
+  "tier": "A",
   "binding": "http",
   "client": {},
   "script": [
