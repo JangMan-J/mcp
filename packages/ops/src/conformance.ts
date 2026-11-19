@@ -20,17 +20,29 @@ interface Pending {
   readonly resolve: (end: ExchangeEnd) => void;
 }
 
+export interface TranscriptFrame {
+  readonly direction: "client" | "server";
+  readonly message: unknown;
+}
+
+export interface ExchangeResult {
+  readonly frames: readonly TranscriptFrame[];
+  readonly zeroWire?: true;
+}
+
 /** In-proc scripted transport. Requests wait until the test answers them. */
 class ScriptTransport implements Transport {
   readonly binding = "stdio" as const;
   readonly sent: JsonRpcRequest[] = [];
   readonly pending: Pending[] = [];
+  readonly frames: TranscriptFrame[] = [];
   readonly diagnostics: AsyncIterable<TransportDiagnostic> = {
     async *[Symbol.asyncIterator]() {},
   };
 
   start(msg: JsonRpcRequest, ctx?: TransportCall): Exchange {
     this.sent.push(msg);
+    this.frames.push({ direction: "client", message: structuredClone(msg) });
     let resolve!: (end: ExchangeEnd) => void;
     const done = new Promise<ExchangeEnd>((r) => (resolve = r));
     const entry: Pending = { req: msg, resolve };
@@ -49,7 +61,9 @@ class ScriptTransport implements Transport {
     return { notifications: emptyNotifications, done };
   }
 
-  async notify(): Promise<void> {}
+  async notify(msg: JsonRpcNotification): Promise<void> {
+    this.frames.push({ direction: "client", message: structuredClone(msg) });
+  }
 
   async close(): Promise<void> {
     this.failAll();
@@ -58,12 +72,16 @@ class ScriptTransport implements Transport {
   /** Answer the oldest pending request. */
   reply(result: Record<string, unknown>): void {
     const p = this.take();
-    p.resolve({ kind: "response", message: { jsonrpc: "2.0", id: p.req.id, result } });
+    const message = { jsonrpc: "2.0" as const, id: p.req.id, result: structuredClone(result) };
+    this.frames.push({ direction: "server", message: structuredClone(message) });
+    p.resolve({ kind: "response", message });
   }
 
   replyError(error: { code: number; message: string; data?: unknown }): void {
     const p = this.take();
-    p.resolve({ kind: "response", message: { jsonrpc: "2.0", id: p.req.id, error } });
+    const message = { jsonrpc: "2.0" as const, id: p.req.id, error: structuredClone(error) };
+    this.frames.push({ direction: "server", message: structuredClone(message) });
+    p.resolve({ kind: "response", message });
   }
 
   failAll(): void {
@@ -457,7 +475,7 @@ async function waitPending(t: ScriptTransport): Promise<void> {
   if (t.pending.length === 0) throw new OpsObservationMismatch("script expected a request but none was sent");
 }
 
-export async function runExchange(fixture: unknown, mutantName?: string): Promise<void> {
+export async function runExchange(fixture: unknown, mutantName?: string): Promise<ExchangeResult> {
   const fx = fixture as OpsFixture;
   if (!Array.isArray(fx.script) || fx.script.length === 0) throw new Error("empty Ops script");
   const w = fx.expect.wire;
@@ -528,6 +546,11 @@ export async function runExchange(fixture: unknown, mutantName?: string): Promis
         throw new OpsObservationMismatch(`forbidden wire content '${never}'`);
       }
     }
+    const frames = transport.frames;
+    return {
+      frames,
+      ...(frames.length === 0 && fx.expect?.wire?.totalRequests === 0 ? { zeroWire: true } : {}),
+    };
   } finally {
     await client.close();
   }

@@ -62,10 +62,20 @@ class FakeClock implements Clock {
 }
 export class MrtrObservationMismatch extends Error {}
 
+export interface TranscriptFrame {
+  readonly direction: "client" | "server";
+  readonly message: unknown;
+}
+
+export interface ExchangeResult {
+  readonly frames: readonly TranscriptFrame[];
+  readonly zeroWire?: true;
+}
+
 export async function runExchange(
   fixture: unknown,
   mutant?: string,
-): Promise<void> {
+): Promise<ExchangeResult> {
   if (
     mutant &&
     ![
@@ -98,6 +108,7 @@ export async function runExchange(
   let auth = "A",
     next = 0;
   const wire: Obj[] = [],
+    frames: TranscriptFrame[] = [],
     ui: Obj[] = [],
     opened: string[] = [],
     diags: string[] = [],
@@ -157,16 +168,29 @@ export async function runExchange(
       params = rest;
     }
     const id = ++next;
-    wire.push({ method, params: structuredClone(params), id });
+    const clonedParams = structuredClone(params);
+    wire.push({ method, params: clonedParams, id });
+    frames.push({
+      direction: "client",
+      message: { jsonrpc: "2.0", id, method, params: structuredClone(clonedParams) },
+    });
     const meta = { method, attempts: 1, binding: "inproc", requestId: id };
     const r = obj(replies.shift() ?? { resultType: "complete" });
-    if (r.error && mutant !== "ignore-error")
-      return {
-        kind: "jsonrpc-error",
+    if (r.error && mutant !== "ignore-error") {
+      const error = {
         code: Number(obj(r.error).code),
         message: String(obj(r.error).message),
+      };
+      frames.push({
+        direction: "server",
+        message: { jsonrpc: "2.0", id, error },
+      });
+      return {
+        kind: "jsonrpc-error",
+        ...error,
         meta,
       };
+    }
     if (r.failure && mutant !== "no-security-purge")
       return {
         kind: "transport-failure",
@@ -178,13 +202,18 @@ export async function runExchange(
         safeToRetry: false,
         meta,
       };
+    const value = {
+      ...r,
+      ...(mutant === "positive-ttl" && { ttlMs: 999 }),
+      ...(mutant === "complete-interim" && { resultType: "complete" }),
+    };
+    frames.push({
+      direction: "server",
+      message: { jsonrpc: "2.0", id, result: structuredClone(value) },
+    });
     return {
       kind: "ok",
-      value: {
-        ...r,
-        ...(mutant === "positive-ttl" && { ttlMs: 999 }),
-        ...(mutant === "complete-interim" && { resultType: "complete" }),
-      },
+      value,
       meta,
     };
   };
@@ -237,7 +266,12 @@ export async function runExchange(
     ...(mutant === "drop-reconnect" && { reconnect: "never" }),
     open(method, params) {
       const id = ++next;
-      wire.push({ id, method, params });
+      const clonedParams = structuredClone(params);
+      wire.push({ id, method, params: clonedParams });
+      frames.push({
+        direction: "client",
+        message: { jsonrpc: "2.0", id, method, params: structuredClone(clonedParams) },
+      });
       const queue = new NotificationQueue<never>();
       let finish!: (o: Outcome<unknown>) => void;
       const s: StreamHandle = {
@@ -305,16 +339,26 @@ export async function runExchange(
       case "auth":
         auth = str(s.context);
         break;
-      case "notify-cache":
+      case "notify-cache": {
+        const params = obj(s.params ?? {});
+        frames.push({
+          direction: "server",
+          message: {
+            jsonrpc: "2.0",
+            method: str(s.method),
+            params: structuredClone(params),
+          },
+        });
         if (mutant !== "skip-invalidation")
           cache.notification(
             "s",
             mutant === "ignore-notify-kind"
               ? "notifications/tools/list_changed"
               : str(s.method),
-            obj(s.params ?? {}),
+            params,
           );
         break;
+      }
       case "listen": {
         const l = manager.listen(obj(s.filter));
         listeners.set(name, l);
@@ -337,6 +381,14 @@ export async function runExchange(
           ...obj(s.params ?? {}),
           _meta: { [SUBSCRIPTION_ID]: id },
         };
+        frames.push({
+          direction: "server",
+          message: {
+            jsonrpc: "2.0",
+            method: str(s.method),
+            params: structuredClone(params),
+          },
+        });
         if (mutant !== "drop-route")
           manager.route(
             { jsonrpc: "2.0", method: str(s.method), params },
@@ -355,23 +407,32 @@ export async function runExchange(
           binding: "inproc",
           requestId: l.id,
         };
-        stream.finish(
-          s.abrupt
-            ? {
-                kind: "transport-failure",
-                failure: { kind: "closed", message: "lost" },
-                safeToRetry: true,
-                meta,
-              }
-            : {
-                kind: "ok",
-                value: {
-                  resultType: "complete",
-                  _meta: { [SUBSCRIPTION_ID]: l.id },
-                },
-                meta,
-              },
-        );
+        if (s.abrupt) {
+          stream.finish({
+            kind: "transport-failure",
+            failure: { kind: "closed", message: "lost" },
+            safeToRetry: true,
+            meta,
+          });
+        } else {
+          const result = {
+            resultType: "complete",
+            _meta: { [SUBSCRIPTION_ID]: l.id },
+          };
+          frames.push({
+            direction: "server",
+            message: {
+              jsonrpc: "2.0",
+              id: l.id,
+              result: structuredClone(result),
+            },
+          });
+          stream.finish({
+            kind: "ok",
+            value: result,
+            meta,
+          });
+        }
         break;
       }
       case "close": {
@@ -414,4 +475,5 @@ export async function runExchange(
         `${String(fx.id)}: ${path} expected ${JSON.stringify(want)}, got ${JSON.stringify(value)}`,
       );
   }
+  return frames.length === 0 ? { frames: [], zeroWire: true } : { frames };
 }
