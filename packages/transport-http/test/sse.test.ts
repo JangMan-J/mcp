@@ -1,16 +1,6 @@
+import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import { SseParser, SseEventTooLargeError } from "../src/index.js";
-
-function mulberry32(seed: number): () => number {
-  let a = seed >>> 0;
-  return () => {
-    a |= 0;
-    a = (a + 0x6d2b79f5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
 
 function parseAll(chunks: readonly Uint8Array[]): unknown {
   const p = new SseParser();
@@ -58,7 +48,6 @@ describe("SseParser", () => {
   });
 
   it("is invariant under arbitrary chunk splits (property/fuzz, EDGE-19)", () => {
-    const rand = mulberry32(0x5eed);
     for (const stream of STREAMS) {
       const bytes = new TextEncoder().encode(stream);
       const whole = parseAll([bytes]);
@@ -66,21 +55,18 @@ describe("SseParser", () => {
       for (let cut = 0; cut <= bytes.length; cut++) {
         expect(parseAll([bytes.subarray(0, cut), bytes.subarray(cut)])).toEqual(whole);
       }
-      // Random multi-way splits
-      for (let trial = 0; trial < 120; trial++) {
-        const cuts = new Set<number>();
-        const nCuts = 1 + Math.floor(rand() * 6);
-        for (let i = 0; i < nCuts; i++) cuts.add(Math.floor(rand() * (bytes.length + 1)));
-        const sorted = [...cuts].sort((a, b) => a - b);
+      // Byte offsets (not string indices) can land inside UTF-8 sequences.
+      const cuts = fc.array(fc.integer({ min: 0, max: bytes.length }), { maxLength: bytes.length });
+      fc.assert(fc.property(cuts, (offsets) => {
         const chunks: Uint8Array[] = [];
-        let prev = 0;
-        for (const c of sorted) {
-          chunks.push(bytes.subarray(prev, c));
-          prev = c;
+        let start = 0;
+        for (const end of [...offsets].sort((a, b) => a - b)) {
+          chunks.push(bytes.subarray(start, end));
+          start = end;
         }
-        chunks.push(bytes.subarray(prev));
+        chunks.push(bytes.subarray(start));
         expect(parseAll(chunks)).toEqual(whole);
-      }
+      }), { seed: 0x5eed, numRuns: 120 });
       // Byte-at-a-time
       const singles = Array.from(bytes, (b) => new Uint8Array([b]));
       expect(parseAll(singles)).toEqual(whole);
