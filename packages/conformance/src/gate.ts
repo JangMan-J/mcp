@@ -60,6 +60,8 @@ export interface GateReport {
   readonly officialBlockedReason: string | null;
   readonly evidence: RunEvidence;
   readonly nonClaims: readonly string[];
+  /** Release claim text generated from requirementMatrix counts and gate items. */
+  readonly claim: string;
   readonly releaseEligible: boolean;
   readonly blockers: readonly string[];
 }
@@ -105,7 +107,44 @@ export interface GateOptions {
   readonly now?: () => Date;
 }
 
-export const REQUIRED_SUITES = ["baseline", "mutation", "coverage", "wire-scan", "network-scan", "secret-scan", "no-pi", "official", "removal", "evidence", "unit"] as const;
+export const REQUIRED_SUITES = ["baseline", "mutation", "coverage", "wire-scan", "network-scan", "secret-scan", "no-pi", "official", "removal", "evidence", "unit", "validate"] as const;
+/** Repo validation scripts scripts/gate.sh must record in validate.json, each exactly once with exit 0. */
+export const VALIDATE_SCRIPTS = ["check:deps-doc", "check:forbidden", "check:deps"] as const;
+/**
+ * Requirement rows whose acceptance check IS a gate suite run. A failing or absent suite fails the row.
+ * GATE-2/3/5/6/7 are checked by gate.ts behaviour (tagged tests in gate.test.ts). FIX-3/4/5 have no suite here.
+ */
+export const SUITE_REQUIREMENT_EVIDENCE: Readonly<Record<string, readonly string[]>> = {
+  "FIX-1": ["coverage"], // npm run check:coverage
+  "FIX-2": ["mutation"], // conformance run --mutate
+  "GATE-1": ["no-pi"], // scripts/assert-no-pi.mjs
+  "GATE-2": ["coverage"], // check:coverage dispositions
+  "GATE-4": ["wire-scan"], // scripts/wire-scan.mjs
+  "ARCH-DEP-1": ["validate"], // npm run check:deps
+  "ARCH-DEP-2": ["validate"], // npm run check:forbidden
+  "ARCH-DEP-3": ["validate"], // npm run check:deps-doc
+};
+
+/** Parse validate.json: exactly VALIDATE_SCRIPTS, each once, all exit 0. */
+export function checkValidateEvidence(raw: unknown): { ok: boolean; problems: string[] } {
+  if (!Array.isArray(raw)) return { ok: false, problems: ["validate.json is not an array"] };
+  const problems: string[] = [];
+  const seen = new Set<string>();
+  for (const r of raw as Array<Record<string, unknown>>) {
+    const script = typeof r?.script === "string" ? r.script : undefined;
+    const code = typeof r?.exitCode === "number" ? r.exitCode : undefined;
+    if (!script || code === undefined) {
+      problems.push(`malformed row ${JSON.stringify(r)}`);
+      continue;
+    }
+    if (!(VALIDATE_SCRIPTS as readonly string[]).includes(script)) problems.push(`unknown script ${script}`);
+    if (seen.has(script)) problems.push(`duplicate ${script}`);
+    seen.add(script);
+    if (code !== 0) problems.push(`${script} exit ${code}`);
+  }
+  for (const s of VALIDATE_SCRIPTS) if (!seen.has(s)) problems.push(`missing ${s}`);
+  return { ok: problems.length === 0, problems };
+}
 export const ALL_EXTENSIONS = [
   "ext-apps",
   "ext-client-credentials",
@@ -426,6 +465,21 @@ export function runGate(opts: GateOptions): GateReport {
       }
     }
   }
+  // validate: repo check scripts run by scripts/gate.sh
+  {
+    const dir = env[PREREQ_DIR_ENV] ? resolve(env[PREREQ_DIR_ENV]!) : undefined;
+    const file = dir ? join(dir, "validate.json") : undefined;
+    if (!file) add("validate", false, `${PREREQ_DIR_ENV} unset; validate evidence missing`);
+    else if (!existsSync(file)) add("validate", false, `${file} missing`);
+    else {
+      const raw = parseJson(readFileSync(file, "utf8"));
+      if (raw === undefined) add("validate", false, `${file} unparseable`);
+      else {
+        const c = checkValidateEvidence(raw);
+        add("validate", c.ok, c.ok ? `${VALIDATE_SCRIPTS.join(", ")} exit 0` : c.problems.join("; "));
+      }
+    }
+  }
   // evidence: environment, lockfile and pin table hashes
   const pinsPath = join(root, "docs/conformance/PINS.md");
   const evidence: RunEvidence = {
@@ -443,6 +497,12 @@ export function runGate(opts: GateOptions): GateReport {
     add("evidence", gaps.length === 0, gaps.length ? gaps.join("; ") : `lock ${evidence.lockfileSha256!.slice(0, 12)} pins ${evidence.pinsSha256!.slice(0, 12)}`);
   }
   for (const s of REQUIRED_SUITES) if (!suites.some((x) => x.name === s)) add(s, false, "suite missing");
+  // Suite-backed requirement rows: the suite run is the row's acceptance check.
+  const knownReqIds = new Set(reqs.map((r) => r.id));
+  for (const [req, names] of Object.entries(SUITE_REQUIREMENT_EVIDENCE)) {
+    if (!knownReqIds.has(req)) continue;
+    for (const n of names) unitEvidence.push({ req, source: `suite:${n}`, ok: suites.find((x) => x.name === n)?.ok === true });
+  }
 
   // Scenarios: explicit, nonempty, each an actual passing row.
   // Default: DEFAULT_GATE_SCENARIOS when neither the option nor GATE_SCENARIOS is set.
@@ -499,6 +559,8 @@ export function runGate(opts: GateOptions): GateReport {
   });
   for (const g of gateItems) if (g.status !== "pass") blockers.push(`${g.id}: ${g.status} (${g.detail})`);
 
+  const releaseEligible = blockers.length === 0;
+  const claim = buildClaim(requirementMatrix, gateItems, releaseEligible);
   const report: GateReport = {
     sha,
     generatedAt: (opts.now?.() ?? new Date()).toISOString(),
@@ -512,13 +574,29 @@ export function runGate(opts: GateOptions): GateReport {
     officialBlockedReason,
     evidence,
     nonClaims,
-    releaseEligible: blockers.length === 0,
+    claim,
+    releaseEligible,
     blockers,
   };
   writeFileSync(join(reportsDir, `gate-${sha}.json`), JSON.stringify(report, null, 2) + "\n");
   writeFileSync(join(reportsDir, `gate-${sha}.md`), renderMarkdown(report));
   writeFileSync(join(reportsDir, "coverage-matrix.md"), renderCoverageMatrix(report));
   return report;
+}
+
+/** Claim text generated only from the requirement matrix and gate items. */
+export function buildClaim(rows: readonly RequirementMatrixRow[], items: readonly GateItem[], releaseEligible: boolean): string {
+  const pass = rows.filter((r) => r.status === "pass");
+  const fail = rows.filter((r) => r.status === "fail").length;
+  const missing = rows.filter((r) => r.status === "missing").length;
+  const req = rows.filter((r) => BLOCKING_DISPOSITIONS.includes(r.disposition));
+  const reqPass = req.filter((r) => r.status === "pass").length;
+  const gPass = items.filter((g) => g.status === "pass").length;
+  return (
+    `${releaseEligible ? "Release eligible" : "Not release eligible"}: ${pass.length}/${rows.length} requirement rows pass ` +
+    `(${reqPass}/${req.length} required/deprecated/excluded; ${fail} fail, ${missing} missing); ` +
+    `gate items ${gPass}/${items.length} pass. Claims are limited to the passing rows.`
+  );
 }
 
 export function renderCoverageMatrix(r: GateReport): string {
@@ -533,6 +611,7 @@ export function renderMarkdown(r: GateReport): string {
   const l: string[] = [];
   l.push(`# Release gate ${r.sha}`, "", `Generated: ${r.generatedAt}`, "");
   l.push(`**Release eligible: ${r.releaseEligible ? "yes" : "no"}**`, "");
+  l.push("## Claim", "", r.claim, "");
   l.push("## Suites", "", "| Suite | Result | Detail |", "|---|---|---|");
   for (const s of r.suites) l.push(`| ${s.name} | ${s.ok ? "PASS" : "FAIL"} | ${s.detail.replace(/\|/g, "\\|")} |`);
   l.push("", "## Fixture matrix", "", "| Fixture | Result | Error |", "|---|---|---|");

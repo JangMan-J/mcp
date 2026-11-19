@@ -10,6 +10,8 @@ import {
   DEFAULT_GATE_SCENARIOS,
   GATE_ITEM_IDS,
   REQUIRED_SUITES,
+  SUITE_REQUIREMENT_EVIDENCE,
+  checkValidateEvidence,
   checkRemovalEvidence,
   buildRequirementMatrix,
   matchFixture,
@@ -46,6 +48,7 @@ function fakeExec(over: Over = {}) {
 }
 
 const GOOD_ROWS = ALL_EXTENSIONS.map((e) => ({ script: `remove:${e}`, ext: e, exitCode: 0, log: `${e}.log` }));
+const GOOD_VALIDATE = ["check:deps-doc", "check:forbidden", "check:deps"].map((script) => ({ script, exitCode: 0, log: `${script}.log` }));
 const GOOD_VITEST = { success: true, numTotalTests: 1, numFailedTests: 0, testResults: [] };
 function setup(rows: unknown = GOOD_ROWS) {
   const dir = mkdtempSync(join(tmpdir(), "gate-test-"));
@@ -53,6 +56,7 @@ function setup(rows: unknown = GOOD_ROWS) {
   mkdirSync(prereq);
   if (rows !== null) writeFileSync(join(prereq, "remove-ext.json"), typeof rows === "string" ? rows : JSON.stringify(rows));
   writeFileSync(join(prereq, "vitest.json"), JSON.stringify(GOOD_VITEST));
+  writeFileSync(join(prereq, "validate.json"), JSON.stringify(GOOD_VALIDATE));
   writeFileSync(join(dir, "package-lock.json"), "{}");
   mkdirSync(join(dir, "docs/conformance"), { recursive: true });
   writeFileSync(join(dir, "docs/conformance/PINS.md"), "| pin | value |\n| spec | 2026-07-28 |\n");
@@ -432,5 +436,88 @@ describe("gate", () => {
     expect(rep.nonClaims).toContain("Wave 3 rows (post-gate, PLAN §15; not built before the gate): PICA-1");
     const c = base();
     expect(runGate({ ...c.opts, requirements: [...REQS, { id: "PICA-1", disposition: "required" }] }).blockers.some((x) => x.startsWith("requirements:"))).toBe(true);
+  });
+
+  it("validate suite fails closed when validate.json is missing, unparseable, incomplete or any exit != 0", () => {
+    expect(REQUIRED_SUITES).toContain("validate");
+    const b = base();
+    rmSync(join(b.prereq, "validate.json"));
+    const rep = runGate(b.opts);
+    expect(rep.suites.find((s) => s.name === "validate")?.ok).toBe(false);
+    expect(rep.releaseEligible).toBe(false);
+    const c = base();
+    writeFileSync(join(c.prereq, "validate.json"), "[");
+    expect(runGate(c.opts).blockers.some((x) => x.startsWith("validate") && x.includes("unparseable"))).toBe(true);
+    const d = base();
+    writeFileSync(join(d.prereq, "validate.json"), JSON.stringify(GOOD_VALIDATE.map((r, i) => (i === 1 ? { ...r, exitCode: 1 } : r))));
+    expect(runGate(d.opts).blockers.some((x) => x.startsWith("validate") && x.includes("check:forbidden exit 1"))).toBe(true);
+    expect(checkValidateEvidence(GOOD_VALIDATE).ok).toBe(true);
+    expect(checkValidateEvidence(GOOD_VALIDATE.slice(1)).problems).toContain("missing check:deps-doc");
+    expect(checkValidateEvidence([...GOOD_VALIDATE, GOOD_VALIDATE[0]]).problems).toContain("duplicate check:deps-doc");
+    expect(checkValidateEvidence([...GOOD_VALIDATE, { script: "check:x", exitCode: 0 }]).ok).toBe(false);
+    expect(checkValidateEvidence({}).ok).toBe(false);
+  });
+
+  it("suite evidence: a passing mapped suite passes the row; a failing suite fails it", () => {
+    expect(SUITE_REQUIREMENT_EVIDENCE["ARCH-DEP-1"]).toEqual(["validate"]);
+    const reqs = [...REQS, { id: "ARCH-DEP-2", disposition: "required" }, { id: "GATE-4", disposition: "required" }];
+    const b = base();
+    const rep = runGate({ ...b.opts, requirements: reqs });
+    expect(rep.requirementMatrix.find((r) => r.id === "ARCH-DEP-2")).toMatchObject({ status: "pass", evidence: ["suite:validate"] });
+    expect(rep.requirementMatrix.find((r) => r.id === "GATE-4")).toMatchObject({ status: "pass", evidence: ["suite:wire-scan"] });
+    expect(rep.blockers).toEqual([]);
+    const c = base();
+    writeFileSync(join(c.prereq, "validate.json"), JSON.stringify(GOOD_VALIDATE.map((r) => ({ ...r, exitCode: 2 }))));
+    const rep2 = runGate({ ...c.opts, requirements: reqs });
+    expect(rep2.requirementMatrix.find((r) => r.id === "ARCH-DEP-2")!.status).toBe("fail");
+    expect(rep2.requirementMatrix.find((r) => r.id === "GATE-4")!.status).toBe("pass");
+  });
+
+  it("[GATE-2] every requirement row appears in the matrix with its disposition", () => {
+    const reqs = [{ id: "X-1", disposition: "required" }, { id: "X-2", disposition: "unresolved" }, { id: "X-3", disposition: "out-of-scope" }];
+    const m = buildRequirementMatrix(reqs, [], []);
+    expect(m.map((r) => [r.id, r.disposition])).toEqual(reqs.map((r) => [r.id, r.disposition]));
+    const b = base();
+    const rep = runGate({ ...b.opts, requirements: [] });
+    expect(rep.blockers).toContain("requirements: requirements.json rows missing");
+  });
+
+  it("[GATE-3] an implemented (required) row without a passing check blocks release", () => {
+    const b = base();
+    const rep = runGate({ ...b.opts, requirements: [...REQS, { id: "X-9", disposition: "required" }] });
+    expect(rep.releaseEligible).toBe(false);
+    expect(rep.blockers.some((x) => x.startsWith("requirements: 1 "))).toBe(true);
+    const c = base();
+    const fail = runGate({ ...c.opts, fixtures: [...FIX], exec: fakeExec({ "run --json": { code: 1, stdout: JSON.stringify({ ok: false, results: [{ id: "wire.a", ok: false }, { id: "ver.b", ok: true }] }) } }).exec });
+    expect(fail.requirementMatrix.find((r) => r.id === "R1")!.status).toBe("fail");
+    expect(fail.releaseEligible).toBe(false);
+  });
+
+  it("[GATE-5] official runner result is recorded even when it fails", () => {
+    const b = base({ "official --json": { code: 1, stdout: JSON.stringify({ ok: false, total: 0, reason: "no scenarios" }) } });
+    const rep = runGate(b.opts);
+    expect(rep.officialBlockedReason).toContain("reason=no scenarios");
+    expect(rep.suites.find((s) => s.name === "official")).toMatchObject({ ok: false });
+    expect(readFileSync(join(b.reportsDir, `gate-${SHA}.md`), "utf8")).toContain("Official blocked reason: ok=false total=0 reason=no scenarios");
+    expect(runGate(base().opts).suites.find((s) => s.name === "official")!.detail).toBe("ok total=5");
+  });
+
+  it("[GATE-6] unresolved and out-of-scope rows are enumerated as non-claims", () => {
+    const b = base();
+    const rep = runGate({ ...b.opts, requirements: [...REQS, { id: "U-1", disposition: "unresolved" }, { id: "O-1", disposition: "out-of-scope" }] });
+    expect(rep.nonClaims).toContain("Unresolved requirement rows (no claim): U-1");
+    expect(rep.nonClaims).toContain("Out-of-scope requirement rows (listed, not checked): O-1");
+    const md = readFileSync(join(b.reportsDir, `gate-${SHA}.md`), "utf8");
+    expect(md).toContain("- Unresolved requirement rows (no claim): U-1");
+  });
+
+  it("[GATE-7] claim text is generated from the requirement matrix and rendered", () => {
+    const b = base();
+    const rep = runGate(b.opts);
+    expect(rep.claim).toBe("Release eligible: 1/2 requirement rows pass (1/1 required/deprecated/excluded; 0 fail, 1 missing); gate items 12/12 pass. Claims are limited to the passing rows.");
+    expect(readFileSync(join(b.reportsDir, `gate-${SHA}.md`), "utf8")).toContain(`## Claim\n\n${rep.claim}`);
+    const c = base();
+    const rep2 = runGate({ ...c.opts, requirements: [...REQS, { id: "X-9", disposition: "required" }] });
+    expect(rep2.claim.startsWith("Not release eligible: 1/3 requirement rows pass (1/2 ")).toBe(true);
   });
 });
