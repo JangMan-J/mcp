@@ -49,7 +49,7 @@ describe("@mcp-client/telemetry-otel conformance fixtures", () => {
   });
 
   it.each(fixtures.map((f) => [f.id, f]))("passes baseline fixture %s", async (_id, fx) => {
-    await expect(runExchange(fx)).resolves.toBeUndefined();
+    await expect(runExchange(fx)).resolves.toMatchObject({ frames: expect.any(Array) });
   });
 
   it("fails every mutant with ObservationMismatch", async () => {

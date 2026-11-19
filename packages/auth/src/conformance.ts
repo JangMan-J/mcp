@@ -44,8 +44,23 @@ function fields(actual: unknown, expected: unknown) {
 const mutants = new Set(['no-provider', 'wrong-scope', 'wrong-issuer-policy', 'allow-pkce-plain', 'always-decline',
   'drop-resource', 'ignore-redirect-location', 'no-ssrf-guard', 'bad-pkce', 'ignore-bearer-challenge', 'preemptive-bearer', 'allow-cross-resource', 'refresh-on-forbidden', 'prefer-cimd', 'allow-invalid-redirect', 'lose-stored-refresh']);
 
+interface WireFrame {
+  direction: 'client' | 'server';
+  endpoint: 'mcp' | 'oauth' | 'registration' | 'other';
+  method?: string;
+  url?: string;
+  headers?: Record<string, string>;
+  message?: unknown;
+}
+export interface ExchangeObservation { frames: WireFrame[]; mcpEndpoint?: string; zeroWire?: boolean }
+
+/** Map synthetic `*.test` hosts to loopback `*.test.localhost` for recorded transcripts. */
+function loopback<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value).replace(/([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.test)(?![A-Za-z0-9.-])/gu, '$1.localhost')) as T;
+}
+
 /** Run a scripted auth exchange; unknown actions and assertions are errors, not skipped steps. */
-export async function runExchange(fixture: unknown, mutant?: string): Promise<void> {
+export async function runExchange(fixture: unknown, mutant?: string): Promise<ExchangeObservation> {
   const fx = record(fixture);
   if (mutant !== undefined && !mutants.has(mutant)) throw new Error(`unknown auth mutant: ${mutant}`);
   if (fx['expect'] !== undefined) equal(Object.keys(record(fx['expect'])).length, 0, 'put auth assertions in the script');
@@ -62,6 +77,20 @@ export async function runExchange(fixture: unknown, mutant?: string): Promise<vo
   let callbackConfig = config.callback;
   const fetches: { method: string; url: string; form?: Record<string, string>; redirect?: RequestRedirect }[] = [];
   const opens: URL[] = [];
+  const frames: WireFrame[] = [];
+  const classify = (url: string): WireFrame['endpoint'] => {
+    let u: URL;
+    try { u = new URL(url); } catch { return 'other'; }
+    const r = new URL(resource);
+    if (u.origin === r.origin && u.pathname === r.pathname && !u.search) return 'mcp';
+    if (/\/register\/?$/u.test(u.pathname)) return 'registration';
+    if (/\.well-known|\/(token|authorize)\/?$|metadata\.json$/u.test(u.pathname)) return 'oauth';
+    return 'other';
+  };
+  const recordClient = (url: string, method: string, headers?: HeadersInit) => {
+    const h = headers ? Object.fromEntries(new Headers(headers)) : undefined;
+    frames.push(loopback({ direction: 'client' as const, endpoint: classify(url), method, url, ...(h && Object.keys(h).length ? { headers: h } : {}) }));
+  };
   const prompts: AuthorizationPrompt[] = [];
   const diagnostics: string[] = [];
   const store = new MemoryCredentialStore();
@@ -69,7 +98,7 @@ export async function runExchange(fixture: unknown, mutant?: string): Promise<vo
   let tokenNumber = 0;
   let bearerNumber = 1;
   let closeCallback: ((params: URLSearchParams) => void) | undefined;
-  const fetcher: FetchPort = { async fetch(url, request) {
+  const inner: FetchPort = { async fetch(url, request) {
     const method = request.method ?? 'GET';
     const form = method === 'POST' ? new URLSearchParams(String(request.body)) : undefined;
     if (mutant === 'drop-resource') form?.delete('resource');
@@ -101,6 +130,15 @@ export async function runExchange(fixture: unknown, mutant?: string): Promise<vo
     }
     return new Response(null, { status: 404 });
   } };
+  const fetcher: FetchPort = { async fetch(url, request) {
+    recordClient(url, request.method ?? 'GET', request.headers);
+    const res = await inner.fetch(url, request);
+    let message: unknown;
+    if (/json/iu.test(res.headers.get('content-type') ?? '')) { try { message = await res.clone().json(); } catch { /* not JSON */ } }
+    frames.push(loopback({ direction: 'server' as const, endpoint: classify(url), url, headers: { ...Object.fromEntries(res.headers), status: String(res.status) },
+      ...(message !== undefined ? { message } : {}) }));
+    return res;
+  } };
   const registration = { clientId: 'fixture-client', redirectUris: [REDIRECT] };
   const oauthOptions: OAuthOptions = { resource, redirectUri, serverLabel: 'Fixture MCP', allowInsecureDev: true,
     fetch: fetcher, credentials: {
@@ -124,6 +162,8 @@ export async function runExchange(fixture: unknown, mutant?: string): Promise<vo
     browser: { async open(url) {
       const parsed = new URL(url);
       opens.push(parsed);
+      recordClient(url, 'GET');
+      frames[frames.length - 1]!.endpoint = 'oauth';
       const values = new URLSearchParams({ code: CODE, state: callbackConfig?.state ?? parsed.searchParams.get('state')! });
       if (callbackConfig?.iss !== null) values.set('iss', callbackConfig?.iss ?? issuer);
       if (callbackConfig?.error) {
@@ -146,7 +186,7 @@ export async function runExchange(fixture: unknown, mutant?: string): Promise<vo
     try { makeProvider(); } catch (caught) { error = caught; }
     ok(error instanceof AuthError, 'expected a typed construction error');
     equal(error.message, record(script[0])['value']);
-    return;
+    return { frames: [], zeroWire: true };
   }
   const provider = makeProvider();
   const statusFor = (step: Case): AuthChallenge => {
@@ -230,4 +270,5 @@ export async function runExchange(fixture: unknown, mutant?: string): Promise<vo
     }
   }
   ok(assertions > 0, 'auth exchange has no assertions');
+  return frames.length === 0 ? { frames: [], zeroWire: true } : { frames, mcpEndpoint: loopback(resource) };
 }

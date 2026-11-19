@@ -59,7 +59,25 @@ function assertFixture(raw: unknown): TelFixture {
   return obj as unknown as TelFixture;
 }
 
+export interface ObservedFrame {
+  direction: "client" | "server";
+  endpoint?: "mcp";
+  method?: string;
+  url?: string;
+  message: unknown;
+}
+export interface ExchangeObservation {
+  frames: ObservedFrame[];
+  mcpEndpoint?: string;
+  zeroWire?: boolean;
+}
+
+const MCP_URL = "http://127.0.0.1/mcp";
+const loopback = <T>(v: T): T =>
+  JSON.parse(JSON.stringify(v).replace(/([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.test)(?![A-Za-z0-9.-])/gu, "$1.localhost")) as T;
+
 function createMemoryTransport(opts: {
+  frames?: ObservedFrame[];
   binding: "stdio" | "streamable-http";
   onStart?: (msg: JsonRpcRequest, ctx: TransportCall) => void;
   notifications?: readonly JsonRpcNotification[];
@@ -79,22 +97,32 @@ function createMemoryTransport(opts: {
     start(msg: JsonRpcRequest, ctx: TransportCall): Exchange {
       opts.onStart?.(msg, ctx);
       const notifs = opts.notifications ?? [];
+      const http = opts.binding === "streamable-http";
+      const wire = (direction: "client" | "server", message: unknown): ObservedFrame =>
+        loopback({ direction, ...(http ? { endpoint: "mcp" as const, ...(direction === "client" ? { method: "POST", url: MCP_URL } : {}) } : {}), message });
+      opts.frames?.push(wire("client", msg));
       return {
         notifications: {
           async *[Symbol.asyncIterator]() {
-            for (const n of notifs) yield n;
+            for (const n of notifs) {
+              opts.frames?.push(wire("server", n));
+              yield n;
+            }
           },
         },
         done: Promise.resolve({
-          kind: "response",
-          message: { jsonrpc: "2.0", id: msg.id, result: { ok: true } },
+          kind: "response" as const,
+          message: { jsonrpc: "2.0" as const, id: msg.id, result: { ok: true } },
+        }).then((r) => {
+          opts.frames?.push(wire("server", r.message));
+          return r;
         }),
       };
     },
   };
 }
 
-async function runTraceContextScenario(mutant?: string): Promise<void> {
+async function runTraceContextScenario(frames: ObservedFrame[], mutant?: string): Promise<void> {
   const tracer = new RecordingTracer();
   const capturedRequests: JsonRpcRequest[] = [];
   const capturedHeaders: Record<string, string> = {};
@@ -117,6 +145,7 @@ async function runTraceContextScenario(mutant?: string): Promise<void> {
   });
 
   const transport = createMemoryTransport({
+    frames,
     binding: "streamable-http",
     onStart: (msg) => {
       if (mutant === "prefixed-meta-keys" && msg.params && typeof msg.params === "object") {
@@ -236,7 +265,7 @@ async function runPrivacyScenario(mutant?: string): Promise<void> {
   }
 }
 
-async function runAttributesScenario(mutant?: string): Promise<void> {
+async function runAttributesScenario(frames: ObservedFrame[], mutant?: string): Promise<void> {
   const tracer = new RecordingTracer();
   const telemetry = createOtelTelemetry({ tracer });
 
@@ -278,7 +307,7 @@ async function runAttributesScenario(mutant?: string): Promise<void> {
   }
 }
 
-async function runChannelSeparationScenario(mutant?: string): Promise<void> {
+async function runChannelSeparationScenario(frames: ObservedFrame[], mutant?: string): Promise<void> {
   const tracer = new RecordingTracer();
   const telemetry = createOtelTelemetry({ tracer });
 
@@ -294,6 +323,7 @@ async function runChannelSeparationScenario(mutant?: string): Promise<void> {
   };
 
   const baseTransport = createMemoryTransport({
+    frames,
     binding: "stdio",
     notifications: [progressNotification],
     diagnostics: [diagnostic],
@@ -327,25 +357,29 @@ async function runChannelSeparationScenario(mutant?: string): Promise<void> {
   }
 }
 
-export async function runExchange(fixture: unknown, mutant?: string): Promise<void> {
+export async function runExchange(fixture: unknown, mutant?: string): Promise<ExchangeObservation> {
   if (mutant !== undefined && !supportsMutant(mutant)) {
     throw new Error(`Unknown mutant: ${mutant}`);
   }
   const parsed = assertFixture(fixture);
+  const frames: ObservedFrame[] = [];
   switch (parsed.id) {
     case "tel/trace-context-propagation":
-      await runTraceContextScenario(mutant);
-      return;
+      await runTraceContextScenario(frames, mutant);
+      break;
     case "tel/spans-omit-content":
       await runPrivacyScenario(mutant);
-      return;
+      break;
     case "tel/span-attributes-no-session":
-      await runAttributesScenario(mutant);
-      return;
+      await runAttributesScenario(frames, mutant);
+      break;
     case "tel/channels-do-not-cross":
-      await runChannelSeparationScenario(mutant);
-      return;
+      await runChannelSeparationScenario(frames, mutant);
+      break;
     default:
       throw new Error(`Unknown telemetry fixture id: ${parsed.id}`);
   }
+  if (frames.length === 0) return { frames, zeroWire: true };
+  const hasHttp = frames.some((f) => f.endpoint === "mcp");
+  return { frames, ...(hasHttp ? { mcpEndpoint: MCP_URL } : {}) };
 }
