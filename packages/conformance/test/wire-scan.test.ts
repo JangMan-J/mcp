@@ -70,6 +70,11 @@ describe("wire-scan CLI", () => {
       { fixture: "f", frames: [{ direction: "client" }] },
       { fixture: "f", frames: [{ direction: "client", headers: "x" }] },
       { fixture: "f", frames: [{ direction: "server", message: { jsonrpc: "2.0", id: 1, result: {} } }] },
+      { fixture: "f", incomplete: true, frames: [okClient] },
+      { fixture: "f", incomplete: "yes", frames: [okClient] },
+      { fixture: "f", frames: [okClient, { ...okClient, incomplete: true }] },
+      { fixture: "f", frames: [{ direction: "client", method: "GET", url: "http://127.0.0.1:2/authorize" }] },
+      { fixture: "f", frames: [{ ...okClient, endpoint: "bogus" }] },
     ];
     for (const c of cases) {
       const d = tmp();
@@ -89,8 +94,10 @@ describe("wire-scan CLI", () => {
     ["ping", { ...okClient, message: { jsonrpc: "2.0", id: 2, method: "ping" } }],
     ["io.modelcontextprotocol/logLevel", { ...okClient, message: { jsonrpc: "2.0", id: 3, method: "tools/call", params: { _meta: { "io.modelcontextprotocol/logLevel": "debug" } } } }],
     ["batch", { ...okClient, message: [okClient.message] }],
-    ["GET", { direction: "client", method: "GET", url: "http://127.0.0.1:1/mcp" }],
-    ["DELETE", { direction: "client", method: "delete", url: "http://127.0.0.1:1/mcp" }],
+    ["includeContext", { ...okClient, message: { jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "x", includeContext: "allServers" } } }],
+    ["GET", { direction: "client", endpoint: "mcp", method: "GET", url: "http://127.0.0.1:1/mcp" }],
+    ["DELETE", { direction: "client", endpoint: "mcp", method: "delete", url: "http://127.0.0.1:1/mcp" }],
+    ["Dynamic Client Registration", { direction: "client", endpoint: "registration", method: "POST", url: "http://127.0.0.1:2/register", headers: { Authorization: "Bearer x" } }],
   ])("flags forbidden client construct %s", (needle, frame) => {
     const d = tmp();
     write(d, "t.json", { fixture: "bad/x", frames: [okClient, frame] });
@@ -137,5 +144,82 @@ describe("wire-scan CLI", () => {
     expect(r.out).toContain("clean");
     expect(r.code).toBe(0);
     expect(r.out).not.toContain(SECRET);
+  });
+
+  it("reports incomplete evidence as an error even when frames are otherwise clean", () => {
+    const d = tmp();
+    write(d, "a.json", { fixture: "ok", frames: [okClient] });
+    write(d, "b.json", { fixture: "partial", incomplete: true, frames: [okClient] });
+    const r = run(d);
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("incomplete");
+    expect(r.out).not.toContain("clean");
+  });
+
+  it("does not inspect tool arguments for includeContext or logLevel", () => {
+    const d = tmp();
+    write(d, "t.json", {
+      fixture: "tools/args",
+      frames: [
+        {
+          ...okClient,
+          message: {
+            jsonrpc: "2.0",
+            id: 5,
+            method: "tools/call",
+            params: {
+              name: "configure",
+              arguments: { includeContext: "allServers", "io.modelcontextprotocol/logLevel": "debug", _meta: { "io.modelcontextprotocol/logLevel": "x" }, method: "roots/list" },
+              _meta: { progressToken: 1 },
+            },
+          },
+        },
+      ],
+    });
+    const r = run(d);
+    expect(r.out).toContain("clean");
+    expect(r.code).toBe(0);
+  });
+
+  it("allows GET on OAuth endpoints but bans it on the MCP endpoint resolved via mcpEndpoint", () => {
+    const d = tmp();
+    write(d, "ok.json", {
+      fixture: "auth/discovery",
+      mcpEndpoint: "http://127.0.0.1:1/mcp",
+      frames: [
+        { direction: "client", endpoint: "oauth", method: "GET", url: "http://127.0.0.1:1/.well-known/oauth-protected-resource" },
+        { direction: "client", endpoint: "oauth", method: "GET", url: "http://127.0.0.1:2/authorize?response_type=code&state=s" },
+        okClient,
+      ],
+    });
+    expect(run(d).code).toBe(0);
+    const e = tmp();
+    write(e, "bad.json", {
+      fixture: "http/get",
+      mcpEndpoint: "http://127.0.0.1:1/mcp/",
+      frames: [{ direction: "client", method: "GET", url: "http://127.0.0.1:1/mcp" }],
+    });
+    const r = run(e);
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("forbidden HTTP method 'GET' on MCP endpoint");
+  });
+
+  it.each([
+    ["access_token", "http://127.0.0.1:1/mcp?access_token=" + SECRET],
+    ["client_secret", "http://127.0.0.1:2/token?client_secret=" + SECRET],
+    ["userinfo", `http://user:${SECRET}@127.0.0.1:1/mcp`],
+  ])("flags credential leakage in URL (%s) without echoing it", (needle, url) => {
+    const d = tmp();
+    write(d, "t.json", { fixture: "auth/leak", frames: [{ ...okClient, url }] });
+    const r = run(d);
+    expect(r.code).toBe(1);
+    expect(r.out).toContain(needle);
+    expect(r.out).not.toContain(SECRET);
+  });
+
+  it("states the DCR detection limitation on a clean run", () => {
+    const d = tmp();
+    write(d, "t.json", { fixture: "ok", frames: [okClient] });
+    expect(run(d).out).toContain("limitation: DCR detection relies on endpoint:'registration'");
   });
 });
