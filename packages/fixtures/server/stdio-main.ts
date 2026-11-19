@@ -12,6 +12,7 @@ interface CliOpts {
   ignoreSigterm: boolean;
   partial: boolean;
   longStderr: boolean;
+  gatedSplit: boolean;
 }
 
 function parseArgs(argv: readonly string[]): CliOpts {
@@ -22,6 +23,7 @@ function parseArgs(argv: readonly string[]): CliOpts {
     ignoreSigterm: false,
     partial: false,
     longStderr: false,
+    gatedSplit: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -39,6 +41,8 @@ function parseArgs(argv: readonly string[]): CliOpts {
       opts.partial = true;
     } else if (a === "--long-stderr") {
       opts.longStderr = true;
+    } else if (a === "--gated-split") {
+      opts.gatedSplit = true;
     }
   }
   return opts;
@@ -55,8 +59,8 @@ function record(line: string): void {
   }
 }
 
-function sendJson(obj: unknown): void {
-  process.stdout.write(`${JSON.stringify(obj)}\n`);
+function sendJson(...messages: unknown[]): void {
+  process.stdout.write(messages.map((msg) => `${JSON.stringify(msg)}\n`).join(""));
 }
 
 if (opts.mode === "crash-immediately") {
@@ -68,7 +72,7 @@ let keepAlive: ReturnType<typeof setInterval> | undefined;
 if (opts.mode === "ignore-stdin-close") {
   keepAlive = setInterval(() => {}, 1000);
   process.on("SIGTERM", () => {
-    record("SIGNAL:SIGTERM");
+    record(`SIGNAL:SIGTERM:${Date.now()}`);
     if (!opts.ignoreSigterm) {
       if (keepAlive) clearInterval(keepAlive);
       setTimeout(() => process.exit(0), 15);
@@ -78,7 +82,17 @@ if (opts.mode === "ignore-stdin-close") {
 
 let reqCounter = 0;
 let heldFirst: { id: string | number; method: string; params: Record<string, unknown> } | undefined;
-let activeSubReq: { id: string | number; subId: string } | undefined;
+const activeSubscriptions = new Set<string | number>();
+let cancelledId: string | number | undefined;
+let splitRemainder: Buffer | undefined;
+
+function progress(params: Record<string, unknown>): unknown[] {
+  const meta = params["_meta"] as Record<string, unknown> | undefined;
+  const token = meta?.["io.modelcontextprotocol/progressToken"];
+  return token === undefined ? [] : [{
+    jsonrpc: "2.0", method: "notifications/progress", params: { progressToken: token, progress: 1 },
+  }];
+}
 
 function handleMessage(msg: Record<string, unknown>): void {
   const method = typeof msg["method"] === "string" ? msg["method"] : "";
@@ -92,6 +106,14 @@ function handleMessage(msg: Record<string, unknown>): void {
   // Notification from client (e.g., notifications/cancelled)
   if (!hasId) {
     record(`NOTIF:${method}:${JSON.stringify(params)}`);
+    if (method === "notifications/test/continue" && splitRemainder) {
+      process.stdout.write(splitRemainder);
+      splitRemainder = undefined;
+    }
+    if (opts.mode === "cancel-delay" && method === "notifications/cancelled" && cancelledId !== undefined) {
+      sendJson({ jsonrpc: "2.0", id: cancelledId, result: { resultType: "complete", late: true } });
+      cancelledId = undefined;
+    }
     return;
   }
 
@@ -99,9 +121,22 @@ function handleMessage(msg: Record<string, unknown>): void {
 
   if (opts.mode === "crash-on-request") {
     if (opts.partial) {
-      process.stdout.write(`{"jsonrpc":"2.0","id":${JSON.stringify(id)},"result":{"trun`);
+      process.stdout.write(`{"jsonrpc":"2.0","id":${JSON.stringify(id)},"result":{"trun`, () => process.exit(1));
+    } else {
+      process.exit(1);
     }
-    process.exit(1);
+    return;
+  }
+
+  if (opts.mode === "stdout-eof") {
+    process.stdout.end();
+    return;
+  }
+
+  if (opts.mode === "stderr-empty") {
+    process.stderr.write("\n".repeat(100));
+    sendJson({ jsonrpc: "2.0", id, result: { resultType: "complete" } });
+    return;
   }
 
   if (opts.mode === "split-multibyte") {
@@ -116,6 +151,10 @@ function handleMessage(msg: Record<string, unknown>): void {
     const cut1 = emojiIdx >= 0 ? emojiIdx + 2 : Math.floor(buf.length / 3);
     const cut2 = cut1 + 5;
     process.stdout.write(buf.subarray(0, cut1));
+    if (opts.gatedSplit) {
+      splitRemainder = buf.subarray(cut1);
+      return;
+    }
     setTimeout(() => {
       process.stdout.write(buf.subarray(cut1, cut2));
       setTimeout(() => {
@@ -159,19 +198,14 @@ function handleMessage(msg: Record<string, unknown>): void {
       heldFirst = { id: id!, method, params };
       return;
     }
-    // Reply to second request first, then first request
-    sendJson({ jsonrpc: "2.0", id, result: { resultType: "complete", order: "second", name: params["name"] } });
-    if (heldFirst) {
-      const first = heldFirst;
-      heldFirst = undefined;
-      setTimeout(() => {
-        sendJson({
-          jsonrpc: "2.0",
-          id: first.id,
-          result: { resultType: "complete", order: "first", name: first.params["name"] },
-        });
-      }, 15);
-    }
+    const first = heldFirst;
+    heldFirst = undefined;
+    sendJson(
+      ...(first ? progress(first.params) : []),
+      ...progress(params),
+      { jsonrpc: "2.0", id, result: { resultType: "complete", order: "second", name: params["name"] } },
+      ...(first ? [{ jsonrpc: "2.0", id: first.id, result: { resultType: "complete", order: "first", name: first.params["name"] } }] : []),
+    );
     return;
   }
 
@@ -202,62 +236,48 @@ function handleMessage(msg: Record<string, unknown>): void {
     return;
   }
 
-  if (opts.mode === "subscription") {
-    const meta =
-      typeof params["_meta"] === "object" && params["_meta"] !== null
-        ? (params["_meta"] as Record<string, unknown>)
-        : {};
-    const subId =
-      typeof meta["io.modelcontextprotocol/subscriptionId"] === "string"
-        ? (meta["io.modelcontextprotocol/subscriptionId"] as string)
-        : typeof params["subscriptionId"] === "string"
-          ? (params["subscriptionId"] as string)
-          : undefined;
-
-    if (method === "subscriptions/listen" && subId) {
-      activeSubReq = { id: id!, subId };
+  if (opts.mode === "subscription" || (opts.mode === "subscription-crash" && method === "subscriptions/listen")) {
+    const subMeta = (subId: string | number) => ({ "io.modelcontextprotocol/subscriptionId": subId });
+    if (method === "subscriptions/listen") {
+      activeSubscriptions.add(id!);
       sendJson({
         jsonrpc: "2.0",
-        method: "notifications/resources/updated",
-        params: { uri: "file:///a.txt", _meta: { "io.modelcontextprotocol/subscriptionId": subId } },
+        method: "notifications/subscriptions/acknowledged",
+        params: { notifications: { resourceSubscriptions: ["file:///a.txt"] }, _meta: subMeta(id!) },
       });
       return;
     }
 
-    // Interleaved regular request: emit another sub notification, respond to regular request, then complete sub
-    if (activeSubReq) {
-      sendJson({
+    sendJson(
+      ...Array.from(activeSubscriptions, (subId) => ({
         jsonrpc: "2.0",
         method: "notifications/resources/updated",
-        params: { uri: "file:///b.txt", _meta: { "io.modelcontextprotocol/subscriptionId": activeSubReq.subId } },
-      });
-    }
-    sendJson({ jsonrpc: "2.0", id, result: { resultType: "complete", interleaved: true } });
-    if (activeSubReq) {
-      const s = activeSubReq;
-      activeSubReq = undefined;
-      setTimeout(() => {
-        sendJson({ jsonrpc: "2.0", id: s.id, result: { resultType: "complete", ended: "done" } });
-      }, 15);
-    }
+        params: { uri: "file:///a.txt", _meta: subMeta(subId) },
+      })),
+      { jsonrpc: "2.0", id, result: { resultType: "complete", interleaved: true } },
+      ...Array.from(activeSubscriptions, (subId) => ({
+        jsonrpc: "2.0", id: subId, result: { resultType: "complete", _meta: subMeta(subId) },
+      })),
+    );
+    activeSubscriptions.clear();
     return;
   }
 
-  if (opts.mode === "cancel-delay") {
-    // Hold response so client can cancel while in-flight
-    setTimeout(() => {
-      sendJson({ jsonrpc: "2.0", id, result: { resultType: "complete", late: true } });
-    }, 5000).unref();
+  if (opts.mode === "cancel-delay" && reqCounter === 1) {
+    cancelledId = id;
+    sendJson(...progress(params));
     return;
   }
 
   if (opts.mode === "server-request") {
-    sendJson({ jsonrpc: "2.0", id: "srv-ping-1", method: "ping", params: {} });
-    setTimeout(() => {
-      sendJson({ jsonrpc: "2.0", id, result: { resultType: "complete", afterServerReq: true } });
-    }, 30);
+    sendJson(
+      { jsonrpc: "2.0", id: "srv-ping-1", method: "ping", params: {} },
+      { jsonrpc: "2.0", id, result: { resultType: "complete", afterServerReq: true } },
+    );
     return;
   }
+
+  if (opts.mode === "subscription-crash" && method === "tools/call") process.exit(1);
 
   if (opts.mode === "env-echo") {
     sendJson({ jsonrpc: "2.0", id, result: { resultType: "complete", env: process.env } });

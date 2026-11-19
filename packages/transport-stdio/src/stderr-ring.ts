@@ -19,6 +19,7 @@ export class StderrRingBuffer {
   private totalBytes = 0;
   private pendingChunks: Uint8Array[] = [];
   private pendingBytes = 0;
+  private truncated = false;
 
   constructor(opts?: {
     readonly maxTotalBytes?: number;
@@ -27,6 +28,10 @@ export class StderrRingBuffer {
   }) {
     this.maxTotalBytes = opts?.maxTotalBytes ?? DEFAULT_STDERR_MAX_BYTES;
     this.maxLineBytes = opts?.maxLineBytes ?? DEFAULT_STDERR_MAX_LINE_BYTES;
+    if (!Number.isSafeInteger(this.maxTotalBytes) || this.maxTotalBytes < 0 ||
+        !Number.isSafeInteger(this.maxLineBytes) || this.maxLineBytes < 1) {
+      throw new RangeError("stderr limits require a nonnegative total and positive line cap");
+    }
     if (opts?.onLine) {
       this.onLine = opts.onLine;
     }
@@ -44,6 +49,7 @@ export class StderrRingBuffer {
     }
     if (start < chunk.byteLength) {
       const tail = chunk.subarray(start);
+      this.truncated ||= this.pendingBytes + tail.byteLength > this.maxLineBytes;
       if (this.pendingBytes < this.maxLineBytes) {
         const take = Math.min(tail.byteLength, this.maxLineBytes - this.pendingBytes);
         const copy = new Uint8Array(take);
@@ -71,7 +77,8 @@ export class StderrRingBuffer {
   private emitBufferedLine(tail: Uint8Array): void {
     const cap = this.maxLineBytes;
     const rawTotal = this.pendingBytes + tail.byteLength;
-    const truncated = rawTotal > cap;
+    const truncated = this.truncated || rawTotal > cap;
+    this.truncated = false;
     const takeLen = Math.min(rawTotal, cap);
     const buf = new Uint8Array(takeLen);
     let offset = 0;
@@ -93,8 +100,15 @@ export class StderrRingBuffer {
     if (!truncated && view.byteLength > 0 && view[view.byteLength - 1] === 0x0d) {
       view = view.subarray(0, view.byteLength - 1);
     }
-    const text = this.decoder.decode(view);
-    const storedBytes = Buffer.byteLength(text, "utf8");
+    let text = this.decoder.decode(view, { stream: truncated });
+    this.decoder.decode(); // Drop any partial code point at the clipping boundary.
+    if (Buffer.byteLength(text, "utf8") > cap) {
+      // Lossy decoding of malformed UTF-8 can expand the retained bytes.
+      const bytes = Buffer.from(text, "utf8");
+      text = this.decoder.decode(bytes.subarray(0, cap), { stream: true });
+      this.decoder.decode();
+    }
+    const storedBytes = Math.max(1, Buffer.byteLength(text, "utf8"));
 
     this.entries.push({ line: text, bytes: storedBytes });
     this.totalBytes += storedBytes;

@@ -19,8 +19,8 @@ export class WriteQueue {
   private readonly priorityQueue: QueuedWrite[] = [];
   private readonly normalQueue: QueuedWrite[] = [];
   private stdin: Writable | undefined;
-  private pumping = false;
   private active: QueuedWrite | undefined;
+  private finishActive: ((err: Error) => void) | undefined;
 
   attach(stdin: Writable): void {
     this.stdin = stdin;
@@ -29,8 +29,7 @@ export class WriteQueue {
 
   detach(reason: Error): void {
     this.stdin = undefined;
-    this.pumping = false;
-    this.active = undefined;
+    this.finishActive?.(reason);
     // Fail all remaining queued writes that were never written.
     const remaining = [...this.priorityQueue, ...this.normalQueue];
     this.priorityQueue.length = 0;
@@ -95,18 +94,15 @@ export class WriteQueue {
   }
 
   private pump(): void {
-    if (this.pumping || !this.stdin) return;
+    const stdin = this.stdin;
+    if (this.active || !stdin) return;
+    if (stdin.destroyed || stdin.writableEnded) {
+      this.detach(new Error("stdin is closed"));
+      return;
+    }
     const item = this.nextItem();
     if (!item) return;
 
-    const stdin = this.stdin;
-    if (stdin.destroyed || stdin.writableEnded) {
-      item.onComplete(new Error("stdin is closed"));
-      this.pump();
-      return;
-    }
-
-    this.pumping = true;
     this.active = item;
     item.state = "writing";
     item.onStateChange?.("writing");
@@ -126,10 +122,8 @@ export class WriteQueue {
       if (settled) return;
       settled = true;
       cleanup();
-      if (this.active === item) {
-        this.active = undefined;
-      }
-      this.pumping = false;
+      this.active = undefined;
+      this.finishActive = undefined;
       if (!err) {
         item.state = "sent";
         item.onStateChange?.("sent");
@@ -157,6 +151,7 @@ export class WriteQueue {
       finish(new Error("stdin closed during write"));
     };
 
+    this.finishActive = finish;
     stdin.once("error", onStreamErr);
     stdin.once("close", onStreamClose);
 

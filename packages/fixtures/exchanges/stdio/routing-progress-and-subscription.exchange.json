@@ -7,7 +7,7 @@
   "binding": "stdio",
   "client": { "clock": "realtime" },
   "script": [
-    { "do": "call", "as": "c1", "method": "subscriptions/listen", "params": { "subscriptionId": "sub-1" }, "idempotent": true },
+    { "do": "call", "as": "c1", "method": "subscriptions/listen", "params": { "notifications": { "resourceSubscriptions": ["file:///a.txt"] } }, "idempotent": true },
     { "do": "call", "as": "c2", "method": "tools/list", "idempotent": true },
     { "expect": "wire", "index": 0 },
     { "expect": "wire", "index": 1 },

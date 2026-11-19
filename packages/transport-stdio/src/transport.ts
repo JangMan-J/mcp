@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { clearTimeout, setTimeout } from "node:timers";
 import {
   JSONRPC_VERSION,
   parseInboundMessage,
@@ -131,13 +132,20 @@ interface PendingRequest {
   readonly id: RequestId;
   readonly method: string;
   readonly progressTokenKey?: string;
-  readonly subscriptionId?: string;
   readonly notifications: NotificationQueue;
   readonly resolve: (end: ExchangeEnd) => void;
   readonly onAbort?: () => void;
   readonly signal: AbortSignal;
   writeState: WriteState;
   settled: boolean;
+}
+
+interface ChildRun {
+  readonly child: ChildProcess;
+  readonly closed: Promise<void>;
+  disconnected: boolean;
+  eofMidLine?: boolean;
+  shutdown?: Promise<void>;
 }
 
 function keyOfId(id: RequestId): string {
@@ -190,14 +198,13 @@ export class StdioTransport implements Transport {
 
   private readonly pending = new Map<string, PendingRequest>();
   private readonly progressMap = new Map<string, PendingRequest>();
-  private readonly subscriptionPending = new Map<string, PendingRequest>();
   private readonly subscriptionListeners = new Map<string, Set<(n: JsonRpcNotification) => void>>();
   private readonly settledIds: string[] = [];
   private readonly settledIdSet = new Set<string>();
 
   private _state: StdioTransportState = "idle";
-  private child: ChildProcess | undefined;
-  private childExited = false;
+  private run: ChildRun | undefined;
+  private closing: Promise<void> | undefined;
   private hasSpawnedOnce = false;
   private readonly restartTimestamps: number[] = [];
   private cancelRestartTimer: (() => void) | undefined;
@@ -241,7 +248,7 @@ export class StdioTransport implements Transport {
   }
 
   get pid(): number | undefined {
-    return this.child?.pid;
+    return this.run?.child.pid;
   }
 
   get diagnostics(): AsyncIterable<TransportDiagnostic> {
@@ -259,17 +266,18 @@ export class StdioTransport implements Transport {
   /**
    * Registers an external listener for notifications matching `io.modelcontextprotocol/subscriptionId` (STDIO-ROUTE-2).
    */
-  registerSubscription(subscriptionId: string, listener: (n: JsonRpcNotification) => void): () => void {
-    let set = this.subscriptionListeners.get(subscriptionId);
+  registerSubscription(subscriptionId: RequestId, listener: (n: JsonRpcNotification) => void): () => void {
+    const key = keyOfId(subscriptionId);
+    let set = this.subscriptionListeners.get(key);
     if (!set) {
       set = new Set();
-      this.subscriptionListeners.set(subscriptionId, set);
+      this.subscriptionListeners.set(key, set);
     }
     set.add(listener);
     return () => {
-      set?.delete(listener);
-      if (set && set.size === 0) {
-        this.subscriptionListeners.delete(subscriptionId);
+      set.delete(listener);
+      if (set.size === 0 && this.subscriptionListeners.get(key) === set) {
+        this.subscriptionListeners.delete(key);
       }
     };
   }
@@ -340,12 +348,7 @@ export class StdioTransport implements Transport {
       typeof rawProgressToken === "string" || typeof rawProgressToken === "number"
         ? keyOfId(rawProgressToken)
         : undefined;
-    const rawSubId =
-      typeof meta?.[META_SUBSCRIPTION_ID] === "string"
-        ? (meta[META_SUBSCRIPTION_ID] as string)
-        : typeof msg.params?.["subscriptionId"] === "string"
-          ? (msg.params["subscriptionId"] as string)
-          : undefined;
+    if (this.pending.has(reqKey)) throw new Error(`Duplicate in-flight request id=${reqKey}`);
 
     let resolveDone!: (end: ExchangeEnd) => void;
     const done = new Promise<ExchangeEnd>((resolve) => {
@@ -357,7 +360,6 @@ export class StdioTransport implements Transport {
       id: msg.id,
       method: msg.method,
       ...(progressTokenKey !== undefined ? { progressTokenKey } : {}),
-      ...(rawSubId !== undefined ? { subscriptionId: rawSubId } : {}),
       notifications,
       resolve: resolveDone,
       signal: ctx.signal,
@@ -375,9 +377,6 @@ export class StdioTransport implements Transport {
     if (progressTokenKey !== undefined) {
       this.progressMap.set(progressTokenKey, entry);
     }
-    if (rawSubId !== undefined) {
-      this.subscriptionPending.set(rawSubId, entry);
-    }
 
     this.writeQueue
       .enqueue({
@@ -389,7 +388,7 @@ export class StdioTransport implements Transport {
         },
       })
       .catch((err: unknown) => {
-        if (entry.settled) return;
+        if (entry.settled || this.run?.disconnected) return;
         const message = err instanceof Error ? err.message : String(err);
         if (message === "removed-from-queue") return;
         this.settlePending(entry, {
@@ -416,8 +415,11 @@ export class StdioTransport implements Transport {
     await this.writeQueue.enqueue({ payload, priority: isCancel });
   }
 
-  async close(opts?: { readonly graceMs?: number; readonly termMs?: number }): Promise<void> {
-    if (this._state === "closed") return;
+  close(opts?: { readonly graceMs?: number; readonly termMs?: number }): Promise<void> {
+    return this.closing ??= this.closeTransport(opts);
+  }
+
+  private async closeTransport(opts?: { readonly graceMs?: number; readonly termMs?: number }): Promise<void> {
     this._state = "closing";
     this.cancelRestartTimer?.();
     this.cancelRestartTimer = undefined;
@@ -426,21 +428,21 @@ export class StdioTransport implements Transport {
     this.settleAllPending({ kind: "closed", message: "StdioTransport closing" });
     this.writeQueue.detach(new Error("transport closing"));
 
-    const child = this.child;
-    if (child && !this.childExited) {
-      const graceMs = opts?.graceMs ?? this.graceMs;
-      const termMs = opts?.termMs ?? this.termMs;
-      await this.shutdownChildLadder(child, graceMs, termMs);
+    const run = this.run;
+    if (run) {
+      await this.stopChild(run, opts?.graceMs ?? this.graceMs, opts?.termMs ?? this.termMs);
     }
-
-    this.child = undefined;
+    this.subscriptionListeners.clear();
     this._state = "closed";
     this.diagChannel.close();
   }
 
   private ensureStarted(): TransportFailure | undefined {
-    if (this.child && !this.childExited && (this._state === "spawning" || this._state === "ready")) {
-      return undefined;
+    if (this.run) {
+      const { child, disconnected } = this.run;
+      return disconnected || child.exitCode !== null || child.signalCode !== null
+        ? { kind: "process-exit", message: "Previous child is shutting down" }
+        : undefined;
     }
 
     // Cancel any scheduled auto-restart since we are spawning now
@@ -469,7 +471,6 @@ export class StdioTransport implements Transport {
     this.noiseLines = 0;
     this.noiseBytes = 0;
     this.splitter.reset();
-    this.childExited = false;
 
     let child: ChildProcess;
     try {
@@ -493,49 +494,47 @@ export class StdioTransport implements Transport {
       return failure;
     }
 
-    this.child = child;
-    this._state = "ready";
-    this.emitDiag("lifecycle", `spawned pid=${String(child.pid ?? "unknown")} command=${this.command}`);
+    const run: ChildRun = {
+      child,
+      closed: new Promise<void>((resolve) => child.once("close", () => resolve())),
+      disconnected: false,
+    };
+    this.run = run;
 
-    if (child.stdin) {
-      child.stdin.on("error", (err) => {
-        // EPIPE when child exits mid-write is handled by close/exit + writeQueue
-        this.emitDiag("lifecycle", `stdin error: ${err.message}`);
-      });
-      this.writeQueue.attach(child.stdin);
-    }
-
-    if (child.stdout) {
-      child.stdout.on("data", (chunk: Buffer | Uint8Array) => {
-        if (this.child !== child) return;
-        this.handleStdoutChunk(chunk);
-      });
-      child.stdout.on("end", () => {
-        if (this.child !== child) return;
-        const rem = this.splitter.flushRemainderPreview();
-        if (rem) {
-          this.emitDiag(
-            "violation",
-            `eof-mid-line: ${rem.byteLength} trailing bytes without newline: ${rem.preview}`,
-          );
-        }
-      });
-    }
-
-    if (child.stderr) {
-      child.stderr.on("data", (chunk: Buffer | Uint8Array) => {
-        if (this.child !== child) return;
-        this.stderrRing.push(chunk);
-      });
-      child.stderr.on("end", () => {
-        if (this.child !== child) return;
-        this.stderrRing.flush();
-      });
-    }
+    child.once("spawn", () => {
+      if (this._state !== "spawning") return;
+      this._state = "ready";
+      this.emitDiag("lifecycle", `spawned pid=${String(child.pid)} command=${this.command}`);
+      if (child.stdin) this.writeQueue.attach(child.stdin);
+    });
+    child.stdin?.on("error", (err) => {
+      this.emitDiag("lifecycle", `stdin error: ${err.message}`);
+      this.disconnect(run);
+    });
+    child.stdin?.once("close", () => this.disconnect(run));
+    child.stdout?.on("error", (err) => {
+      this.emitDiag("lifecycle", `stdout error: ${err.message}`);
+      this.disconnect(run);
+    });
+    child.stdout?.on("data", (chunk: Uint8Array) => {
+      if (this._state === "ready") this.handleStdoutChunk(chunk);
+    });
+    child.stdout?.once("end", () => {
+      const rem = this.splitter.flushRemainderPreview();
+      if (rem) {
+        run.eofMidLine = true;
+        this.emitDiag("violation", `eof-mid-line: ${rem.byteLength} trailing bytes without newline: ${rem.preview}`);
+      }
+      this.disconnect(run);
+    });
+    child.stderr?.on("data", (chunk: Uint8Array) => this.stderrRing.push(chunk));
+    child.stderr?.once("end", () => this.stderrRing.flush());
 
     child.on("error", (err: NodeJS.ErrnoException) => {
-      if (this.child !== child) return;
-      this.childExited = true;
+      if (this._state !== "spawning") {
+        this.emitDiag("lifecycle", `child process error: ${err.message}`);
+        return;
+      }
       const failure: TransportFailure = {
         kind: "spawn",
         message: `Failed to spawn '${this.command}' (${err.code ?? "ERR"}): ${err.message}`,
@@ -546,20 +545,11 @@ export class StdioTransport implements Transport {
       this.emitDiag("lifecycle", failure.message);
       this.writeQueue.detach(err);
       this.settleAllPending(failure);
-      this.child = undefined;
     });
 
-    child.on("exit", () => {
-      if (this.child === child) {
-        this.childExited = true;
-      }
-    });
-
-    child.on("close", (code, signal) => {
-      if (this.child !== child) return;
-      this.childExited = true;
-      this.child = undefined;
-      this.handleUnexpectedClose(code, signal);
+    child.once("close", (code, signal) => {
+      this.run = undefined;
+      this.handleUnexpectedClose(code, signal, run.eofMidLine === true);
     });
 
     return undefined;
@@ -622,6 +612,7 @@ export class StdioTransport implements Transport {
           }
         }
       }
+      this.recordNoise(byteLength);
       return;
     }
 
@@ -643,6 +634,7 @@ export class StdioTransport implements Transport {
         "violation",
         `server-initiated request ignored without reply: method=${(parsed.message as JsonRpcRequest).method}`,
       );
+      this.recordNoise(byteLength);
       return;
     }
 
@@ -705,14 +697,15 @@ export class StdioTransport implements Transport {
         ? (notif.params["_meta"] as Record<string, unknown>)
         : undefined;
     const subId = meta?.[META_SUBSCRIPTION_ID];
-    if (typeof subId === "string" && subId.length > 0) {
+    if ((typeof subId === "string" && subId.length > 0) || (typeof subId === "number" && Number.isInteger(subId))) {
+      const key = keyOfId(subId);
       let delivered = false;
-      const entry = this.subscriptionPending.get(subId);
-      if (entry && !entry.settled) {
+      const entry = this.pending.get(key);
+      if (entry?.method === "subscriptions/listen") {
         entry.notifications.push(notif);
         delivered = true;
       }
-      const listeners = this.subscriptionListeners.get(subId);
+      const listeners = this.subscriptionListeners.get(key);
       if (listeners && listeners.size > 0) {
         for (const fn of listeners) {
           fn(notif);
@@ -781,7 +774,7 @@ export class StdioTransport implements Transport {
         ...(reason !== undefined ? { reason } : {}),
       },
     };
-    if (this._state === "ready" || this._state === "spawning") {
+    if ((this._state === "ready" || this._state === "spawning") && !this.run?.disconnected) {
       this.writeQueue
         .enqueue({
           payload: encodeStdioMessage(cancelMsg),
@@ -797,12 +790,20 @@ export class StdioTransport implements Transport {
     });
   }
 
-  private handleUnexpectedClose(code: number | null, signal: NodeJS.Signals | null): void {
+  private disconnect(run: ChildRun): void {
+    if (this.run !== run || this._state !== "ready" || run.disconnected) return;
+    run.disconnected = true;
+    this.writeQueue.detach(new Error("child pipe disconnected"));
+    // Drain any last replies and reap before another child can own the pipes.
+    this.retireChild(run);
+  }
+
+  private handleUnexpectedClose(code: number | null, signal: NodeJS.Signals | null, eofMidLine: boolean): void {
     if (this._state === "closing" || this._state === "closed" || this._state === "failed") {
       return;
     }
 
-    const detail = `child process exited unexpectedly (code=${String(code)}, signal=${String(signal)})`;
+    const detail = `child process exited unexpectedly (code=${String(code)}, signal=${String(signal)})${eofMidLine ? ": eof-mid-line" : ""}`;
     this.emitDiag("lifecycle", detail);
 
     const failure: TransportFailure = {
@@ -846,69 +847,42 @@ export class StdioTransport implements Transport {
     this.writeQueue.detach(new Error(failure.message));
     this.settleAllPending(failure);
 
-    const child = this.child;
-    this.child = undefined;
-    if (child && !this.childExited) {
-      void this.shutdownChildLadder(child, Math.min(this.graceMs, 250), Math.min(this.termMs, 250));
-    }
+    if (this.run) this.retireChild(this.run);
   }
 
-  private async shutdownChildLadder(child: ChildProcess, graceMs: number, termMs: number): Promise<void> {
-    if (this.childExited || child.exitCode !== null || child.signalCode !== null) {
-      return;
-    }
+  private retireChild(run: ChildRun): void {
+    void this.stopChild(run, this.graceMs, this.termMs).catch((err: unknown) => {
+      this.emitDiag("lifecycle", `child shutdown failed: ${String(err)}`);
+    });
+  }
 
-    const waitForExit = (timeoutMs: number): Promise<boolean> =>
-      new Promise<boolean>((resolve) => {
-        if (child.exitCode !== null || child.signalCode !== null) {
-          resolve(true);
-          return;
-        }
-        let done = false;
-        const onExit = () => {
-          if (done) return;
-          done = true;
-          cancel();
-          resolve(true);
-        };
-        const cancel = this.clock.setTimeout(() => {
-          if (done) return;
-          done = true;
-          child.off("exit", onExit);
-          resolve(false);
-        }, timeoutMs);
-        child.once("exit", onExit);
+  private stopChild(run: ChildRun, graceMs: number, termMs: number): Promise<void> {
+    return run.shutdown ??= this.shutdownChildLadder(run, graceMs, termMs);
+  }
+
+  private async shutdownChildLadder({ child, closed }: ChildRun, graceMs: number, termMs: number): Promise<void> {
+    const waitForClose = (ms: number) => new Promise<boolean>((resolve) => {
+      // Shutdown deadlines are independent of the injected protocol clock.
+      const timer = setTimeout(() => resolve(false), ms);
+      void closed.then(() => {
+        clearTimeout(timer);
+        resolve(true);
       });
+    });
+    const exited = () => child.exitCode !== null || child.signalCode !== null;
 
-    // Step 1: Close stdin and wait graceMs (STDIO-SHUT-1)
-    try {
-      child.stdin?.end();
-    } catch {
-      // ignore
-    }
-    if (await waitForExit(graceMs)) {
-      return;
-    }
-
-    // Step 2: Send SIGTERM and wait termMs
-    this.emitDiag("lifecycle", `shutdown escalation: sending SIGTERM to pid=${String(child.pid ?? "unknown")}`);
-    try {
+    child.stdin?.end();
+    if (await waitForClose(graceMs)) return;
+    if (!exited() && child.pid !== undefined) {
+      this.emitDiag("lifecycle", `shutdown escalation: sending SIGTERM to pid=${child.pid}`);
       child.kill("SIGTERM");
-    } catch {
-      return;
+      if (await waitForClose(termMs)) return;
+      if (!exited()) {
+        this.emitDiag("lifecycle", `shutdown escalation: sending SIGKILL to pid=${child.pid}`);
+        child.kill("SIGKILL");
+      }
     }
-    if (await waitForExit(termMs)) {
-      return;
-    }
-
-    // Step 3: Send SIGKILL and wait for exit
-    this.emitDiag("lifecycle", `shutdown escalation: sending SIGKILL to pid=${String(child.pid ?? "unknown")}`);
-    try {
-      child.kill("SIGKILL");
-    } catch {
-      return;
-    }
-    await waitForExit(2000);
+    if (!await waitForClose(2000)) throw new Error(`Child pid=${child.pid} did not close after shutdown`);
   }
 
   private settlePending(entry: PendingRequest, end: ExchangeEnd): void {
@@ -917,9 +891,6 @@ export class StdioTransport implements Transport {
     this.pending.delete(entry.key);
     if (entry.progressTokenKey !== undefined) {
       this.progressMap.delete(entry.progressTokenKey);
-    }
-    if (entry.subscriptionId !== undefined) {
-      this.subscriptionPending.delete(entry.subscriptionId);
     }
     if (entry.onAbort) {
       entry.signal.removeEventListener("abort", entry.onAbort);
