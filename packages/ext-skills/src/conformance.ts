@@ -41,7 +41,9 @@ const eq = (a: unknown, e: unknown, label: string) => {
   if (!isDeepStrictEqual(a, e)) mismatch(`${label}: expected ${JSON.stringify(e)}, got ${JSON.stringify(a)}`);
 };
 
+type Frame = { direction: string; message: unknown };
 class ScriptTransport implements Transport {
+  constructor(private readonly frames: Frame[]) {}
   readonly binding = "stdio" as const;
   readonly sent: JsonRpcRequest[] = [];
   readonly diagnostics: AsyncIterable<TransportDiagnostic> = { async *[Symbol.asyncIterator]() {} };
@@ -55,6 +57,7 @@ class ScriptTransport implements Transport {
 
   start(msg: JsonRpcRequest, _ctx: TransportCall): Exchange {
     this.sent.push(msg);
+    this.frames.push({ direction: "client", message: msg });
     const idx = this.queue.findIndex((r) => !r.forCall || r.forCall === this.activeCall);
     const reply = idx >= 0 ? this.queue.splice(idx, 1)[0] : undefined;
     const notifications: AsyncIterable<JsonRpcNotification> = { async *[Symbol.asyncIterator]() {} };
@@ -63,13 +66,15 @@ class ScriptTransport implements Transport {
         ? { kind: "response", message: { jsonrpc: "2.0", id: msg.id, error: reply.error } }
         : { kind: "response", message: { jsonrpc: "2.0", id: msg.id, result: reply?.result ?? {} } },
     );
+    void done.then((end) => { if (end.kind === "response") this.frames.push({ direction: "server", message: end.message }); });
     return { notifications, done };
   }
-  async notify(): Promise<void> {}
+  async notify(msg: JsonRpcNotification): Promise<void> { this.frames.push({ direction: "client", message: msg }); }
   async close(): Promise<void> {}
 }
 
-export async function runExchange(fixture: unknown, mutant?: string): Promise<void> {
+export async function runExchange(fixture: unknown, mutant?: string): Promise<{ frames: Frame[]; zeroWire?: true }> {
+  const frames: Frame[] = [];
   if (mutant !== undefined && !MUTANTS.has(mutant)) throw new Error(`unknown mutant: ${mutant}`);
   if (!fixture || typeof fixture !== "object" || Array.isArray(fixture)) bad("fixture must be object");
   const fx = fixture as Json;
@@ -80,9 +85,9 @@ export async function runExchange(fixture: unknown, mutant?: string): Promise<vo
   const clientCfg = (fx["client"] as Json | undefined) ?? {};
   const setup = (clientCfg["setup"] as Json | undefined) ?? {};
 
-  const transport = new ScriptTransport();
+  const transport = new ScriptTransport(frames);
   const mcpClient = new McpClient({ transport, server: { key: "server-a" } });
-  const otherTransport = new ScriptTransport();
+  const otherTransport = new ScriptTransport(frames);
   const otherClient = new McpClient({ transport: otherTransport, server: { key: "server-b" } });
 
   const approvedSet = new Set<string>();
@@ -231,4 +236,5 @@ export async function runExchange(fixture: unknown, mutant?: string): Promise<vo
   } finally {
     if (tmpDir) rmSync(tmpDir, { recursive: true, force: true });
   }
+  return frames.length ? { frames } : { frames, zeroWire: true };
 }

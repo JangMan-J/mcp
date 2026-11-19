@@ -29,7 +29,9 @@ const str = (v: unknown, what: string): string => (typeof v === "string" ? v : b
 
 interface Served { status?: number; headers?: Record<string, string>; body?: unknown }
 
-export async function runExchange(fixture: unknown, mutant?: string): Promise<void> {
+export async function runExchange(fixture: unknown, mutant?: string): Promise<{ frames: Array<Record<string, unknown>>; zeroWire?: true }> {
+  const frames: Array<Record<string, unknown>> = [];
+  const normalize = (v: unknown): unknown => JSON.parse(JSON.stringify(v).replace(/([a-zA-Z0-9-]+\.test)(?![a-zA-Z0-9.-])/g, "$1.localhost"));
   if (mutant !== undefined && !supportsMutant(mutant)) bad(`unknown mutant ${mutant}`);
   const fx = rec(fixture, "fixture");
   if (fx["tier"] !== "A") bad("tier");
@@ -43,13 +45,15 @@ export async function runExchange(fixture: unknown, mutant?: string): Promise<vo
       const headers: Record<string, string> = {};
       new Headers(init.headers).forEach((v, k) => { headers[k] = v; });
       requests.push({ method: init.method ?? "GET", url: input, headers });
+      frames.push({ direction: "client", endpoint: "other", method: init.method ?? "GET", url: normalize(input), headers: normalize(headers) });
       const seq = serve[input];
       const list = (Array.isArray(seq) ? seq : seq === undefined ? [] : [seq]) as Served[];
       const i = hits.get(input) ?? 0;
       hits.set(input, i + 1);
       const s = list[Math.min(i, list.length - 1)];
-      if (!s) return new Response("", { status: 404 });
+      if (!s) { frames.push({ direction: "server", endpoint: "other", headers: {} }); return new Response("", { status: 404 }); }
       const status = s.status ?? 200;
+      frames.push({ direction: "server", endpoint: "other", headers: normalize(s.headers ?? {}), ...(status === 304 ? {} : { message: normalize(s.body ?? {}) }) });
       return new Response(status === 304 ? null : JSON.stringify(s.body ?? {}), { status, headers: s.headers ?? {} });
     },
   };
@@ -119,4 +123,5 @@ export async function runExchange(fixture: unknown, mutant?: string): Promise<vo
       default: bad(`expect ${String(step["expect"])}`);
     }
   }
+  return frames.length ? { frames } : { frames, zeroWire: true };
 }

@@ -66,7 +66,8 @@ class ObservedSink implements EventSink {
   controls(): readonly ControlSignal[] { return this.inner.controls(); }
 }
 
-export async function runExchange(fixture: unknown, mutant?: string): Promise<void> {
+export async function runExchange(fixture: unknown, mutant?: string): Promise<{ frames: Array<Record<string, unknown>>; zeroWire?: true }> {
+  const frames: Array<Record<string, unknown>> = [];
   if (mutant !== undefined && !MUTANTS.has(mutant)) throw new Error(`unknown mutant: ${mutant}`);
   if (!fixture || typeof fixture !== "object" || Array.isArray(fixture)) bad("fixture must be object");
   const fx = fixture as Json;
@@ -124,6 +125,9 @@ export async function runExchange(fixture: unknown, mutant?: string): Promise<vo
     const clock = { now: () => clockSec * 1000, setTimeout: () => () => {} };
     const handler = createWebhookHandler({ secrets, clock, sink });
     const req: RawWebhookRequest = { headers, rawBody };
+    let message: unknown;
+    try { message = JSON.parse(Buffer.from(rawBody).toString("utf8")); } catch { message = Buffer.from(rawBody).toString("utf8"); }
+    frames.push({ direction: "server", endpoint: "other", method: "POST", headers, message });
     let res: WebhookHttpResponse = await handler(req);
     const parsedBody = (() => { try { return JSON.parse(bodyText) as Json; } catch { return {}; } })();
     if (mutant === "echo-unverified-challenge" && res.status === 401 && parsedBody["type"] === "verification") {
@@ -132,10 +136,12 @@ export async function runExchange(fixture: unknown, mutant?: string): Promise<vo
     if (mutant === "queue-challenge-as-event" && res.status === 200 && parsedBody["type"] === "verification") {
       sink.append({ subscriptionId: "", eventId: "verification", data: parsedBody });
     }
+    frames.push({ direction: "server", endpoint: "other", headers: res.headers, message: JSON.parse(res.body) as unknown });
     outcomes[as] = { status: res.status, body: JSON.parse(res.body) as unknown };
   }
 
   for (const [as, exp] of Object.entries(outcomeExpect)) eq(outcomes[as], exp, `outcome ${as}`);
   if ("events" in expectObj) eq(sink.events().map((e) => ({ ...e })), expectObj["events"], "events");
   if ("controls" in expectObj) eq(sink.controls().map((c) => ({ ...c })), expectObj["controls"], "controls");
+  return frames.length ? { frames } : { frames, zeroWire: true };
 }

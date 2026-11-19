@@ -11,7 +11,8 @@ const mutants = new Set(['tasks-ignore-interval','tasks-skip-consent','tasks-can
   'tasks-force-peer','tasks-auto-register']);
 export function supportsMutant(name: string) { return mutants.has(name); }
 function malformed(): never { throw new Error('malformed tasks fixture'); }
-export async function runExchange(fixture: unknown, mutant?: string): Promise<void> {
+export async function runExchange(fixture: unknown, mutant?: string): Promise<{ frames: Array<{direction: string; message: unknown}>; zeroWire?: true }> {
+  const frames: Array<{direction: string; message: unknown}> = [];
   if (mutant !== undefined && !supportsMutant(mutant)) throw new Error(`unknown tasks mutant: ${mutant}`);
   if (!object(fixture) || typeof fixture.id !== 'string' || !fixture.id.startsWith('ext/tasks/') ||
     !Array.isArray(fixture.script) || !fixture.script.length || !object(fixture.expect) || !Object.keys(fixture.expect).length) malformed();
@@ -19,14 +20,15 @@ export async function runExchange(fixture: unknown, mutant?: string): Promise<vo
   const calls: string[] = [], names: unknown[] = [], responses: unknown[] = [], outcomes: unknown[] = [], caps: unknown[] = [];
   const empty = {async *[Symbol.asyncIterator]() {}};
   const transport: Transport = {
-    binding:'streamable-http', diagnostics:empty, async notify(n) { calls.push(n.method); }, async close() {},
+    binding:'streamable-http', diagnostics:empty, async notify(n) { calls.push(n.method); frames.push({direction:'client',message:n}); }, async close() {},
     start(req,ctx) {
-      calls.push(req.method); if (req.method.startsWith('tasks/')) names.push(ctx.headersHint?.name ?? null);
+      frames.push({direction:'client',message:req}); calls.push(req.method); if (req.method.startsWith('tasks/')) names.push(ctx.headersHint?.name ?? null);
       if (req.params?.inputResponses) responses.push(JSON.parse(JSON.stringify(req.params.inputResponses)));
       const base = {jsonrpc:'2.0' as const,id:req.id};
       const end: ExchangeEnd = reply === 'break' ? {kind:'failure',failure:{kind:'stream-broken',message:'lost'},delivery:'maybe-delivered'} :
         reply === 'unknown' ? {kind:'response',message:{...base,error:{code:-32001,message:'unknown task'}}} :
         {kind:'response',message:{...base,result:object(reply) ? reply : {}}};
+      if (end.kind === 'response') frames.push({direction:'server',message:end.message});
       return {notifications:empty,done:Promise.resolve(end)};
     },
   };
@@ -65,4 +67,5 @@ export async function runExchange(fixture: unknown, mutant?: string): Promise<vo
     if (!Object.hasOwn(observed,k) || (Array.isArray(observed[k]) ? !Array.isArray(v) : typeof v !== 'number')) malformed();
     if (!isDeepStrictEqual(observed[k],v)) throw new ObservationMismatch(`${fixture.id}: ${k} = ${JSON.stringify(observed[k])}, expected ${JSON.stringify(v)}`);
   }
+  return frames.length ? {frames} : {frames, zeroWire:true};
 }
