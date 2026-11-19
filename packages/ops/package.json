@@ -10,7 +10,8 @@
     }
   },
   "dependencies": {
-    "@mcp-client/core": "*"
+    "@mcp-client/core": "*",
+    "ajv": "8.20.0"
   },
   "scripts": {
     "build": "tsc -b",

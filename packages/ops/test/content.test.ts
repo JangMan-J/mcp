@@ -167,14 +167,17 @@ describe("ops package boundary", () => {
       const txt = readFileSync(join(SRC, f), "utf8");
       for (const m of txt.matchAll(/\bfrom\s+"([^"]+)"/g)) {
         const spec = m[1]!;
-        expect(spec === "@mcp-client/core" || spec.startsWith("./"), `${f} imports ${spec}`).toBe(true);
+        expect(
+          spec === "@mcp-client/core" || spec === "ajv/dist/2020" || spec.startsWith("./"),
+          `${f} imports ${spec}`,
+        ).toBe(true);
       }
       expect(txt, f).not.toMatch(/\bfetch\s*\(|XMLHttpRequest|WebSocket|node:(net|http|https|tls|dns|dgram)|import\s*\(/);
     }
   });
-  it("package.json runtime deps are only @mcp-client/core", () => {
+  it("package.json runtime deps are only @mcp-client/core and ajv", () => {
     const pkg = JSON.parse(readFileSync(join(SRC, "../package.json"), "utf8")) as Record<string, Record<string, string>>;
-    expect(Object.keys(pkg["dependencies"] ?? {})).toEqual(["@mcp-client/core"]);
+    expect(Object.keys(pkg["dependencies"] ?? {})).toEqual(["@mcp-client/core", "ajv"]);
     expect(pkg["scripts"]?.["build"]).toBe("tsc -b");
   });
 });
