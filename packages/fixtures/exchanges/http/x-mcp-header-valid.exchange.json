@@ -1,0 +1,56 @@
+{
+  "id": "http/x-mcp-header-valid",
+  "requirements": [
+    "HTTP-PARAM-1",
+    "HTTP-PARAM-4"
+  ],
+  "pin": "tag",
+  "source": [
+    "S/basic/transports/streamable-http.md#Sending Messages"
+  ],
+  "tier": "B",
+  "binding": "http",
+  "client": {
+    "clock": "realtime"
+  },
+  "script": [
+    {
+      "do": "call",
+      "as": "c1",
+      "method": "tools/call",
+      "idempotent": false
+    },
+    {
+      "expect": "wire",
+      "index": 0,
+      "match": {
+        "method": "tools/call"
+      }
+    },
+    {
+      "server": "result",
+      "for": "c1",
+      "result": {
+        "resultType": "complete"
+      }
+    }
+  ],
+  "expect": {
+    "outcome": {
+      "c1": {
+        "kind": "ok"
+      }
+    },
+    "wire": {
+      "totalRequests": 1,
+      "never": [
+        "GET",
+        "Last-Event-ID",
+        "Mcp-Session-Id"
+      ]
+    }
+  },
+  "mutants": [
+    "ignore-x-mcp-header-annotation"
+  ]
+}

@@ -1,0 +1,58 @@
+{
+  "id": "http/no-get-no-delete-no-session",
+  "requirements": [
+    "HTTP-NOGET-1",
+    "HTTP-NOSESS-1",
+    "HTTP-NORESUME-1"
+  ],
+  "pin": "tag",
+  "source": [
+    "S/basic/transports/streamable-http.md#Sending Messages"
+  ],
+  "tier": "B",
+  "binding": "http",
+  "client": {
+    "clock": "realtime"
+  },
+  "script": [
+    {
+      "do": "call",
+      "as": "c1",
+      "method": "tools/list",
+      "idempotent": true
+    },
+    {
+      "expect": "wire",
+      "index": 0,
+      "match": {
+        "method": "tools/list"
+      }
+    },
+    {
+      "server": "result",
+      "for": "c1",
+      "result": {
+        "resultType": "complete"
+      }
+    }
+  ],
+  "expect": {
+    "outcome": {
+      "c1": {
+        "kind": "ok"
+      }
+    },
+    "wire": {
+      "totalRequests": 1,
+      "never": [
+        "GET",
+        "Last-Event-ID",
+        "Mcp-Session-Id"
+      ]
+    }
+  },
+  "mutants": [
+    "open-get-stream",
+    "echo-session-id"
+  ]
+}

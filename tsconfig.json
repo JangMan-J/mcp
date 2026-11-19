@@ -3,6 +3,9 @@
   "references": [
     { "path": "./packages/core" },
     { "path": "./packages/fixtures" },
-    { "path": "./packages/conformance" }
+    { "path": "./packages/conformance" },
+    { "path": "./packages/transport-stdio" },
+    { "path": "./packages/transport-http" },
+    { "path": "./packages/ops" }
   ]
 }
