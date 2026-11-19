@@ -1,0 +1,29 @@
+{
+  "id": "sub/graceful-close",
+  "requirements": [
+    "SUB-END-2"
+  ],
+  "pin": "tag",
+  "source": [
+    "specification/2026-07-28/basic/patterns/subscriptions.md#Graceful Closure"
+  ],
+  "tier": "B",
+  "binding": "http",
+  "client": {
+    "clock": "realtime"
+  },
+  "script": [
+    {
+      "do": "graceful-close"
+    }
+  ],
+  "expect": {
+    "observe": {
+      "reason": "server-graceful",
+      "listens": 1
+    }
+  },
+  "mutants": [
+    "wrong-completion-id"
+  ]
+}

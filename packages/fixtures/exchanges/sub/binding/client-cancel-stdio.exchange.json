@@ -1,0 +1,31 @@
+{
+  "id": "sub/client-cancel-stdio",
+  "requirements": [
+    "SUB-END-1"
+  ],
+  "pin": "tag",
+  "source": [
+    "specification/2026-07-28/basic/patterns/subscriptions.md#Cancellation"
+  ],
+  "tier": "B",
+  "binding": "stdio",
+  "client": {
+    "clock": "realtime"
+  },
+  "script": [
+    {
+      "do": "client-cancel-stdio"
+    }
+  ],
+  "expect": {
+    "observe": {
+      "reason": "client",
+      "cancelIds": [
+        1
+      ]
+    }
+  },
+  "mutants": [
+    "omit-close"
+  ]
+}

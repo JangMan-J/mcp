@@ -1,0 +1,30 @@
+{
+  "id": "sub/client-cancel-http",
+  "requirements": [
+    "SUB-END-4"
+  ],
+  "pin": "tag",
+  "source": [
+    "specification/2026-07-28/basic/patterns/subscriptions.md#Cancellation"
+  ],
+  "tier": "B",
+  "binding": "http",
+  "client": {
+    "clock": "realtime"
+  },
+  "script": [
+    {
+      "do": "client-cancel-http"
+    }
+  ],
+  "expect": {
+    "observe": {
+      "reason": "client",
+      "socketClosed": true,
+      "cancelPosts": 0
+    }
+  },
+  "mutants": [
+    "extra-cancel"
+  ]
+}

@@ -1,0 +1,37 @@
+{
+  "id": "sub/two-listeners-demux-http",
+  "requirements": [
+    "SUB-ROUTE-1",
+    "SUB-MULTI-1"
+  ],
+  "pin": "tag",
+  "source": [
+    "specification/2026-07-28/basic/patterns/subscriptions.md#Receiving Notifications",
+    "specification/2026-07-28/basic/patterns/subscriptions.md#Multiple Concurrent Subscriptions"
+  ],
+  "tier": "B",
+  "binding": "http",
+  "client": {
+    "clock": "realtime"
+  },
+  "script": [
+    {
+      "do": "two-listeners-demux-http"
+    }
+  ],
+  "expect": {
+    "observe": {
+      "events": [
+        [
+          1
+        ],
+        [
+          2
+        ]
+      ]
+    }
+  },
+  "mutants": [
+    "drop-updates"
+  ]
+}
