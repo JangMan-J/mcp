@@ -1,0 +1,33 @@
+{
+  "id": "auth/prm-no-authorization-servers",
+  "requirements": [
+    "AUTH-PRM-2"
+  ],
+  "pin": "tag",
+  "source": [
+    "specification/2026-07-28/basic/authorization/authorization-server-discovery.md#Authorization Server Location"
+  ],
+  "tier": "B",
+  "binding": "http",
+  "client": {
+    "prm": {
+      "authorization_servers": []
+    }
+  },
+  "script": [
+    {
+      "do": "challenge",
+      "error": "auth-failure/prm-invalid"
+    },
+    {
+      "expect": "fetches",
+      "values": [
+        "GET https://mcp.test/custom-prm"
+      ]
+    }
+  ],
+  "expect": {},
+  "mutants": [
+    "no-provider"
+  ]
+}

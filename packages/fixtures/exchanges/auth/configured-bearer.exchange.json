@@ -1,0 +1,32 @@
+{
+  "id": "auth/configured-bearer",
+  "requirements": [
+    "AUTH-BEARER-1"
+  ],
+  "pin": "tag",
+  "source": [
+    "specification/2026-07-28/basic/index.md#Auth"
+  ],
+  "tier": "B",
+  "binding": "http",
+  "client": {
+    "bearer": true
+  },
+  "script": [
+    {
+      "expect": "header",
+      "value": "Bearer configured-1"
+    },
+    {
+      "expect": "counts",
+      "match": {
+        "fetch": 0,
+        "open": 0
+      }
+    }
+  ],
+  "expect": {},
+  "mutants": [
+    "no-provider"
+  ]
+}

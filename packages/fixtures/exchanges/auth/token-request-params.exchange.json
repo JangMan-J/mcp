@@ -1,0 +1,33 @@
+{
+  "id": "auth/token-request-params",
+  "requirements": [
+    "AUTH-TOKEN-1"
+  ],
+  "pin": "tag",
+  "source": [
+    "specification/2026-07-28/basic/authorization/index.md#Authorization Flow Steps"
+  ],
+  "tier": "B",
+  "binding": "http",
+  "client": {},
+  "script": [
+    {
+      "do": "challenge"
+    },
+    {
+      "expect": "form",
+      "match": {
+        "grant_type": "authorization_code",
+        "code": "fixture-code",
+        "redirect_uri": "http://127.0.0.1:4321/callback",
+        "client_id": "fixture-client",
+        "resource": "https://mcp.test/rpc",
+        "code_verifier": "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
+      }
+    }
+  ],
+  "expect": {},
+  "mutants": [
+    "drop-resource"
+  ]
+}

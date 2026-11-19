@@ -1,0 +1,30 @@
+{
+  "id": "auth/canonical-uri-vectors",
+  "requirements": [
+    "AUTH-RES-2"
+  ],
+  "pin": "tag",
+  "source": [
+    "specification/2026-07-28/basic/authorization/index.md#Canonical Server URI"
+  ],
+  "tier": "B",
+  "binding": "http",
+  "client": {},
+  "script": [
+    {
+      "expect": "canonical",
+      "input": "HTTPS://Mcp.Test:443/rpc/#ignored",
+      "value": "https://mcp.test/rpc"
+    },
+    {
+      "expect": "canonical",
+      "input": "HTTPS://Mcp.Test/rpc/#ignored",
+      "value": "https://mcp.test/rpc/",
+      "preserveSlash": true
+    }
+  ],
+  "expect": {},
+  "mutants": [
+    "no-provider"
+  ]
+}

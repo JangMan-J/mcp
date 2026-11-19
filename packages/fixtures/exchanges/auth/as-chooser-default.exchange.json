@@ -1,0 +1,39 @@
+{
+  "id": "auth/as-chooser-default",
+  "requirements": [
+    "AUTH-AS-2"
+  ],
+  "pin": "tag",
+  "source": [
+    "specification/2026-07-28/basic/authorization/authorization-server-discovery.md#Authorization Server Location"
+  ],
+  "tier": "B",
+  "binding": "http",
+  "client": {
+    "prm": {
+      "authorization_servers": [
+        "https://unavailable.test",
+        "https://as.test/tenant"
+      ]
+    }
+  },
+  "script": [
+    {
+      "do": "challenge"
+    },
+    {
+      "expect": "fetches",
+      "values": [
+        "GET https://mcp.test/custom-prm",
+        "GET https://unavailable.test/.well-known/oauth-authorization-server",
+        "GET https://unavailable.test/.well-known/openid-configuration",
+        "GET https://as.test/.well-known/oauth-authorization-server/tenant",
+        "POST https://as.test/token"
+      ]
+    }
+  ],
+  "expect": {},
+  "mutants": [
+    "no-provider"
+  ]
+}

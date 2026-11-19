@@ -1,0 +1,39 @@
+{
+  "id": "auth/pre-registered-flow",
+  "requirements": [
+    "AUTH-REG-1"
+  ],
+  "pin": "tag",
+  "source": [
+    "specification/2026-07-28/basic/authorization/client-registration.md#Pre-registration"
+  ],
+  "tier": "B",
+  "binding": "http",
+  "client": {},
+  "script": [
+    {
+      "do": "challenge"
+    },
+    {
+      "expect": "open",
+      "url": "https://as.test/authorize",
+      "match": {
+        "client_id": "fixture-client"
+      }
+    },
+    {
+      "expect": "form",
+      "match": {
+        "client_id": "fixture-client"
+      }
+    },
+    {
+      "expect": "header",
+      "value": "Bearer fixture-token-1"
+    }
+  ],
+  "expect": {},
+  "mutants": [
+    "no-provider"
+  ]
+}

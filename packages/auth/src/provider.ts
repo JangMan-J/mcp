@@ -1,0 +1,324 @@
+import { randomBytes } from 'node:crypto';
+import type { AuthChallenge, AuthHeaderResult, AuthProvider, CredentialStore, FetchPort, RandomPort } from '@mcp-client/core';
+import { discover, getDocument, object, strings, type DiscoveryOptions, type Metadata } from './discovery.js';
+import { AuthError, bearerValue, canonicalResource, detach, fail, hash, isLoopback, parseBearerChallenges, pkceChallenge, secureUrl, type BearerChallenge } from './protocol.js';
+import { SafeFetch } from './safe-fetch.js';
+
+export class MemoryCredentialStore implements CredentialStore {
+  readonly #values = new Map<string, string>();
+  async get(key: string) { return this.#values.get(key); }
+  async set(key: string, value: string) { this.#values.set(key, value); }
+  async delete(key: string) { this.#values.delete(key); }
+}
+
+interface ResourceOptions {
+  readonly resource: string;
+  readonly preserveTrailingSlash?: boolean;
+}
+function matches(options: ResourceOptions, resource: string, candidate: string) {
+  try { return canonicalResource(candidate, options.preserveTrailingSlash) === resource && !new URL(candidate).hash; }
+  catch { return false; }
+}
+export interface ConfiguredBearerOptions extends ResourceOptions {
+  readonly token: string | (() => Promise<string>);
+  readonly refresh?: () => Promise<void>;
+  readonly allowInsecureDev?: boolean;
+}
+export class ConfiguredBearer implements AuthProvider {
+  readonly #resource: string;
+  #context = 'anonymous';
+  #pending: Promise<boolean> | undefined;
+  readonly #options: ConfiguredBearerOptions;
+  constructor(options: ConfiguredBearerOptions) {
+    this.#options = options;
+    secureUrl(options.resource, options.allowInsecureDev);
+    this.#resource = canonicalResource(options.resource, options.preserveTrailingSlash);
+  }
+  contextId() { return this.#context; }
+  async headerFor(url: string): Promise<AuthHeaderResult | undefined> {
+    if (!matches(this.#options, this.#resource, url)) return undefined;
+    try {
+      const token = bearerValue(typeof this.#options.token === 'string' ? this.#options.token : await this.#options.token());
+      this.#context = hash(JSON.stringify([this.#resource, 'bearer', hash(token)]));
+      return { authorization: `Bearer ${token}`, contextId: this.#context };
+    } catch { return fail('configured-bearer-unavailable'); }
+  }
+  async onChallenge(challenge: AuthChallenge, signal: AbortSignal): Promise<boolean> {
+    if (challenge.status !== 401 || !this.#options.refresh || signal.aborted ||
+      (challenge.resource !== undefined && !matches(this.#options, this.#resource, challenge.resource))) return false;
+    this.#pending ??= Promise.resolve().then(this.#options.refresh).then(() => true, () => false).finally(() => { this.#pending = undefined; });
+    return detach(this.#pending, signal);
+  }
+}
+
+export interface ClientRegistration {
+  readonly clientId: string;
+  readonly clientSecret?: string;
+  readonly redirectUris: readonly string[];
+}
+export type AuthorizationPrompt =
+  | { readonly kind: 'client-info'; readonly serverLabel: string; readonly issuer: string; readonly redirectUri: string }
+  | { readonly kind: 'authorize'; readonly serverLabel: string; readonly issuerHost: string; readonly resource: string;
+      readonly scopes: readonly string[]; readonly redirectHost: string; readonly localhostWarning: boolean };
+export interface AuthorizationConsent {
+  request(prompt: AuthorizationPrompt, signal: AbortSignal): Promise<
+    { readonly decision: 'accept'; readonly registration?: ClientRegistration } | { readonly decision: 'decline' | 'cancel' }>;
+}
+export interface RedirectPort {
+  waitForCallback(options: { readonly redirectUri: string; readonly state: string; readonly signal: AbortSignal }): Promise<URLSearchParams>;
+}
+export interface OAuthOptions extends ResourceOptions, DiscoveryOptions {
+  readonly serverLabel?: string;
+  readonly redirectUri: string;
+  readonly registrations?: Readonly<Record<string, ClientRegistration>>; // issuer -> registration, for this resource only
+  readonly cimd?: { readonly clientIdUrl: string; readonly redirectUris: readonly string[]; readonly selfCheck?: boolean };
+  readonly consent?: AuthorizationConsent;
+  readonly browser?: { open(url: string, signal: AbortSignal): Promise<void> };
+  readonly redirect?: RedirectPort;
+  readonly credentials?: CredentialStore;
+  readonly fetch?: FetchPort;
+  readonly random?: RandomPort;
+  readonly clock?: { now(): number };
+  readonly skewMs?: number;
+  readonly flowTimeoutMs?: number;
+  readonly stepUpLimit?: number;
+  readonly offlineAccess?: boolean;
+  readonly onDiagnostic?: (message: string) => void;
+}
+interface Session {
+  readonly metadata: Metadata;
+  readonly registration: ClientRegistration;
+}
+interface Grant extends Session {
+  readonly context: string;
+  readonly token: string;
+  readonly expires: number;
+  readonly scopes: readonly string[];
+}
+const scopesOf = (scope: string | undefined) => scope?.split(/ +/u).filter((value) => /^[\x21\x23-\x5b\x5d-\x7e]+$/u.test(value)) ?? [];
+
+export class OAuthAuthorization implements AuthProvider {
+  readonly #resource: string;
+  readonly #redirect: URL;
+  readonly #fetch: FetchPort;
+  readonly #store: CredentialStore;
+  readonly #stepUps = new Map<string, number>();
+  #grant: Grant | undefined;
+  #pending: { readonly scopeKey?: string; readonly work: Promise<void> } | undefined;
+
+  readonly #options: OAuthOptions;
+  constructor(options: OAuthOptions) {
+    this.#options = options;
+    secureUrl(options.resource, options.allowInsecureDev);
+    this.#resource = canonicalResource(options.resource, options.preserveTrailingSlash);
+    this.#redirect = secureUrl(options.redirectUri, options.allowInsecureDev);
+    if (this.#redirect.hash || [...this.#redirect.searchParams.keys()].some((key) => ['code', 'error', 'iss', 'state'].includes(key))) fail('invalid-redirect-uri');
+    this.#fetch = options.fetch ?? new SafeFetch({ allowInsecureDev: options.allowInsecureDev ?? false });
+    this.#store = options.credentials ?? new MemoryCredentialStore();
+  }
+  contextId() { return this.#grant?.context ?? 'anonymous'; }
+  async headerFor(url: string): Promise<AuthHeaderResult | undefined> {
+    if (!matches(this.#options, this.#resource, url)) return undefined;
+    const grant = this.#grant;
+    if (this.#pending) await this.#pending.work;
+    else if (grant && grant.expires - (this.#options.skewMs ?? 30_000) <= this.now()) {
+      await this.start(undefined, signal => this.renew(grant, grant.scopes, signal));
+    }
+    return this.#grant && { authorization: `Bearer ${this.#grant.token}`, contextId: this.#grant.context };
+  }
+
+  async onChallenge(challenge: AuthChallenge, signal: AbortSignal): Promise<boolean> {
+    if (signal.aborted) fail('cancelled');
+    if (challenge.resource !== undefined && !matches(this.#options, this.#resource, challenge.resource)) return false;
+    const parsed = parseBearerChallenges(challenge.wwwAuthenticate ?? '');
+    const bearer = challenge.status === 403 ? parsed.find(x => x.error === 'insufficient_scope') :
+      parsed.find(x => x.resource_metadata !== undefined) ?? parsed[0];
+    if (challenge.status === 403 && !bearer) return false;
+    if (challenge.status === 401 && !bearer && /^\s*Basic(?:\s|$)/iu.test(challenge.wwwAuthenticate ?? '')) fail('unsupported-scheme');
+    const operation = challenge.operation ?? '';
+    const scopeKey = challenge.status === 403 ? JSON.stringify([operation, bearer?.scope, bearer?.resource_metadata]) : undefined;
+    while (this.#pending) {
+      const pending = this.#pending;
+      await detach(pending.work, signal);
+      if (pending.scopeKey === scopeKey) return true;
+      if (scopeKey === undefined) return true;
+      if (signal.aborted) fail('cancelled');
+    }
+    if (scopeKey !== undefined) {
+      const used = this.#stepUps.get(operation) ?? 0;
+      if (used >= (this.#options.stepUpLimit ?? 3)) fail('insufficient-scope');
+      this.#stepUps.set(operation, used + 1);
+    }
+    await detach(this.start(scopeKey, flowSignal => this.challenge(challenge, bearer, flowSignal)), signal);
+    return true;
+  }
+
+  private now() { return this.#options.clock?.now() ?? Date.now(); }
+  private diagnostic(message: string) { this.#options.onDiagnostic?.(message); }
+  private start(scopeKey: string | undefined, run: (signal: AbortSignal) => Promise<void>): Promise<void> {
+    const signal = AbortSignal.timeout(this.#options.flowTimeoutMs ?? 120_000);
+    const work = Promise.resolve().then(() => detach(run(signal), signal)).catch((error: unknown) => {
+      if (error instanceof AuthError) throw error;
+      return fail('flow-failed');
+    }).finally(() => { this.#pending = undefined; });
+    this.#pending = { ...(scopeKey === undefined ? {} : { scopeKey }), work };
+    return work;
+  }
+
+  private async challenge(challenge: AuthChallenge, bearer: BearerChallenge | undefined, signal: AbortSignal) {
+    const previous = this.#grant;
+    const step = challenge.status === 403;
+    if (!step) this.#grant = undefined;
+    const { metadata, scopes } = await discover(this.#fetch, this.#resource, challenge.resource ?? new URL(this.#options.resource).href,
+      bearer?.resource_metadata, this.#options, signal);
+    const sameIssuer = previous?.metadata.issuer === metadata.issuer;
+    if (previous && !sameIssuer) this.#grant = undefined;
+    const selected = [...new Set([...(step && sameIssuer ? previous.scopes : []),
+      ...(bearer?.scope !== undefined ? scopesOf(bearer.scope) : step && sameIssuer ? [] : scopes.flatMap(scopesOf)),
+    ])].filter(scope => scope !== 'offline_access');
+    if (this.#options.offlineAccess && metadata.scopes.includes('offline_access')) selected.push('offline_access');
+    const session = { metadata, registration: await this.registration(metadata, signal) };
+    if (!step && (!previous || sameIssuer)) {
+      await this.renew(session, selected, signal, sameIssuer ? previous : undefined);
+    } else {
+      await this.interactive(session, selected, signal);
+    }
+  }
+
+  private key(session: Session, type: 'registration' | 'refresh') {
+    return JSON.stringify([type, this.#resource, session.metadata.issuer, type === 'refresh' ? session.registration.clientId : null]);
+  }
+
+  private validateRegistration(reg: ClientRegistration): ClientRegistration {
+    if (typeof reg.clientId !== 'string' || !reg.clientId || !strings(reg.redirectUris).includes(this.#options.redirectUri) ||
+      (reg.clientSecret !== undefined && typeof reg.clientSecret !== 'string')) fail('invalid-client-registration');
+    return { clientId: reg.clientId, redirectUris: [...reg.redirectUris], ...(reg.clientSecret !== undefined ? { clientSecret: reg.clientSecret } : {}) };
+  }
+
+  private async registration(metadata: Metadata, signal: AbortSignal): Promise<ClientRegistration> {
+    const registrations = this.#options.registrations;
+    const preset = registrations && Object.hasOwn(registrations, metadata.issuer) ? registrations[metadata.issuer] : undefined;
+    if (preset) return this.validateRegistration(preset);
+    const cimd = this.#options.cimd;
+    if (metadata.cimd && cimd) {
+      const id = secureUrl(cimd.clientIdUrl);
+      if (id.pathname === '/' || /[?#]/u.test(cimd.clientIdUrl)) fail('cimd-client-id-invalid');
+      if (cimd.selfCheck) {
+        const doc = await getDocument(this.#fetch, id.href, signal);
+        if (doc?.['client_id'] !== cimd.clientIdUrl || typeof doc['client_name'] !== 'string' || !doc['client_name'] ||
+          !strings(doc['redirect_uris']).includes(this.#options.redirectUri)) fail('cimd-document-invalid');
+        if (!strings(doc['grant_types']).includes('refresh_token')) this.diagnostic('CIMD does not list the refresh_token grant');
+      }
+      return this.validateRegistration({ clientId: cimd.clientIdUrl, redirectUris: cimd.redirectUris });
+    }
+    if (registrations && Object.keys(registrations).length) fail('client-issuer-mismatch');
+    const key = JSON.stringify(['registration', this.#resource, metadata.issuer, null]);
+    const cached = await this.#store.get(key);
+    if (cached) return this.validateRegistration(JSON.parse(cached) as ClientRegistration);
+    if (!this.#options.consent) fail('no-registration-mechanism');
+    const result = await this.consent({ kind: 'client-info', serverLabel: this.#options.serverLabel ?? this.#resource,
+      issuer: metadata.issuer, redirectUri: this.#options.redirectUri }, signal);
+    if (!result.registration) fail('no-registration-mechanism');
+    const registration = this.validateRegistration(result.registration);
+    signal.throwIfAborted();
+    await this.#store.set(key, JSON.stringify(registration));
+    return registration;
+  }
+
+  private async consent(prompt: AuthorizationPrompt, signal: AbortSignal) {
+    if (!this.#options.consent) throw new AuthError('auth-unavailable', prompt.kind);
+    signal.throwIfAborted();
+    const result = await this.#options.consent.request(prompt, signal);
+    if (result.decision !== 'accept') fail(result.decision === 'decline' ? 'declined' : 'cancelled');
+    signal.throwIfAborted();
+    return result;
+  }
+
+  private async renew(session: Session, scopes: readonly string[], signal: AbortSignal, previous = this.#grant) {
+    const refresh = await this.#store.get(this.key(session, 'refresh'));
+    if (refresh) {
+      const form = new URLSearchParams({ grant_type: 'refresh_token', refresh_token: refresh });
+      if (await this.token(session, form, previous?.scopes ?? scopes, signal, refresh, previous)) return;
+      await this.#store.delete(this.key(session, 'refresh'));
+      this.#grant = undefined;
+    }
+    await this.interactive(session, scopes, signal);
+  }
+
+  private nonce(size: number) {
+    const bytes = this.#options.random ? this.#options.random.bytes(size) : randomBytes(size);
+    if (bytes.length !== size) fail('invalid-random-source');
+    return Buffer.from(bytes).toString('base64url');
+  }
+  private async interactive(session: Session, scopes: readonly string[], signal: AbortSignal) {
+    const { metadata, registration } = session;
+    const { browser, redirect, redirectUri } = this.#options;
+    if (!browser || !redirect) throw new AuthError('auth-unavailable', 'authorize');
+    await this.consent({ kind: 'authorize', serverLabel: this.#options.serverLabel ?? this.#resource,
+      issuerHost: new URL(metadata.issuer).hostname, resource: this.#resource, scopes: Object.freeze([...scopes]),
+      redirectHost: this.#redirect.hostname, localhostWarning: isLoopback(this.#redirect.hostname) }, signal);
+    const verifier = this.nonce(32), state = this.nonce(24);
+    const url = new URL(metadata.authorizationEndpoint);
+    const parameters = { response_type: 'code', client_id: registration.clientId, redirect_uri: redirectUri,
+      code_challenge: pkceChallenge(verifier), code_challenge_method: 'S256', state, resource: this.#resource };
+    for (const [key, value] of Object.entries(parameters)) url.searchParams.set(key, value);
+    url.searchParams.delete('scope');
+    if (scopes.length) url.searchParams.set('scope', scopes.join(' '));
+    const callbackController = new AbortController();
+    const callbackSignal = AbortSignal.any([signal, callbackController.signal]);
+    try {
+      const callback = redirect.waitForCallback({ redirectUri, state, signal: callbackSignal });
+      // Listen before opening the browser; avoid an unhandled rejection if either port fails.
+      const [, params] = await Promise.all([Promise.resolve().then(() => browser.open(url.href, callbackSignal)), callback]);
+      if (params.getAll('state').length !== 1 || params.get('state') !== state) fail('state-mismatch');
+      const iss = params.getAll('iss');
+      if (iss.length > 1 || (iss.length === 0 ? metadata.responseIssuer : iss[0] !== metadata.issuer)) fail('issuer-mismatch');
+      if (params.has('error')) fail('authorization-rejected');
+      const code = params.get('code');
+      if (!code || params.getAll('code').length !== 1) fail('invalid-code');
+      await this.token(session, new URLSearchParams({ grant_type: 'authorization_code', code, code_verifier: verifier, redirect_uri: redirectUri }), scopes, signal);
+    } finally { callbackController.abort(); }
+  }
+
+  private async token(session: Session, form: URLSearchParams, scopes: readonly string[], signal: AbortSignal, refresh?: string, previous?: Grant) {
+    const { metadata, registration } = session;
+    form.set('client_id', registration.clientId);
+    form.set('resource', this.#resource);
+    const headers = new Headers({ 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' });
+    if (registration.clientSecret !== undefined) {
+      if (!metadata.clientAuthMethods.length || metadata.clientAuthMethods.includes('client_secret_basic')) {
+        const encode = (value: string) => new URLSearchParams({ x: value }).toString().slice(2);
+        const basic = Buffer.from(`${encode(registration.clientId)}:${encode(registration.clientSecret)}`).toString('base64');
+        headers.set('Authorization', `Basic ${basic}`);
+      } else if (metadata.clientAuthMethods.includes('client_secret_post')) {
+        form.set('client_secret', registration.clientSecret);
+      } else fail('client-auth-method-unsupported');
+    }
+    signal.throwIfAborted();
+    let response: Response;
+    try { response = await this.#fetch.fetch(metadata.tokenEndpoint.href, { method: 'POST', body: form.toString(), headers,
+      credentials: 'omit', redirect: 'error', signal }); }
+    catch { return fail('token-endpoint-unavailable'); }
+    let doc: Record<string, unknown>;
+    try { doc = object(await response.json()); } catch { return fail('token-response-invalid'); }
+    if (!response.ok) {
+      if (refresh && response.status === 400 && doc['error'] === 'invalid_grant') return false;
+      return fail('token-request-rejected');
+    }
+    if (typeof doc['token_type'] !== 'string' || doc['token_type'].toLowerCase() !== 'bearer') fail('invalid-token-type');
+    const token = bearerValue(doc['access_token']);
+    const lifetime = doc['expires_in'];
+    if (lifetime !== undefined && (typeof lifetime !== 'number' || !Number.isFinite(lifetime) || lifetime <= 0 || lifetime > Number.MAX_SAFE_INTEGER / 1000)) fail('invalid-token-expiry');
+    const issuedRefresh = doc['refresh_token'];
+    if (issuedRefresh !== undefined && (typeof issuedRefresh !== 'string' || !issuedRefresh)) fail('invalid-refresh-token');
+    const key = this.key(session, 'refresh');
+    signal.throwIfAborted();
+    if (issuedRefresh !== undefined) await this.#store.set(key, issuedRefresh);
+    else if (!refresh) await this.#store.delete(key);
+    signal.throwIfAborted();
+    const context = refresh && previous?.metadata.issuer === metadata.issuer && previous.registration.clientId === registration.clientId ? previous.context : randomBytes(18).toString('base64url');
+    this.#grant = { ...session, token, context, expires: lifetime === undefined ? Infinity : this.now() + lifetime * 1000,
+      scopes: [...new Set([...scopes, ...scopesOf(typeof doc['scope'] === 'string' ? doc['scope'] : undefined)])] };
+    return true;
+  }
+}

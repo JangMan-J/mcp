@@ -1,6 +1,15 @@
 # Authorization conformance rows
 
-Wave 0 lane file for **Authorization** (`AUTH-*`, `CONSENT-*`, `EXT-cc-*`, `EXT-ema-*`). Derived from IMPLEMENTATION_PLAN.md sections 10, 12.3, 12.4 and 16.1. Documentation only: no MCP implementation, no edits outside this file.
+Authorization requirements (`AUTH-*`, `CONSENT-*`, `EXT-cc-*`, `EXT-ema-*`), derived from IMPLEMENTATION_PLAN.md sections 10, 12.3, 12.4 and 16.1.
+
+## S2.1 implementation and verification
+
+`OAuthAuthorization` and `ConfiguredBearer` implement the core `AuthProvider` interface. The OAuth provider handles discovery, registration, consent, callback validation and token exchange. The HTTP transport owns redirects of MCP requests and retries with fresh request IDs. `SafeFetch` pins each connection with a Node HTTP(S) lookup callback while retaining the URL host for TLS and HTTP. `allowInsecureDev` permits HTTP loopback URLs; the default network policy still requires an explicit address override to connect to loopback. Browser authorization URLs remain HTTPS-only (D6).
+
+- Provider and consent exchanges are in `packages/fixtures/exchanges/auth/` and run through the compiled `@mcp-client/auth/conformance` subpath. Dispatch fixtures by ID prefix (`auth/` or `consent/`), not by the directory alone. These deterministic exchanges use scripted host ports. `packages/auth/test/network.test.ts` separately drives a real loopback AS and callback, and checks discovery redirect revalidation, response limits, and omission of ambient credentials.
+- `AUTH-HTTP-1` and `AUTH-401-1..2` need transport-backed exchanges; a provider test cannot verify JSON-RPC IDs or what a second HTTP 401 returns. The current transport also maps a declined or failed challenge to `forbidden`, not a typed auth outcome. Direct provider callers receive a redacted `AuthError`.
+- `AUTH-PRM-4`, `AUTH-SSRF-3`, and `AUTH-URL-2` do not yet have dedicated tests for certificate rejection, socket pinning, or launcher argument handling. Discovery TLS verification is enabled; the default system browser launcher uses a fixed executable and does not invoke a shell. `AUTH-THEFT-1`: the default store is a `Map`; a host-supplied store is responsible for confidentiality at rest.
+- Elicitation consent and authorization/elicitation separation need cross-package verification (`CONSENT-5`, `CONSENT-7`, `AUTH-SEP-1`). This package never opens elicitation URLs or accepts elicitation answers as OAuth callbacks. The gated claims in DECISIONS.md remain gated.
 
 ## How to read the table
 

@@ -1,0 +1,36 @@
+{
+  "id": "auth/offline-access-opt-in",
+  "requirements": [
+    "AUTH-SCOPE-2"
+  ],
+  "pin": "tag",
+  "source": [
+    "specification/2026-07-28/basic/authorization/index.md#Refresh Tokens"
+  ],
+  "tier": "B",
+  "binding": "http",
+  "client": {
+    "offlineAccess": true,
+    "metadata": {
+      "scopes_supported": [
+        "offline_access"
+      ]
+    }
+  },
+  "script": [
+    {
+      "do": "challenge"
+    },
+    {
+      "expect": "open",
+      "url": "https://as.test/authorize",
+      "match": {
+        "scope": "read offline_access"
+      }
+    }
+  ],
+  "expect": {},
+  "mutants": [
+    "no-provider"
+  ]
+}

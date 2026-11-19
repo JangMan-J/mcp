@@ -1,0 +1,46 @@
+{
+  "id": "auth/401-prm-header",
+  "requirements": [
+    "AUTH-CHAL-1"
+  ],
+  "pin": "tag",
+  "source": [
+    "specification/2026-07-28/basic/authorization/authorization-server-discovery.md#Protected Resource Metadata Discovery Requirements"
+  ],
+  "tier": "B",
+  "binding": "http",
+  "client": {},
+  "script": [
+    {
+      "expect": "parse",
+      "input": [
+        "Basic realm=\"a,b\", bEaReR ReSoUrCe_MeTaDaTa=\"https://mcp.test/custom-prm\", scope=\"x y\", error=\"invalid_token\", error_description=\"escaped \\\\\"",
+        "Bearer, Basic realm=\"unfinished"
+      ],
+      "value": [
+        {
+          "resource_metadata": "https://mcp.test/custom-prm",
+          "scope": "x y",
+          "error": "invalid_token",
+          "error_description": "escaped \\"
+        }
+      ]
+    },
+    {
+      "do": "challenge",
+      "challenge": "Basic realm=\"a,b\", Bearer resource_metadata=\"https://mcp.test/custom-prm\", scope=\"x y\""
+    },
+    {
+      "expect": "fetches",
+      "values": [
+        "GET https://mcp.test/custom-prm",
+        "GET https://as.test/.well-known/oauth-authorization-server/tenant",
+        "POST https://as.test/token"
+      ]
+    }
+  ],
+  "expect": {},
+  "mutants": [
+    "ignore-redirect-location"
+  ]
+}

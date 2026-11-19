@@ -1,0 +1,43 @@
+{
+  "id": "consent/authorize-shows-redirect-host",
+  "requirements": [
+    "AUTH-REDIR-2"
+  ],
+  "pin": "tag",
+  "source": [
+    "specification/2026-07-28/basic/authorization/security-considerations.md#Localhost Redirect URI Risks"
+  ],
+  "tier": "B",
+  "binding": "http",
+  "client": {},
+  "script": [
+    {
+      "do": "challenge"
+    },
+    {
+      "expect": "prompt",
+      "match": {
+        "kind": "authorize",
+        "serverLabel": "Fixture MCP",
+        "issuerHost": "as.test",
+        "resource": "https://mcp.test/rpc",
+        "scopes": [
+          "read"
+        ],
+        "redirectHost": "127.0.0.1",
+        "localhostWarning": true
+      }
+    },
+    {
+      "expect": "counts",
+      "match": {
+        "token": 1,
+        "open": 1
+      }
+    }
+  ],
+  "expect": {},
+  "mutants": [
+    "always-decline"
+  ]
+}

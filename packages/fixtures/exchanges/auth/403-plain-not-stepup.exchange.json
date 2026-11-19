@@ -1,0 +1,32 @@
+{
+  "id": "auth/403-plain-not-stepup",
+  "requirements": [
+    "AUTH-HTTP-2"
+  ],
+  "pin": "tag",
+  "source": [
+    "specification/2026-07-28/basic/authorization/index.md#Runtime Insufficient Scope Errors"
+  ],
+  "tier": "B",
+  "binding": "http",
+  "client": {},
+  "script": [
+    {
+      "do": "challenge",
+      "status": 403,
+      "challenge": "Bearer error_description=\"insufficient_scope\"",
+      "retry": false
+    },
+    {
+      "expect": "counts",
+      "match": {
+        "fetch": 0,
+        "open": 0
+      }
+    }
+  ],
+  "expect": {},
+  "mutants": [
+    "refresh-on-forbidden"
+  ]
+}

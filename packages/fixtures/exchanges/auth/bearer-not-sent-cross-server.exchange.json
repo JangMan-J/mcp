@@ -1,0 +1,30 @@
+{
+  "id": "auth/bearer-not-sent-cross-server",
+  "requirements": [
+    "AUTH-BEARER-4"
+  ],
+  "pin": "tag",
+  "source": [
+    "specification/2026-07-28/basic/index.md#Auth"
+  ],
+  "tier": "B",
+  "binding": "http",
+  "client": {
+    "bearer": true
+  },
+  "script": [
+    {
+      "expect": "header",
+      "value": "Bearer configured-1"
+    },
+    {
+      "expect": "header",
+      "value": null,
+      "url": "https://other.test/rpc"
+    }
+  ],
+  "expect": {},
+  "mutants": [
+    "allow-cross-resource"
+  ]
+}

@@ -1,0 +1,34 @@
+{
+  "id": "auth/as-metadata-order-path-issuer",
+  "requirements": [
+    "AUTH-ASM-1"
+  ],
+  "pin": "tag",
+  "source": [
+    "specification/2026-07-28/basic/authorization/authorization-server-discovery.md#Authorization Server Metadata Discovery"
+  ],
+  "tier": "B",
+  "binding": "http",
+  "client": {
+    "metadataLocation": 2
+  },
+  "script": [
+    {
+      "do": "challenge"
+    },
+    {
+      "expect": "fetches",
+      "values": [
+        "GET https://mcp.test/custom-prm",
+        "GET https://as.test/.well-known/oauth-authorization-server/tenant",
+        "GET https://as.test/.well-known/openid-configuration/tenant",
+        "GET https://as.test/tenant/.well-known/openid-configuration",
+        "POST https://as.test/token"
+      ]
+    }
+  ],
+  "expect": {},
+  "mutants": [
+    "no-provider"
+  ]
+}

@@ -1,0 +1,38 @@
+{
+  "id": "auth/cimd-client-id-shape",
+  "requirements": [
+    "AUTH-REG-3"
+  ],
+  "pin": "tag",
+  "source": [
+    "specification/2026-07-28/basic/authorization/client-registration.md#Implementation Requirements"
+  ],
+  "tier": "B",
+  "binding": "http",
+  "client": {
+    "registration": "cimd",
+    "metadata": {
+      "client_id_metadata_document_supported": true
+    },
+    "cimdDocument": {
+      "client_id": "https://client.test/another.json"
+    }
+  },
+  "script": [
+    {
+      "do": "challenge",
+      "error": "auth-failure/cimd-document-invalid"
+    },
+    {
+      "expect": "counts",
+      "match": {
+        "open": 0,
+        "token": 0
+      }
+    }
+  ],
+  "expect": {},
+  "mutants": [
+    "no-provider"
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "id": "auth/pkce-s256-rfc7636-vector",
+  "requirements": [
+    "AUTH-PKCE-2"
+  ],
+  "pin": "tag",
+  "source": [
+    "specification/2026-07-28/basic/authorization/security-considerations.md#Authorization Code Protection"
+  ],
+  "tier": "B",
+  "binding": "http",
+  "client": {},
+  "script": [
+    {
+      "expect": "pkce",
+      "verifier": "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
+      "value": "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+    }
+  ],
+  "expect": {},
+  "mutants": [
+    "bad-pkce"
+  ]
+}

@@ -1,0 +1,37 @@
+{
+  "id": "auth/authz-url-sanitize",
+  "requirements": [
+    "AUTH-URL-3"
+  ],
+  "pin": "tag",
+  "source": [
+    "docs/2026-07-28/tutorials/security/security_best_practices.md#OAuth Authorization URL Validation"
+  ],
+  "tier": "B",
+  "binding": "http",
+  "client": {
+    "metadata": {
+      "authorization_endpoint": "https://as.test/authorize`"
+    }
+  },
+  "script": [
+    {
+      "do": "challenge",
+      "error": "auth-failure/invalid-url"
+    },
+    {
+      "expect": "counts",
+      "match": {
+        "open": 0
+      }
+    },
+    {
+      "expect": "diagnostics",
+      "values": []
+    }
+  ],
+  "expect": {},
+  "mutants": [
+    "no-provider"
+  ]
+}

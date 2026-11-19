@@ -1,0 +1,37 @@
+{
+  "id": "auth/resource-param-authz-and-token",
+  "requirements": [
+    "AUTH-RES-1",
+    "AUTH-AUD-1"
+  ],
+  "pin": "tag",
+  "source": [
+    "specification/2026-07-28/basic/authorization/index.md#Resource Parameter Implementation",
+    "specification/2026-07-28/basic/authorization/security-considerations.md#Token Audience Binding and Validation"
+  ],
+  "tier": "B",
+  "binding": "http",
+  "client": {},
+  "script": [
+    {
+      "do": "challenge"
+    },
+    {
+      "expect": "open",
+      "url": "https://as.test/authorize",
+      "match": {
+        "resource": "https://mcp.test/rpc"
+      }
+    },
+    {
+      "expect": "form",
+      "match": {
+        "resource": "https://mcp.test/rpc"
+      }
+    }
+  ],
+  "expect": {},
+  "mutants": [
+    "drop-resource"
+  ]
+}

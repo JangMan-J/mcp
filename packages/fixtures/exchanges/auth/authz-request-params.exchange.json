@@ -1,0 +1,36 @@
+{
+  "id": "auth/authz-request-params",
+  "requirements": [
+    "AUTH-FLOW-1"
+  ],
+  "pin": "tag",
+  "source": [
+    "specification/2026-07-28/basic/authorization/index.md#Authorization Flow Steps"
+  ],
+  "tier": "B",
+  "binding": "http",
+  "client": {},
+  "script": [
+    {
+      "do": "challenge"
+    },
+    {
+      "expect": "open",
+      "url": "https://as.test/authorize",
+      "match": {
+        "response_type": "code",
+        "client_id": "fixture-client",
+        "redirect_uri": "http://127.0.0.1:4321/callback",
+        "code_challenge_method": "S256",
+        "code_challenge": "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
+        "state": "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFB",
+        "scope": "read",
+        "resource": "https://mcp.test/rpc"
+      }
+    }
+  ],
+  "expect": {},
+  "mutants": [
+    "no-provider"
+  ]
+}

@@ -1,0 +1,59 @@
+{
+  "id": "auth/ssrf-block-ranges",
+  "requirements": [
+    "AUTH-SSRF-2"
+  ],
+  "pin": "tag",
+  "source": [
+    "docs/2026-07-28/tutorials/security/security_best_practices.md#Server-Side Request Forgery (SSRF)"
+  ],
+  "tier": "B",
+  "binding": "http",
+  "client": {},
+  "script": [
+    {
+      "expect": "ssrf",
+      "url": "https://0x7f.1/metadata",
+      "error": "auth-failure/fetch-address-blocked"
+    },
+    {
+      "expect": "ssrf",
+      "url": "https://2130706433/metadata",
+      "error": "auth-failure/fetch-address-blocked"
+    },
+    {
+      "expect": "ssrf",
+      "url": "https://[::ffff:127.0.0.1]/metadata",
+      "error": "auth-failure/fetch-address-blocked"
+    },
+    {
+      "expect": "ssrf",
+      "url": "https://[::1]/metadata",
+      "error": "auth-failure/fetch-address-blocked"
+    },
+    {
+      "expect": "ssrf",
+      "url": "https://169.254.169.254/metadata",
+      "error": "auth-failure/fetch-address-blocked"
+    },
+    {
+      "expect": "ssrf",
+      "url": "https://10.0.0.1/metadata",
+      "error": "auth-failure/fetch-address-blocked"
+    },
+    {
+      "expect": "ssrf",
+      "url": "https://[fc00::1]/metadata",
+      "error": "auth-failure/fetch-address-blocked"
+    },
+    {
+      "expect": "ssrf",
+      "url": "https://[fe80::1]/metadata",
+      "error": "auth-failure/fetch-address-blocked"
+    }
+  ],
+  "expect": {},
+  "mutants": [
+    "no-ssrf-guard"
+  ]
+}

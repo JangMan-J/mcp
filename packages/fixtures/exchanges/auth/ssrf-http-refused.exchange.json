@@ -1,0 +1,24 @@
+{
+  "id": "auth/ssrf-http-refused",
+  "requirements": [
+    "AUTH-SSRF-1"
+  ],
+  "pin": "tag",
+  "source": [
+    "docs/2026-07-28/tutorials/security/security_best_practices.md#Server-Side Request Forgery (SSRF)"
+  ],
+  "tier": "B",
+  "binding": "http",
+  "client": {},
+  "script": [
+    {
+      "expect": "ssrf",
+      "url": "http://mcp.test/doc",
+      "error": "auth-failure/invalid-url"
+    }
+  ],
+  "expect": {},
+  "mutants": [
+    "no-ssrf-guard"
+  ]
+}

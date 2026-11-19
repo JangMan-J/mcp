@@ -1,0 +1,56 @@
+{
+  "id": "auth/refresh-grant-resource-param",
+  "requirements": [
+    "AUTH-REFRESH-4"
+  ],
+  "pin": "tag",
+  "source": [
+    "specification/2026-07-28/basic/authorization/index.md#Resource Parameter Implementation"
+  ],
+  "tier": "B",
+  "binding": "http",
+  "client": {
+    "tokenReplies": [
+      {
+        "body": {
+          "token_type": "Bearer",
+          "access_token": "fixture-token-1",
+          "refresh_token": "fixture-refresh"
+        }
+      }
+    ]
+  },
+  "script": [
+    {
+      "do": "challenge"
+    },
+    {
+      "do": "concurrent",
+      "abortOne": true
+    },
+    {
+      "expect": "form",
+      "match": {
+        "grant_type": "refresh_token",
+        "refresh_token": "fixture-refresh",
+        "resource": "https://mcp.test/rpc"
+      },
+      "index": 1
+    },
+    {
+      "expect": "header",
+      "value": "Bearer fixture-token-2"
+    },
+    {
+      "expect": "counts",
+      "match": {
+        "open": 1,
+        "token": 2
+      }
+    }
+  ],
+  "expect": {},
+  "mutants": [
+    "drop-resource"
+  ]
+}

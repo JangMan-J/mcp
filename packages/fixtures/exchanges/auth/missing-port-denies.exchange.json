@@ -1,0 +1,32 @@
+{
+  "id": "consent/missing-port-denies",
+  "requirements": [
+    "CONSENT-1"
+  ],
+  "pin": "tag",
+  "source": [
+    "specification/2026-07-28/client/elicitation.md#User Interaction Model"
+  ],
+  "tier": "B",
+  "binding": "http",
+  "client": {
+    "consent": "absent"
+  },
+  "script": [
+    {
+      "do": "challenge",
+      "error": "auth-unavailable/authorize"
+    },
+    {
+      "expect": "counts",
+      "match": {
+        "token": 0,
+        "open": 0
+      }
+    }
+  ],
+  "expect": {},
+  "mutants": [
+    "no-provider"
+  ]
+}

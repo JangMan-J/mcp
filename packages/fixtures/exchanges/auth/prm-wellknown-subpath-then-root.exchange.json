@@ -1,0 +1,33 @@
+{
+  "id": "auth/prm-wellknown-subpath-then-root",
+  "requirements": [
+    "AUTH-PRM-1"
+  ],
+  "pin": "tag",
+  "source": [
+    "specification/2026-07-28/basic/authorization/authorization-server-discovery.md#Protected Resource Metadata Discovery Requirements"
+  ],
+  "tier": "B",
+  "binding": "http",
+  "client": {
+    "prmLocation": "root"
+  },
+  "script": [
+    {
+      "do": "challenge"
+    },
+    {
+      "expect": "fetches",
+      "values": [
+        "GET https://mcp.test/.well-known/oauth-protected-resource/rpc",
+        "GET https://mcp.test/.well-known/oauth-protected-resource",
+        "GET https://as.test/.well-known/oauth-authorization-server/tenant",
+        "POST https://as.test/token"
+      ]
+    }
+  ],
+  "expect": {},
+  "mutants": [
+    "no-provider"
+  ]
+}

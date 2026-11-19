@@ -1,0 +1,30 @@
+{
+  "id": "auth/no-challenge-no-auth",
+  "requirements": [
+    "AUTH-OPT-1"
+  ],
+  "pin": "tag",
+  "source": [
+    "specification/2026-07-28/basic/authorization/index.md#Protocol Requirements"
+  ],
+  "tier": "B",
+  "binding": "http",
+  "client": {},
+  "script": [
+    {
+      "expect": "header",
+      "value": null
+    },
+    {
+      "expect": "counts",
+      "match": {
+        "fetch": 0,
+        "open": 0
+      }
+    }
+  ],
+  "expect": {},
+  "mutants": [
+    "preemptive-bearer"
+  ]
+}

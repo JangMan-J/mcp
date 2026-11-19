@@ -1,0 +1,53 @@
+{
+  "id": "auth/step-up-limit",
+  "requirements": [
+    "AUTH-STEP-3"
+  ],
+  "pin": "tag",
+  "source": [
+    "specification/2026-07-28/basic/authorization/index.md#Step-Up Authorization Flow"
+  ],
+  "tier": "B",
+  "binding": "http",
+  "client": {},
+  "script": [
+    {
+      "do": "challenge"
+    },
+    {
+      "do": "challenge",
+      "status": 403,
+      "challenge": "Bearer resource_metadata=\"https://mcp.test/custom-prm\", error=\"insufficient_scope\", scope=\"write\"",
+      "operation": "tools/call"
+    },
+    {
+      "do": "challenge",
+      "status": 403,
+      "challenge": "Bearer resource_metadata=\"https://mcp.test/custom-prm\", error=\"insufficient_scope\", scope=\"write\"",
+      "operation": "tools/call"
+    },
+    {
+      "do": "challenge",
+      "status": 403,
+      "challenge": "Bearer resource_metadata=\"https://mcp.test/custom-prm\", error=\"insufficient_scope\", scope=\"write\"",
+      "operation": "tools/call"
+    },
+    {
+      "do": "challenge",
+      "status": 403,
+      "challenge": "Bearer resource_metadata=\"https://mcp.test/custom-prm\", error=\"insufficient_scope\", scope=\"write\"",
+      "operation": "tools/call",
+      "error": "auth-failure/insufficient-scope"
+    },
+    {
+      "expect": "counts",
+      "match": {
+        "token": 4
+      }
+    }
+  ],
+  "expect": {},
+  "mutants": [
+    "no-provider"
+  ]
+}

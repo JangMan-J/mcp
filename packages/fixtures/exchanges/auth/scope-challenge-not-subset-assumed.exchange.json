@@ -1,0 +1,30 @@
+{
+  "id": "auth/scope-challenge-not-subset-assumed",
+  "requirements": [
+    "AUTH-SCOPE-3"
+  ],
+  "pin": "tag",
+  "source": [
+    "specification/2026-07-28/basic/authorization/index.md#Scope Selection Strategy"
+  ],
+  "tier": "B",
+  "binding": "http",
+  "client": {},
+  "script": [
+    {
+      "do": "challenge",
+      "challenge": "Bearer resource_metadata=\"https://mcp.test/custom-prm\", scope=\"other\""
+    },
+    {
+      "expect": "open",
+      "url": "https://as.test/authorize",
+      "match": {
+        "scope": "other"
+      }
+    }
+  ],
+  "expect": {},
+  "mutants": [
+    "wrong-scope"
+  ]
+}
