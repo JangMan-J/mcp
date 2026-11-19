@@ -1,0 +1,48 @@
+{
+  "id": "ver/discover-timeout-diagnostic",
+  "requirements": [
+    "VER-DIAG-1"
+  ],
+  "pin": "tag",
+  "source": [
+    "S/basic/versioning.md#Compatibility Matrix"
+  ],
+  "tier": "A",
+  "binding": "stdio",
+  "client": {
+    "clock": "fake"
+  },
+  "script": [
+    {
+      "do": "probe",
+      "as": "p1"
+    },
+    {
+      "expect": "wire",
+      "index": 0,
+      "match": {
+        "method": "server/discover"
+      }
+    },
+    {
+      "advance": 10000
+    }
+  ],
+  "expect": {
+    "outcome": {
+      "p1": {
+        "era": "legacy-or-unresponsive",
+        "diagnostic.observed": "timeout"
+      }
+    },
+    "wire": {
+      "totalRequests": 1,
+      "never": [
+        "initialize"
+      ]
+    }
+  },
+  "mutants": [
+    "classify-any-discover-reply-modern"
+  ]
+}

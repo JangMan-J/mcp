@@ -1,0 +1,119 @@
+{
+  "id": "prog/non-monotonic",
+  "requirements": [
+    "PROG-2",
+    "EDGE-8"
+  ],
+  "pin": "tag",
+  "source": [
+    "S/basic/patterns/progress.md#Progress Flow"
+  ],
+  "tier": "A",
+  "binding": "stdio",
+  "client": {
+    "clock": "fake"
+  },
+  "script": [
+    {
+      "do": "call",
+      "as": "c1",
+      "method": "tools/call",
+      "params": {
+        "name": "long_job"
+      },
+      "progress": true
+    },
+    {
+      "expect": "wire",
+      "index": 0
+    },
+    {
+      "server": "notify",
+      "for": "c1",
+      "notification": {
+        "jsonrpc": "2.0",
+        "method": "notifications/progress",
+        "params": {
+          "progressToken": 1,
+          "progress": 1
+        }
+      }
+    },
+    {
+      "server": "notify",
+      "for": "c1",
+      "notification": {
+        "jsonrpc": "2.0",
+        "method": "notifications/progress",
+        "params": {
+          "progressToken": 1,
+          "progress": 3
+        }
+      }
+    },
+    {
+      "server": "notify",
+      "for": "c1",
+      "notification": {
+        "jsonrpc": "2.0",
+        "method": "notifications/progress",
+        "params": {
+          "progressToken": 1,
+          "progress": 2
+        }
+      }
+    },
+    {
+      "server": "notify",
+      "for": "c1",
+      "notification": {
+        "jsonrpc": "2.0",
+        "method": "notifications/progress",
+        "params": {
+          "progressToken": 1,
+          "progress": 3
+        }
+      }
+    },
+    {
+      "server": "notify",
+      "for": "c1",
+      "notification": {
+        "jsonrpc": "2.0",
+        "method": "notifications/progress",
+        "params": {
+          "progressToken": 1,
+          "progress": 4
+        }
+      }
+    },
+    {
+      "server": "result",
+      "for": "c1",
+      "result": {
+        "resultType": "complete",
+        "content": []
+      }
+    }
+  ],
+  "expect": {
+    "outcome": {
+      "c1": {
+        "kind": "ok"
+      }
+    },
+    "progress": {
+      "c1": [
+        1,
+        3,
+        4
+      ]
+    },
+    "stats": {
+      "progress.nonMonotonic": 2
+    }
+  },
+  "mutants": [
+    "lax-progress-registry"
+  ]
+}

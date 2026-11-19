@@ -1,0 +1,72 @@
+{
+  "id": "ver/discover-ok",
+  "requirements": [
+    "VER-5",
+    "VER-6"
+  ],
+  "pin": "tag",
+  "source": [
+    "S/server/discover.md#When to Call",
+    "S/server/discover.md#DiscoverResult"
+  ],
+  "tier": "A",
+  "binding": "stdio",
+  "client": {
+    "clock": "fake"
+  },
+  "script": [
+    {
+      "do": "probe",
+      "as": "p1"
+    },
+    {
+      "expect": "wire",
+      "index": 0,
+      "match": {
+        "method": "server/discover",
+        "params._meta.io.modelcontextprotocol/protocolVersion": "2026-07-28"
+      }
+    },
+    {
+      "server": "result",
+      "for": "p1",
+      "result": {
+        "resultType": "complete",
+        "supportedVersions": [
+          "2026-07-28"
+        ],
+        "capabilities": {
+          "tools": {}
+        },
+        "ttlMs": 0,
+        "cacheScope": "private",
+        "_meta": {
+          "io.modelcontextprotocol/serverInfo": {
+            "name": "legacy-looking-server",
+            "version": "0.0.1"
+          }
+        }
+      }
+    }
+  ],
+  "expect": {
+    "outcome": {
+      "p1": {
+        "era": "modern",
+        "version": "2026-07-28",
+        "discover.capabilities": {
+          "tools": {}
+        }
+      }
+    },
+    "wire": {
+      "totalRequests": 1,
+      "never": [
+        "initialize"
+      ]
+    }
+  },
+  "mutants": [
+    "branch-on-server-info"
+  ]
+}

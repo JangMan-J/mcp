@@ -1,0 +1,80 @@
+{
+  "id": "wire/protocol-version",
+  "requirements": [
+    "WIRE-META-1",
+    "VER-1"
+  ],
+  "pin": "tag",
+  "source": [
+    "S/basic/index.md#General fields",
+    "S/basic/versioning.md#Protocol Version Negotiation"
+  ],
+  "tier": "A",
+  "binding": "stdio",
+  "client": {
+    "clock": "fake"
+  },
+  "script": [
+    {
+      "do": "call",
+      "as": "c1",
+      "method": "tools/list"
+    },
+    {
+      "expect": "wire",
+      "index": 0,
+      "match": {
+        "params._meta.io.modelcontextprotocol/protocolVersion": "2026-07-28"
+      }
+    },
+    {
+      "do": "call",
+      "as": "c2",
+      "method": "tools/call",
+      "params": {
+        "name": "echo"
+      }
+    },
+    {
+      "expect": "wire",
+      "index": 1,
+      "match": {
+        "method": "tools/call",
+        "params._meta.io.modelcontextprotocol/protocolVersion": "2026-07-28"
+      }
+    },
+    {
+      "server": "result",
+      "for": "c1",
+      "result": {
+        "resultType": "complete",
+        "tools": []
+      }
+    },
+    {
+      "server": "result",
+      "for": "c2",
+      "result": {
+        "resultType": "complete",
+        "content": []
+      }
+    }
+  ],
+  "expect": {
+    "outcome": {
+      "c1": {
+        "kind": "ok"
+      },
+      "c2": {
+        "kind": "ok"
+      }
+    },
+    "wire": {
+      "totalRequests": 2,
+      "distinctIds": true
+    }
+  },
+  "mutants": [
+    "omit-protocol-version"
+  ]
+}

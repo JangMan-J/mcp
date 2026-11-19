@@ -1,0 +1,56 @@
+{
+  "id": "wire/client-info-disabled",
+  "requirements": [
+    "WIRE-META-3"
+  ],
+  "pin": "tag",
+  "source": [
+    "S/basic/index.md#`_meta`"
+  ],
+  "tier": "A",
+  "binding": "stdio",
+  "client": {
+    "setup": {
+      "clientInfo": false
+    },
+    "clock": "fake"
+  },
+  "script": [
+    {
+      "do": "call",
+      "as": "c1",
+      "method": "tools/list"
+    },
+    {
+      "expect": "wire",
+      "index": 0,
+      "match": {
+        "params._meta.io.modelcontextprotocol/protocolVersion": "2026-07-28"
+      }
+    },
+    {
+      "server": "result",
+      "for": "c1",
+      "result": {
+        "resultType": "complete",
+        "tools": []
+      }
+    }
+  ],
+  "expect": {
+    "outcome": {
+      "c1": {
+        "kind": "ok"
+      }
+    },
+    "wire": {
+      "totalRequests": 1,
+      "never": [
+        "clientInfo"
+      ]
+    }
+  },
+  "mutants": [
+    "client-info-default-on"
+  ]
+}

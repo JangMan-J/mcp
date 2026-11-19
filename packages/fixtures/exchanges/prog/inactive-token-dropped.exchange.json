@@ -1,0 +1,78 @@
+{
+  "id": "prog/inactive-token-dropped",
+  "requirements": [
+    "PROG-3"
+  ],
+  "pin": "tag",
+  "source": [
+    "S/basic/patterns/progress.md#Behavior Requirements"
+  ],
+  "tier": "A",
+  "binding": "stdio",
+  "client": {
+    "clock": "fake"
+  },
+  "script": [
+    {
+      "do": "call",
+      "as": "c1",
+      "method": "tools/call",
+      "params": {
+        "name": "long_job"
+      },
+      "progress": true
+    },
+    {
+      "expect": "wire",
+      "index": 0
+    },
+    {
+      "server": "notify",
+      "for": "c1",
+      "notification": {
+        "jsonrpc": "2.0",
+        "method": "notifications/progress",
+        "params": {
+          "progressToken": 999,
+          "progress": 1
+        }
+      }
+    },
+    {
+      "server": "notify",
+      "for": "c1",
+      "notification": {
+        "jsonrpc": "2.0",
+        "method": "notifications/progress",
+        "params": {
+          "progressToken": "not-ours",
+          "progress": 2
+        }
+      }
+    },
+    {
+      "server": "result",
+      "for": "c1",
+      "result": {
+        "resultType": "complete",
+        "content": []
+      }
+    }
+  ],
+  "expect": {
+    "outcome": {
+      "c1": {
+        "kind": "ok"
+      }
+    },
+    "progress": {
+      "c1": []
+    },
+    "stats": {
+      "progress.inactive": 2
+    }
+  },
+  "mutants": [
+    "lax-progress-registry"
+  ]
+}

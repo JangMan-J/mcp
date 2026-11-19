@@ -1,0 +1,53 @@
+{
+  "id": "wire/client-info-default",
+  "requirements": [
+    "WIRE-META-3"
+  ],
+  "pin": "tag",
+  "source": [
+    "S/basic/index.md#`_meta`"
+  ],
+  "tier": "A",
+  "binding": "stdio",
+  "client": {
+    "clock": "fake"
+  },
+  "script": [
+    {
+      "do": "call",
+      "as": "c1",
+      "method": "tools/list"
+    },
+    {
+      "expect": "wire",
+      "index": 0,
+      "match": {
+        "params._meta.io.modelcontextprotocol/clientInfo": {
+          "name": "@mcp-client/core",
+          "version": "0.1.0"
+        }
+      }
+    },
+    {
+      "server": "result",
+      "for": "c1",
+      "result": {
+        "resultType": "complete",
+        "tools": []
+      }
+    }
+  ],
+  "expect": {
+    "outcome": {
+      "c1": {
+        "kind": "ok"
+      }
+    },
+    "wire": {
+      "totalRequests": 1
+    }
+  },
+  "mutants": [
+    "client-info-off"
+  ]
+}

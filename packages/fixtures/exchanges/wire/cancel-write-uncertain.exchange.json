@@ -1,0 +1,52 @@
+{
+  "id": "wire/cancel-write-uncertain",
+  "requirements": [
+    "WIRE-CANCEL-5"
+  ],
+  "pin": "tag",
+  "source": [
+    "S/basic/patterns/cancellation.md#Behavior Requirements"
+  ],
+  "tier": "A",
+  "binding": "stdio",
+  "client": {
+    "clock": "fake"
+  },
+  "script": [
+    {
+      "do": "call",
+      "as": "c1",
+      "method": "tools/call",
+      "params": {
+        "name": "create_item",
+        "arguments": {
+          "n": 1
+        }
+      }
+    },
+    {
+      "expect": "wire",
+      "index": 0
+    },
+    {
+      "do": "abort",
+      "target": "c1"
+    }
+  ],
+  "expect": {
+    "outcome": {
+      "c1": {
+        "kind": "uncertain-write",
+        "uncertain.method": "tools/call",
+        "uncertain.name": "create_item",
+        "uncertain.evidence": "cancelled"
+      }
+    },
+    "wire": {
+      "totalRequests": 1
+    }
+  },
+  "mutants": [
+    "treat-all-methods-read-only"
+  ]
+}

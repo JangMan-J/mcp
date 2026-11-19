@@ -1,0 +1,72 @@
+{
+  "id": "ver/unsupported-no-mutual",
+  "requirements": [
+    "VER-3"
+  ],
+  "pin": "tag",
+  "source": [
+    "S/basic/versioning.md#Protocol Version Negotiation"
+  ],
+  "tier": "A",
+  "binding": "stdio",
+  "client": {
+    "setup": {
+      "supportedVersions": [
+        "2026-07-28"
+      ],
+      "timeoutMs": 1000
+    },
+    "clock": "fake"
+  },
+  "script": [
+    {
+      "do": "call",
+      "as": "c1",
+      "method": "tools/list"
+    },
+    {
+      "expect": "wire",
+      "index": 0
+    },
+    {
+      "server": "error",
+      "for": "c1",
+      "error": {
+        "code": -32022,
+        "message": "Unsupported protocol version",
+        "data": {
+          "requested": "2026-07-28",
+          "supported": [
+            "2025-11-25"
+          ]
+        }
+      }
+    },
+    {
+      "advance": 1000
+    }
+  ],
+  "expect": {
+    "outcome": {
+      "c1": {
+        "kind": "unsupported-version",
+        "detail.observed": "modern-error",
+        "detail.supported": [
+          "2025-11-25"
+        ],
+        "detail.requested": "2026-07-28",
+        "meta.attempts": 1
+      }
+    },
+    "wire": {
+      "totalRequests": 1,
+      "never": [
+        "initialize"
+      ]
+    }
+  },
+  "mutants": [
+    "no-unsupported-version-mapping",
+    "claim-unimplemented-version"
+  ]
+}

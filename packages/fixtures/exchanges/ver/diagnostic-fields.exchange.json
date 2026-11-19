@@ -1,0 +1,59 @@
+{
+  "id": "ver/diagnostic-fields",
+  "requirements": [
+    "VER-DIAG-1",
+    "VER-NOFALLBACK-1"
+  ],
+  "pin": "tag",
+  "source": [
+    "S/basic/versioning.md#Compatibility Matrix"
+  ],
+  "tier": "A",
+  "binding": "stdio",
+  "client": {
+    "clock": "fake"
+  },
+  "script": [
+    {
+      "do": "probe",
+      "as": "p1"
+    },
+    {
+      "expect": "wire",
+      "index": 0,
+      "match": {
+        "method": "server/discover"
+      }
+    },
+    {
+      "server": "error",
+      "for": "p1",
+      "error": {
+        "code": -32601,
+        "message": "Method not found"
+      }
+    }
+  ],
+  "expect": {
+    "outcome": {
+      "p1": {
+        "era": "legacy-or-unresponsive",
+        "diagnostic.binding": "stdio",
+        "diagnostic.endpointOrCommand": "conformance-inproc",
+        "diagnostic.requested": "2026-07-28",
+        "diagnostic.observed": "other-error",
+        "diagnostic.evidence": "-32601 Method not found"
+      }
+    },
+    "wire": {
+      "totalRequests": 1,
+      "never": [
+        "initialize",
+        "notifications/initialized"
+      ]
+    }
+  },
+  "mutants": [
+    "classify-any-discover-reply-modern"
+  ]
+}

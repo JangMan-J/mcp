@@ -1,4 +1,4 @@
-import type { ClientRequest, Outcome } from "@mcp-client/core";
+import type { ClientRequest, JsonRpcNotification, Outcome, ProgressEvent } from "@mcp-client/core";
 import { loadExchangeFiles, type ExchangeFixture } from "@mcp-client/fixtures";
 import { createCoreAdapter, type HarnessAdapter } from "./adapter.js";
 
@@ -65,28 +65,83 @@ export async function runOneFixture(
   const handles = new Map<string, ClientRequest<unknown>>();
   const settled = new Map<string, Outcome<unknown>>();
   const captures = new Map<string, unknown>();
+  // S1.1 additions: progress logs per call, era probes, injected notifications.
+  const progressLog = new Map<string, ProgressEvent[]>();
+  const probes = new Map<string, Promise<unknown>>();
+  const probeResults = new Map<string, unknown>();
 
   const flushMicrotasks = async () => {
     for (let i = 0; i < 6; i++) {
       await Promise.resolve();
     }
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  };
+
+  const resolveId = (raw: unknown): string | number | undefined => {
+    if (typeof raw === "string" && raw.startsWith("$")) {
+      const cap = captures.get(raw.slice(1));
+      return typeof cap === "string" || typeof cap === "number" ? cap : undefined;
+    }
+    return typeof raw === "string" || typeof raw === "number" ? raw : undefined;
   };
 
   try {
     for (const step of fixture.script) {
+      const loose = step as unknown as Record<string, unknown>;
+      if (loose["do"] === "abort") {
+        const target = handles.get(String(loose["target"]));
+        if (!target) throw new Error(`abort step: unknown call '${String(loose["target"])}'`);
+        target.cancel(typeof loose["reason"] === "string" ? loose["reason"] : "aborted-by-fixture");
+        await flushMicrotasks();
+        continue;
+      }
+      if (loose["do"] === "probe") {
+        const name = String(loose["as"]);
+        const p = harness.client.probe().then((r) => {
+          probeResults.set(name, r);
+          return r;
+        });
+        p.catch(() => {});
+        probes.set(name, p);
+        await flushMicrotasks();
+        continue;
+      }
+      if (loose["server"] === "notify") {
+        let targetId = resolveId(loose["id"]);
+        if (targetId === undefined && typeof loose["for"] === "string") {
+          targetId = handles.get(loose["for"])?.id;
+        }
+        if (targetId === undefined) throw new Error("notify step could not resolve target request id");
+        if (!harness.notify) throw new Error("adapter does not support server notifications");
+        harness.notify(targetId, loose["notification"] as JsonRpcNotification);
+        await flushMicrotasks();
+        continue;
+      }
       if ("do" in step && step.do === "call") {
         const ac = new AbortController();
         if (step.abortBeforeSend) {
           ac.abort("aborted-before-send");
         }
+        const events: ProgressEvent[] = [];
+        progressLog.set(step.as, events);
         const handle = harness.call(step.method, step.params ?? {}, {
           signal: ac.signal,
           ...(step.idempotent !== undefined ? { idempotent: step.idempotent } : {}),
+          ...(typeof loose["timeoutMs"] === "number" ? { timeoutMs: loose["timeoutMs"] } : {}),
+          ...(loose["progress"] === true ? { onProgress: (e: ProgressEvent) => events.push(e) } : {}),
+          ...(typeof loose["meta"] === "object" && loose["meta"] !== null
+            ? { meta: loose["meta"] as Record<string, unknown> }
+            : {}),
         });
         handles.set(step.as, handle);
-        void Promise.resolve(handle).then((out) => {
-          settled.set(step.as, out);
-        });
+        void Promise.resolve(handle).then(
+          (out) => {
+            settled.set(step.as, out);
+          },
+          () => {
+            // The rejection surfaces when the handle is awaited below; avoid an unhandled rejection.
+          },
+        );
         await flushMicrotasks();
       } else if ("expect" in step && step.expect === "wire") {
         await flushMicrotasks();
@@ -146,13 +201,18 @@ export async function runOneFixture(
       }
     }
 
+    for (const [name, p] of probes.entries()) {
+      if (!probeResults.has(name)) probeResults.set(name, await p);
+    }
+
     if (fixture.expect.outcome) {
       for (const [callName, expectedFields] of Object.entries(fixture.expect.outcome)) {
         const actual = settled.get(callName);
-        if (!actual) {
+        const probeResult = probeResults.get(callName);
+        if (!actual && probeResult === undefined) {
           throw new Error(`Missing outcome for call '${callName}'`);
         }
-        const actualJson = harness.outcomeJson(actual);
+        const actualJson = actual ? harness.outcomeJson(actual) : (probeResult as Record<string, unknown>);
         for (const [k, v] of Object.entries(expectedFields)) {
           const got = getByDotPath(actualJson, k);
           if (JSON.stringify(got) !== JSON.stringify(v)) {
@@ -164,8 +224,49 @@ export async function runOneFixture(
       }
     }
 
+    const looseExpect = fixture.expect as unknown as Record<string, unknown>;
+    const expectProgress = looseExpect["progress"] as Record<string, readonly number[]> | undefined;
+    if (expectProgress) {
+      for (const [callName, values] of Object.entries(expectProgress)) {
+        const got = (progressLog.get(callName) ?? []).map((e) => e.progress);
+        if (JSON.stringify(got) !== JSON.stringify(values)) {
+          throw new Error(`Progress mismatch for ${callName}: expected ${JSON.stringify(values)}, got ${JSON.stringify(got)}`);
+        }
+      }
+    }
+    const expectStats = looseExpect["stats"] as Record<string, unknown> | undefined;
+    if (expectStats) {
+      const stats = harness.client.wireStats();
+      for (const [path, v] of Object.entries(expectStats)) {
+        const got = getByDotPath(stats, path);
+        if (JSON.stringify(got) !== JSON.stringify(v)) {
+          throw new Error(`Stats mismatch at ${path}: expected ${JSON.stringify(v)}, got ${JSON.stringify(got)}`);
+        }
+      }
+    }
+    const expectNotifications = looseExpect["notifications"] as Record<string, number> | undefined;
+    if (expectNotifications) {
+      for (const [callName, count] of Object.entries(expectNotifications)) {
+        const handle = handles.get(callName);
+        if (!handle) throw new Error(`notifications expectation: unknown call '${callName}'`);
+        let n = 0;
+        for await (const _ of handle.notifications) n += 1;
+        if (n !== count) {
+          throw new Error(`Notification count mismatch for ${callName}: expected ${count}, got ${n}`);
+        }
+      }
+    }
+
     if (fixture.expect.wire) {
       const sentList = harness.transport.sent;
+      if (fixture.expect.wire.count) {
+        for (const [method, count] of Object.entries(fixture.expect.wire.count)) {
+          const got = sentList.filter((s) => s.request.method === method).length;
+          if (got !== count) {
+            throw new Error(`Wire count mismatch for ${method}: expected ${count}, got ${got}`);
+          }
+        }
+      }
       if (
         fixture.expect.wire.totalRequests !== undefined &&
         sentList.length !== fixture.expect.wire.totalRequests
