@@ -100,6 +100,42 @@ describe("built-in 2020-12 validator (OPS-SCHEMA-1)", () => {
     check({ type: "object", properties: { child: { $ref: "#" } } }, [{ child: { child: {} } }], [{ child: [] }]);
   });
 
+  it("unknown annotations, x-* keywords and formats are accepted (Ajv strict:false)", () => {
+    check({ type: "string", "x-mcp-header": "X-Foo", "x-vendor": { a: 1 }, format: "email", title: "t" }, ["not-an-email"], [1]);
+    check({ format: "made-up-format" }, ["x"], []);
+  });
+
+  it("required checks own properties only", () => {
+    check({ required: ["toString", "constructor"] }, [{ toString: 1, constructor: 2 }], [{}]);
+  });
+
+  it("$dynamicRef / $dynamicAnchor and unevaluatedProperties through $ref", () => {
+    check(
+      {
+        $dynamicAnchor: "node",
+        type: "object",
+        properties: { kids: { type: "array", items: { $dynamicRef: "#node" } } },
+      },
+      [{ kids: [{ kids: [] }] }],
+      [{ kids: [1] }],
+    );
+    check(
+      { $defs: { base: { properties: { a: true } } }, $ref: "#/$defs/base", unevaluatedProperties: false },
+      [{ a: 1 }],
+      [{ a: 1, b: 2 }],
+    );
+  });
+
+  it("maps false-schema and type issues to the stable shape", () => {
+    const c = v.compile({ properties: { a: false, b: { type: ["string", "null"] } } });
+    if (!c.ok) throw new Error("compile");
+    expect(c.validate({ a: 1, b: 1.5 }).errors).toEqual([
+      { path: "/a", keyword: "false", message: "schema is false" },
+      { path: "/b", keyword: "type", message: "expected string|null, got number" },
+    ]);
+    expect(c.validate({ b: null })).toEqual({ valid: true, errors: [] });
+  });
+
   it("reports issue paths and keywords", () => {
     const c = v.compile({ properties: { a: { items: { type: "string" } } } });
     if (!c.ok) throw new Error("compile");
@@ -171,12 +207,40 @@ describe("schema rejection", () => {
     expect(tight.compile({ properties: { a: { items: {} } } }).ok).toBe(false);
   });
 
-  it("$ref cycles without progress terminate at validation time", () => {
-    const c = v.compile({ $defs: { a: { $ref: "#/$defs/b" }, b: { $ref: "#/$defs/a" } }, $ref: "#/$defs/a" });
+  it("$ref cycles without progress terminate (pure-ref cycles at compile, others at validation)", () => {
+    const pure = v.compile({ $defs: { a: { $ref: "#/$defs/b" }, b: { $ref: "#/$defs/a" } }, $ref: "#/$defs/a" });
+    expect(pure).toMatchObject({ ok: false, reason: "invalid-schema", message: expect.stringContaining("depth") });
+
+    const c = v.compile({ $defs: { a: { $ref: "#/$defs/b", type: "integer" }, b: { $ref: "#/$defs/a" } }, $ref: "#/$defs/a" });
     if (!c.ok) throw new Error(c.message);
     const r = c.validate(1);
     expect(r.valid).toBe(false);
     expect(r.errors[0]!.message).toContain("depth");
+  });
+
+  it("deeply nested instances against a recursive schema terminate", () => {
+    const c = v.compile({ items: { $ref: "#" } });
+    if (!c.ok) throw new Error(c.message);
+    let deep: unknown = [];
+    for (let i = 0; i < 200_000; i++) deep = [deep];
+    const r = c.validate(deep);
+    expect(r.valid).toBe(false);
+    expect(r.errors[0]).toMatchObject({ keyword: "$ref", message: expect.stringContaining("depth") });
+  });
+
+  it("$id collisions cannot shadow the meta-schema or other tools' schemas (Ajv regression)", () => {
+    // A hostile root $id equal to the meta-schema URI must not disable meta validation later.
+    expect(v.compile({ $id: DIALECT_2020_12, type: "string" }).ok).toBe(true);
+    expect(v.compile({ type: "bogus" })).toMatchObject({ ok: false, reason: "invalid-schema" });
+    // Two tools with the same root $id compile independently.
+    check({ $id: "urn:example:same", type: "string" }, ["a"], [1]);
+    check({ $id: "urn:example:same", type: "integer" }, [1], ["a"]);
+    check({ $defs: { e: { $id: "urn:example:e", type: "null" } }, $ref: "urn:example:e" }, [null], [true]);
+  });
+
+  it("external $ref is never fetched, even once compiled elsewhere (Ajv regression)", () => {
+    const c = v.compile({ $ref: "https://json-schema.org/draft/2020-12/schema" });
+    expect(c).toMatchObject({ ok: false, reason: "invalid-schema", message: expect.stringContaining("never resolved") });
   });
 
   it("the SchemaValidator seam accepts another implementation", () => {

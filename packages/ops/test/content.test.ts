@@ -168,7 +168,7 @@ describe("ops package boundary", () => {
       for (const m of txt.matchAll(/\bfrom\s+"([^"]+)"/g)) {
         const spec = m[1]!;
         expect(
-          spec === "@mcp-client/core" || spec === "ajv/dist/2020" || spec.startsWith("./"),
+          spec === "@mcp-client/core" || spec === "ajv/dist/2020.js" || spec.startsWith("./"),
           `${f} imports ${spec}`,
         ).toBe(true);
       }
