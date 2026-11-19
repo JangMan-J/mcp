@@ -1,0 +1,26 @@
+{
+  "runner": {
+    "repository": "https://github.com/modelcontextprotocol/conformance",
+    "package": "@modelcontextprotocol/conformance",
+    "tag": "v0.1.16",
+    "commit": "21a9a2febd7100d7c17ac1021ee7f2ed9f66a1e0",
+    "source": "docs/conformance/PINS.md (conformance release row); tag README only",
+    "cacheDir": ".cache/conformance/v0.1.16",
+    "entry": "node_modules/@modelcontextprotocol/conformance/dist/index.js",
+    "clientArgs": ["client", "--command", "{cut}", "--scenario", "{scenario}"],
+    "readmeNote": "Tag README has no 2026-07-28 and its client example is `--scenario initialize`; that example targets a legacy-era handshake and is not counted."
+  },
+  "targetSpecVersion": "2026-07-28",
+  "cut": "packages/conformance/dist/cut/main.js",
+  "catalog": {
+    "selected": false,
+    "reason": "No 2026-07-28 client scenario catalog is selected at pin v0.1.16 (docs/conformance/PINS.md: Not pinned)."
+  },
+  "scenarios": [],
+  "legacy": [
+    {
+      "id": "initialize",
+      "reason": "Pinned README client example; legacy initialize handshake, excluded by VER-NOFALLBACK-1. Never counted."
+    }
+  ]
+}
