@@ -310,6 +310,33 @@ describe("gate", () => {
     expect(run("secret-scan.mjs", dir, "--log", log).status).toBe(0);
   });
 
+  it("network-scan excludes server stimulus messages but checks destinations", () => {
+    const dir = mkdtempSync(join(tmpdir(), "network-stimulus-"));
+    const file = join(dir, "transcript.json");
+    const script = fileURLToPath(new URL("../../../scripts/network-scan.mjs", import.meta.url));
+    const scan = (doc: unknown) => {
+      writeFileSync(file, JSON.stringify(doc));
+      return spawnSync(process.execPath, [script, file], { encoding: "utf8" });
+    };
+    try {
+      const message = { params: { nested: ["https://remote.example/path"] } };
+      expect(scan({ mcpEndpoint: "http://localhost/mcp", frames: [{ direction: "server", message }] }).status).toBe(0);
+      for (const doc of [
+        { frames: [{ direction: "client", message }] },
+        { mcpEndpoint: "https://remote.example/mcp", frames: [] },
+        { frames: [{ direction: "server", url: "https://remote.example" }] },
+        { frames: [{ direction: "server", headers: { location: "https://remote.example" } }] },
+        { frames: [{ direction: "client", headers: { location: "https://remote.example" } }] },
+      ]) {
+        const result = scan(doc);
+        expect(result.status).toBe(1);
+        expect(result.stderr).toContain("remote.example");
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("validates sha from option, GATE_SHA and git", () => {
     const b = base();
     expect(() => runGate({ ...b.opts, sha: "abc" })).toThrow(/invalid sha/);

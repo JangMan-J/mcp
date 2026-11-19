@@ -4,8 +4,9 @@
 // Usage: node scripts/network-scan.mjs <file-or-dir>...
 //
 // Rules:
-// - Every frame (client and server) is inspected: frame.url, the transcript's mcpEndpoint, and every string
-//   anywhere in frame.message / frame.headers that parses as an absolute http(s)/ws(s) URL.
+// - Inspect mcpEndpoint and every frame's url and headers for absolute http(s)/ws(s) URLs.
+//   Inspect client frame messages too, but not server messages: server JSON-RPC stimuli are test inputs,
+//   whereas client frames provide evidence of destinations contacted.
 // - A host is loopback when it is `localhost` (or `*.localhost`), an IPv4 address in 127.0.0.0/8, or `::1`.
 //   Any other host is an offender. Hosts in reserved example domains are NOT exempt.
 // - Unparseable JSON or a file without a `frames` array is an error (fails closed). Zero files is an error.
@@ -49,7 +50,7 @@ export function scanTranscript(doc, label = "<input>") {
   for (const h of top) if (!isLoopback(h)) offenders.push(`${label}: mcpEndpoint: ${h}`);
   doc.frames.forEach((f, i) => {
     const hs = [];
-    hostsIn([f?.url, f?.message, f?.headers], hs);
+    hostsIn([f?.url, f?.headers, ...(f?.direction === "server" ? [] : [f?.message])], hs);
     for (const h of hs) if (!isLoopback(h)) offenders.push(`${label}: frame ${i}: ${h}`);
   });
   return { offenders, errors };
