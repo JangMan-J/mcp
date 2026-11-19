@@ -5,7 +5,7 @@ import { loadExchangeFiles, type ExchangeFixture } from "@mcp-client/fixtures";
 import { createCoreAdapter, type HarnessAdapter } from "./adapter.js";
 import { runTierAProvider } from "./tier-a.js";
 import { runTierBAuthFixture } from "./tier-b-auth.js";
-import { runTierBFixture } from "./tier-b.js";
+import { runTierBFixture, runTierBTransportFixture } from "./tier-b.js";
 
 class ObservationMismatch extends Error {}
 const coreAreas = new Set(["wire", "ver", "prog", "smoke"]);
@@ -426,6 +426,13 @@ async function runSelectedFixture(fixture: ExchangeFixture, adapter?: HarnessAda
     if (sub) {
       const { mutationKilled: _killed, ...clean } = sub;
       return clean;
+    }
+    const transport = await runTierBTransportFixture(fixture, mutant);
+    if (transport) {
+      if (mutant === undefined) {
+        writeTranscript({ fixture: fixture.id, frames: [], incomplete: ["provider-owned fixture: frames are not observed by the conformance runner"] });
+      }
+      return transport;
     }
   }
   return {
