@@ -7,10 +7,18 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
+import { ALL_EXTENSIONS } from "../src/gate.js";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const PKGS = join(ROOT, "packages");
-const EXT_PKGS = readdirSync(PKGS).filter((n) => n.startsWith("ext-")).sort();
+// Explicit list, not readdir: other tests create temporary packages/ext-* dirs concurrently.
+const EXT_PKGS = [...ALL_EXTENSIONS].sort();
+
+describe("extension package list", () => {
+  it("every listed ext-* package directory exists", () => {
+    for (const p of EXT_PKGS) expect(existsSync(join(PKGS, p, "package.json")), `${p} exists`).toBe(true);
+  });
+});
 
 function srcFiles(dir: string): string[] {
   if (!existsSync(dir)) return [];
