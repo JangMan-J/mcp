@@ -12,6 +12,6 @@ export async function runTierBFixture(fixture: ExchangeFixture, mutant?: string)
     await runBinding(fixture, mutant);
     return { ...result, ok: true };
   } catch (error) {
-    return { ...result, ok: false, ...(mutant && error instanceof ObservationMismatch ? { mutationKilled: true } : {}), error: error instanceof Error ? error.message : String(error) };
+    return { ...result, ok: false, ...(error instanceof ObservationMismatch ? { failure: "assertion" as const, ...(mutant ? { mutationKilled: true } : {}) } : {}), error: error instanceof Error ? error.message : String(error) };
   }
 }

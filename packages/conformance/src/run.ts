@@ -2,6 +2,8 @@ import type { ClientRequest, JsonRpcNotification, Outcome, ProgressEvent } from 
 import { loadExchangeFiles, type ExchangeFixture } from "@mcp-client/fixtures";
 import { createCoreAdapter, type HarnessAdapter } from "./adapter.js";
 import { runTierAProvider } from "./tier-a.js";
+import { runTierBAuthFixture } from "./tier-b-auth.js";
+import { runTierBFixture } from "./tier-b.js";
 
 class ObservationMismatch extends Error {}
 const coreAreas = new Set(["wire", "ver", "prog", "smoke"]);
@@ -331,6 +333,15 @@ async function runSelectedFixture(fixture: ExchangeFixture, adapter?: HarnessAda
         return { id: fixture.id, ok: false, error: "empty core script" };
       }
       return runOneFixture(fixture, createCoreAdapter(), mutant);
+    }
+  }
+  if (fixture.tier === "B") {
+    const auth = await runTierBAuthFixture(fixture, mutant);
+    if (auth) return auth;
+    const sub = await runTierBFixture(fixture, mutant);
+    if (sub) {
+      const { mutationKilled: _killed, ...clean } = sub;
+      return clean;
     }
   }
   return {
