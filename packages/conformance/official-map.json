@@ -2,24 +2,42 @@
   "runner": {
     "repository": "https://github.com/modelcontextprotocol/conformance",
     "package": "@modelcontextprotocol/conformance",
+    "version": "0.1.16",
     "tag": "v0.1.16",
     "commit": "21a9a2febd7100d7c17ac1021ee7f2ed9f66a1e0",
     "source": "docs/conformance/PINS.md (conformance release row); tag README only",
-    "cacheDir": ".cache/conformance/v0.1.16",
-    "entry": "node_modules/@modelcontextprotocol/conformance/dist/index.js",
+    "checkoutDir": ".cache/conformance/checkout",
     "clientArgs": ["client", "--command", "{cut}", "--scenario", "{scenario}"],
     "readmeNote": "Tag README has no 2026-07-28 and its client example is `--scenario initialize`; that example targets a legacy-era handshake and is not counted."
   },
   "targetSpecVersion": "2026-07-28",
-  "cut": "packages/conformance/dist/cut/main.js",
+  "cut": {
+    "authorized": false,
+    "path": null,
+    "reason": "No client-under-test entrypoint is authorized for a 2026-07-28 official run."
+  },
   "catalog": {
     "selected": false,
+    "authorizedBy": null,
     "reason": "No 2026-07-28 client scenario catalog is selected at pin v0.1.16 (docs/conformance/PINS.md: Not pinned)."
+  },
+  "resultSchema": null,
+  "resultSchemaReason": "The pinned README documents no machine-readable per-scenario result JSON; exit codes alone are not evidence.",
+  "eligibility": {
+    "specVersion": "2026-07-28",
+    "requires": { "legacy": false, "experimental": false, "extension": false, "disputed": false },
+    "note": "Only scenarios whose entry states every flag explicitly and matches `requires` count toward a core claim."
   },
   "scenarios": [],
   "legacy": [
     {
       "id": "initialize",
+      "specVersion": null,
+      "legacy": true,
+      "experimental": false,
+      "extension": false,
+      "disputed": false,
+      "requirements": [],
       "reason": "Pinned README client example; legacy initialize handshake, excluded by VER-NOFALLBACK-1. Never counted."
     }
   ]
