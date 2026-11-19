@@ -1,0 +1,38 @@
+{
+  "id": "ext/ema/resource-matches-prm",
+  "requirements": [
+    "EXT-ema-6"
+  ],
+  "pin": "ext-page",
+  "source": [
+    "specification/stable/enterprise-managed-authorization/2026-07-28/enterprise-managed-authorization.mdx"
+  ],
+  "tier": "A",
+  "binding": "http",
+  "client": {},
+  "script": [
+    {
+      "do": "exchange"
+    }
+  ],
+  "expect": {
+    "header": "Bearer fixture-access-1",
+    "error": null,
+    "fetches": [
+      "GET https://mcp.test/.well-known/oauth-protected-resource/rpc",
+      "GET https://as.test/.well-known/oauth-authorization-server/tenant",
+      "GET https://idp.test/.well-known/oauth-authorization-server/tenant",
+      "POST https://idp.test/token",
+      "POST https://as.test/token"
+    ],
+    "idpForm": {
+      "resource": "https://mcp.test/rpc"
+    },
+    "asForm": {
+      "resource": "https://mcp.test/rpc"
+    }
+  },
+  "mutants": [
+    "wrong-resource"
+  ]
+}

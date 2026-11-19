@@ -1,0 +1,30 @@
+{
+  "id": "ext/ema/idp-endpoint-ssrf-guard",
+  "requirements": [
+    "EXT-ema-12"
+  ],
+  "pin": "ext-page",
+  "source": [
+    "specification/stable/enterprise-managed-authorization/2026-07-28/enterprise-managed-authorization.mdx"
+  ],
+  "tier": "A",
+  "binding": "http",
+  "client": {
+    "idpIssuer": "https://169.254.169.254/latest",
+    "idpTokenEndpoint": "https://169.254.169.254/token"
+  },
+  "script": [
+    {
+      "do": "exchange"
+    }
+  ],
+  "expect": {
+    "header": null,
+    "error": "auth-failure/ssrf-blocked",
+    "fetches": [],
+    "identityCalls": 0
+  },
+  "mutants": [
+    "ssrf-bypass"
+  ]
+}
