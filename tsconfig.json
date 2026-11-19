@@ -6,6 +6,8 @@
     { "path": "./packages/conformance" },
     { "path": "./packages/transport-stdio" },
     { "path": "./packages/transport-http" },
-    { "path": "./packages/ops" }
+    { "path": "./packages/ops" },
+    { "path": "./packages/auth" },
+    { "path": "./packages/mrtr-cache" }
   ]
 }
