@@ -1,9 +1,8 @@
 import { expect, it } from "vitest";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadExchangeFiles } from "@mcp-client/fixtures";
 import { runConformance } from "../src/run.js";
 
 const fixture = { id: "unregistered/x", tier: "B", script: [], expect: {}, mutants: ["broken"] };
@@ -18,23 +17,13 @@ async function run(fx: typeof fixture, mutate = false) {
   }
 }
 
-// The isolated card build may not have either provider. In the assembled workspace,
-// use each provider's own exchange (including its mutant) through the public runner.
-it.each(["auth", "mrtr", "elic", "sub", "cache"])("loads the compiled provider for %s", async area => {
-  const provider = area === "auth" ? "auth" : "mrtr-cache";
-  const dir = fileURLToPath(new URL(`../../fixtures/exchanges/${area}/`, import.meta.url));
-  if (!existsSync(dir)) {
-    const summary = await run({ ...fixture, id: `${area}/unavailable` }, true);
-    expect(summary.results[0]).toMatchObject({
-      ok: false, error: expect.stringContaining(`@mcp-client/${provider}/conformance`),
-    });
-    return;
+it.each(["auth", "consent", "mrtr", "elic", "sub", "cache"])("runs Tier A %s exchanges and kills their mutants", async area => {
+  const exchangesDir = fileURLToPath(new URL("../../fixtures/exchanges/", import.meta.url));
+  for (const mutate of [false, true]) {
+    const summary = await runConformance({ exchangesDir, tier: "A", area, mutate });
+    expect(summary.ok, JSON.stringify(summary.results.filter(r => !r.ok))).toBe(true);
+    expect(summary.passed).toBeGreaterThan(0);
   }
-  const fx = loadExchangeFiles(dir).find(f => f.tier === "B");
-  expect(fx, `no Tier B exchange for ${area}`).toBeDefined();
-  const summary = await runConformance({ exchangesDir: dir, idGlob: fx!.id, mutate: true });
-  expect(summary.ok, JSON.stringify(summary.results)).toBe(true);
-  expect(summary.passed).toBeGreaterThan(0);
 });
 
 it("rejects an unknown Tier B area rather than passing an empty script", async () => {

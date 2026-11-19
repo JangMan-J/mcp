@@ -58,12 +58,11 @@ export async function runOneFixture(
   mutant?: string,
 ): Promise<FixtureResult> {
   const area = fixture.id.split("/", 1)[0]!;
-  if (fixture.tier === "B" && !["ops", "stdio", "http"].includes(area)) {
-    const specifier = ["mrtr", "elic", "sub", "cache"].includes(area)
-      ? "@mcp-client/mrtr-cache/conformance"
-      : ["auth", "consent"].includes(area) ? "@mcp-client/auth/conformance" : undefined;
+  const specifier = ["mrtr", "elic", "sub", "cache"].includes(area)
+    ? "@mcp-client/mrtr-cache/conformance"
+    : ["auth", "consent"].includes(area) ? "@mcp-client/auth/conformance" : undefined;
+  if (specifier) {
     const result = { id: fixture.id, ...(mutant ? { mutant } : {}) };
-    if (!specifier) return { ...result, ok: false, error: `Unknown Tier B fixture area '${area}'` };
     try {
       const runner = await import(specifier);
       if (typeof runner.runExchange !== "function") throw new Error("missing runExchange export");
@@ -72,6 +71,10 @@ export async function runOneFixture(
     } catch (err) {
       return { ...result, ok: false, error: `${specifier}: ${err instanceof Error ? err.message : String(err)}` };
     }
+  }
+
+  if (fixture.tier === "B" && !["ops", "stdio", "http"].includes(area)) {
+    return { id: fixture.id, ...(mutant ? { mutant } : {}), ok: false, error: `Unknown Tier B fixture area '${area}'` };
   }
 
   const harness = adapter.create({
