@@ -16,7 +16,7 @@ import {
   type RequestId,
   type RequestOptions,
   type Transport,
-} from "../../core/dist/index.js";
+} from "@mcp-client/core";
 import { InprocTransport, type InprocMutants } from "@mcp-client/fixtures";
 
 export interface HarnessClock extends Clock {

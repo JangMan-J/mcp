@@ -13,8 +13,10 @@
     }
   },
   "dependencies": {
+    "@mcp-client/auth": "*",
     "@mcp-client/core": "*",
-    "@mcp-client/fixtures": "*"
+    "@mcp-client/fixtures": "*",
+    "@mcp-client/mrtr-cache": "*"
   },
   "scripts": {
     "build": "tsc -b"
