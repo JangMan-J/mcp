@@ -49,6 +49,10 @@ export interface RequestOptions {
   readonly timeoutMs?: number;
   readonly onProgress?: (p: ProgressEvent) => void;
   readonly idempotent?: boolean;
+  /** HTTP-AMBIG-3: required (true) to re-issue a request after an uncertain-write. */
+  readonly acceptDuplicate?: boolean;
+  /** HTTP-AMBIG-3: original request id when re-issuing after an uncertain-write. */
+  readonly retryOf?: RequestId;
   readonly meta?: Record<string, unknown>;
   readonly mrtr?: "auto" | "manual";
   readonly headersHint?: {
@@ -231,7 +235,17 @@ export class RequestManager {
       method,
       binding: this.transport.binding,
       attempts,
+      ...(opts.retryOf !== undefined ? { retryOf: opts.retryOf } : {}),
     });
+
+    // HTTP-AMBIG-3: re-issue after uncertain-write is opt-in; refuse locally, nothing sent.
+    if (opts.retryOf !== undefined && opts.acceptDuplicate !== true) {
+      return {
+        kind: "local-error",
+        detail: { reason: "accept-duplicate-required", retryOf: opts.retryOf },
+        meta: baseMeta(firstId, 0),
+      };
+    }
 
     if (this.closed) {
       return {
@@ -282,6 +296,7 @@ export class RequestManager {
       this.inFlight.add(ac);
       let cancelTimer: (() => void) | undefined;
       let timedOut = false;
+      let observedTask: Record<string, unknown> | undefined;
 
       try {
         const exchange = this.transport.start(req, {
@@ -296,6 +311,8 @@ export class RequestManager {
         const pump = (async () => {
           for await (const n of exchange.notifications) {
             notificationsBuf.push(n);
+            const np = n.params as Record<string, unknown> | undefined;
+            if (np && typeof np["taskId"] === "string") observedTask = np;
             if (n.method === "notifications/progress" && opts.onProgress && n.params) {
               const p = n.params as Record<string, unknown>;
               const ev: ProgressEvent = {
@@ -333,6 +350,7 @@ export class RequestManager {
               sentAt: this.clock.now(),
               binding: this.transport.binding,
               evidence: "timeout",
+              ...(observedTask ? { taskHandle: observedTask } : {}),
             };
             return { kind: "uncertain-write", uncertain, meta: baseMeta(currentId, attempts) };
           }
@@ -355,6 +373,7 @@ export class RequestManager {
                 sentAt: this.clock.now(),
                 binding: this.transport.binding,
                 evidence: "cancelled",
+                ...(observedTask ? { taskHandle: observedTask } : {}),
               };
               return { kind: "uncertain-write", uncertain, meta: baseMeta(currentId, attempts) };
             }
@@ -381,6 +400,7 @@ export class RequestManager {
               sentAt: this.clock.now(),
               binding: this.transport.binding,
               evidence: race.failure.kind === "process-exit" ? "process-exit" : "stream-broken",
+              ...(observedTask ? { taskHandle: observedTask } : {}),
             };
             return { kind: "uncertain-write", uncertain, meta: baseMeta(currentId, attempts) };
           }

@@ -36,6 +36,8 @@ export interface UncertainWrite {
     | "stream-broken"
     | "status-5xx"
     | "truncated-json";
+  /** HTTP-AMBIG-4: task handle observed on the stream before it broke; kept for the tasks extension to poll. */
+  readonly taskHandle?: unknown;
 }
 
 export interface MrtrRound {
@@ -49,6 +51,8 @@ export interface OutcomeMeta {
   readonly method: string;
   readonly binding: string;
   readonly attempts: number;
+  /** HTTP-AMBIG-3: id of the original request this caller-opted re-issue duplicates. */
+  readonly retryOf?: RequestId;
   readonly cache?: "hit" | "miss" | "stale" | "bypass";
   readonly serverInfo?: { readonly name: string; readonly version: string; readonly title?: string };
   readonly trace?: readonly MrtrRound[];
