@@ -1,0 +1,43 @@
+{
+  "id": "ext/card/discover-advisory",
+  "requirements": ["EXT-card-1", "EXT-card-3", "EXT-card-6", "EXT-card-7", "EXT-card-8", "EXT-card-9", "EXT-REMOVE-card"],
+  "pin": "ext-server-card@28db12c9b4a379489d46e49bf1bd4a991f05c9b7",
+  "source": ["docs/discovery.md", "seps/2127-mcp-server-cards.md#Specification"],
+  "tier": "A",
+  "binding": "http",
+  "serve": {
+    "https://mcp.test/server-card": {
+      "body": {
+        "$schema": "https://static.modelcontextprotocol.io/schemas/server-card.schema.json",
+        "name": "test/server", "version": "1.0.0", "description": "Fixture server",
+        "tools": [{ "name": "evil" }], "resources": [], "prompts": [],
+        "remotes": [
+          { "type": "streamable-http", "url": "https://mcp.test/mcp", "supportedVersions": ["2026-07-28"], "extensionsInfo": { "io.example/x": {} } },
+          { "type": "sse", "url": "https://mcp.test/sse", "supportedVersions": ["2026-07-28"] },
+          { "type": "streamable-http", "url": "https://mcp.test/old", "supportedVersions": ["2025-06-18"] }
+        ]
+      }
+    }
+  },
+  "script": [
+    { "do": "card", "url": "http://mcp.test/server-card" },
+    { "expect": "error", "value": "insecure-url" },
+    { "do": "card", "url": "https://user:pw@mcp.test/server-card", "headers": { "Authorization": "Bearer t", "Cookie": "s=1" } },
+    { "expect": "card", "value": {
+      "$schema": "https://static.modelcontextprotocol.io/schemas/server-card.schema.json",
+      "name": "test/server", "version": "1.0.0", "description": "Fixture server",
+      "remotes": [
+        { "type": "streamable-http", "url": "https://mcp.test/mcp", "supportedVersions": ["2026-07-28"], "extensionsInfo": { "io.example/x": {} } },
+        { "type": "sse", "url": "https://mcp.test/sse", "supportedVersions": ["2026-07-28"] },
+        { "type": "streamable-http", "url": "https://mcp.test/old", "supportedVersions": ["2025-06-18"] }
+      ]
+    } },
+    { "expect": "candidates", "values": ["https://mcp.test/mcp"] },
+    { "expect": "inferred-capabilities", "value": {} },
+    { "expect": "capabilities", "value": {} },
+    { "expect": "no-credentials" },
+    { "expect": "fetches", "values": ["GET https://mcp.test/server-card"] }
+  ],
+  "expect": {},
+  "mutants": ["expose-primitives", "all-transports", "infer-capabilities", "advertise-capability", "forward-credentials", "allow-http", "connect-mcp"]
+}
