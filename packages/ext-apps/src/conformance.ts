@@ -13,17 +13,21 @@ function observe(label: string, actual: unknown, expected: unknown) {
   if (!isDeepStrictEqual(actual, expected)) throw new ObservationMismatch(`${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
 }
 const empty = { async *[Symbol.asyncIterator]() {} };
-export async function runExchange(fixture: unknown, mutant?: string): Promise<void> {
+export async function runExchange(fixture: unknown, mutant?: string): Promise<{frames: {direction: 'client' | 'server'; message: unknown}[]; zeroWire?: true}> {
   if (mutant && !supportsMutant(mutant)) throw new Error(`Unknown apps mutant: ${mutant}`);
   if (!isObj(fixture) || !Array.isArray(fixture['script']) || !isObj(fixture['expect'])) throw new Error('Invalid apps exchange');
   const steps = fixture['script'].filter(isObj);
   const wire: Record<string, number> = {};
+  const frames: {direction: 'client' | 'server'; message: unknown}[] = [];
   let reply: Record<string, unknown> = {};
   const transport: Transport = {
-    binding: 'stdio', diagnostics: empty, async notify() {}, async close() {},
+    binding: 'stdio', diagnostics: empty, async notify(msg) { frames.push({direction:'client', message: structuredClone(msg)}); }, async close() {},
     start(msg) {
+      frames.push({direction:'client', message: structuredClone(msg)});
       wire[msg.method] = (wire[msg.method] ?? 0) + 1;
-      return { notifications: empty, done: Promise.resolve({kind:'response', message:{jsonrpc:'2.0', id:msg.id, result:reply}}) };
+      const message = {jsonrpc:'2.0' as const, id:msg.id, result:structuredClone(reply)};
+      frames.push({direction:'server', message});
+      return { notifications: empty, done: Promise.resolve({kind:'response', message}) };
     },
   };
   const server = fixture['server'];
@@ -93,4 +97,5 @@ export async function runExchange(fixture: unknown, mutant?: string): Promise<vo
   observe('outcome', outcomes, fixture['expect']['outcome']);
   const expectedWire = fixture['expect']['wire'];
   if (isObj(expectedWire)) observe('wire count', wire, expectedWire['count']);
+  return frames.length ? {frames} : {frames, zeroWire: true};
 }

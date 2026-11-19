@@ -38,7 +38,7 @@ function malformed(): never {
 export async function runExchange(
   fixture: unknown,
   mutant?: string,
-): Promise<void> {
+): Promise<{ frames: { direction: "client" | "server"; message: unknown }[]; zeroWire?: true }> {
   if (mutant && !supportsMutant(mutant))
     throw new Error("Unknown Events mutant");
   if (
@@ -62,6 +62,7 @@ export async function runExchange(
     observations: unknown[] = [],
     frames: unknown[] = [],
     aborts: unknown[] = [];
+  const transcript: { direction: "client" | "server"; message: unknown }[] = [];
   const timers = new Map<() => void, number>();
   const clock: Clock = {
     now: () => time,
@@ -77,8 +78,9 @@ export async function runExchange(
     binding: "streamable-http",
     diagnostics: empty,
     async close() {},
-    async notify() {},
+    async notify(msg) { transcript.push({ direction: "client", message: structuredClone(msg) }); },
     start(req, ctx) {
+      transcript.push({ direction: "client", message: structuredClone(req) });
       const { _meta, ...params } = req.params ?? {};
       wire.push({
         method: req.method,
@@ -96,27 +98,22 @@ export async function runExchange(
             () => {
               aborts.push(time);
               q.close();
-              resolve({
-                kind: "response",
-                message: { jsonrpc: "2.0", id: req.id, result: {} },
-              });
+              const message = { jsonrpc: "2.0" as const, id: req.id, result: {} };
+              transcript.push({ direction: "server", message });
+              resolve({ kind: "response", message });
             },
             { once: true },
           ),
         );
         return { notifications: q, done };
       }
-      return {
-        notifications: empty,
-        done: Promise.resolve({
-          kind: "response" as const,
-          message: {
-            jsonrpc: "2.0" as const,
-            id: req.id,
-            result: { resultType: "complete", ...reply },
-          },
-        }),
+      const message = {
+        jsonrpc: "2.0" as const,
+        id: req.id,
+        result: { resultType: "complete", ...structuredClone(reply) },
       };
+      transcript.push({ direction: "server", message });
+      return { notifications: empty, done: Promise.resolve({ kind: "response" as const, message }) };
     },
   };
   const nextId = createMonotonicIdGenerator(),
@@ -206,14 +203,16 @@ export async function runExchange(
         case "frame":
           if (!queue || typeof s.method !== "string" || !object(s.params))
             malformed();
-          queue.push({
-            jsonrpc: "2.0",
+          const notification = {
+            jsonrpc: "2.0" as const,
             method: "notifications/events/" + s.method,
             params: {
               ...s.params,
               _meta: { "io.modelcontextprotocol/subscriptionId": streamId },
             },
-          });
+          };
+          transcript.push({ direction: "server", message: structuredClone(notification) });
+          queue.push(notification);
           break;
         case "cancel":
           push?.close();
@@ -282,4 +281,5 @@ export async function runExchange(
     client.dispose();
     await core.close();
   }
+  return transcript.length ? { frames: transcript } : { frames: transcript, zeroWire: true };
 }
