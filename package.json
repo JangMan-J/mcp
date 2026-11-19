@@ -6,7 +6,11 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "tsc -b",
+    "build": "node scripts/build-workspaces.mjs",
+    "remove:ext-client-credentials": "node scripts/check-remove-ext.mjs ext-client-credentials",
+    "remove:ext-enterprise-auth": "node scripts/check-remove-ext.mjs ext-enterprise-auth",
+    "remove:ext-tasks": "node scripts/check-remove-ext.mjs ext-tasks",
+    "remove:ext-skills": "node scripts/check-remove-ext.mjs ext-skills",
     "test": "vitest run",
     "req:build": "node scripts/req-build.mjs",
     "gen:schema": "node scripts/gen-schema-types.mjs",

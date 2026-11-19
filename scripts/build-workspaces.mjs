@@ -1,0 +1,83 @@
+#!/usr/bin/env node
+import { execFileSync } from "node:child_process";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { dirname, join, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const packagesDir = join(root, "packages");
+const linkDir = join(root, "node_modules", "@mcp-client");
+mkdirSync(linkDir, { recursive: true });
+
+const present = new Map(); // shortName -> dirName
+for (const entry of readdirSync(packagesDir, { withFileTypes: true })) {
+  if (!entry.isDirectory()) continue;
+  const pkgFile = join(packagesDir, entry.name, "package.json");
+  if (!existsSync(pkgFile)) continue;
+  try {
+    const pkg = JSON.parse(readFileSync(pkgFile, "utf8"));
+    if (typeof pkg.name === "string" && pkg.name.startsWith("@mcp-client/")) {
+      present.set(pkg.name.slice("@mcp-client/".length), entry.name);
+    }
+  } catch {}
+}
+
+// Remove stale/dangling links and ensure correct relative links.
+for (const entry of readdirSync(linkDir, { withFileTypes: true })) {
+  const p = join(linkDir, entry.name);
+  const dirName = present.get(entry.name);
+  if (!dirName) {
+    // Remove stale symlink (or stale entry) whose package was deleted.
+    try { if (lstatSync(p).isSymbolicLink() || entry.isSymbolicLink()) rmSync(p, { recursive: true, force: true }); } catch {}
+    continue;
+  }
+  const target = `../../packages/${dirName}`;
+  let ok = false;
+  try {
+    if (lstatSync(p).isSymbolicLink()) {
+      // readlink check via realpath resolving to expected dir
+      ok = realpathSync(p) === realpathSync(join(packagesDir, dirName));
+    }
+  } catch {}
+  if (!ok) {
+    rmSync(p, { recursive: true, force: true });
+    symlinkSync(target, p, "dir");
+  }
+}
+for (const [short, dirName] of present) {
+  const p = join(linkDir, short);
+  if (!existsSync(p)) symlinkSync(`../../packages/${dirName}`, p, "dir");
+}
+
+// Verify checkout-local.
+for (const entry of readdirSync(linkDir)) {
+  const p = join(linkDir, entry);
+  let real;
+  try { real = realpathSync(p); } catch { throw new Error(`build-workspaces: dangling @mcp-client link ${entry}`); }
+  const rel = relative(packagesDir, real);
+  if (rel.startsWith("..") || resolve(packagesDir, rel) !== real && rel === "") {}
+  if (rel.startsWith("..")) throw new Error(`build-workspaces: @mcp-client/${entry} resolves outside packages/: ${real}`);
+}
+
+// Run tsc -b
+const tscBin = join(root, "node_modules", "typescript", "bin", "tsc");
+const tscArgs = existsSync(tscBin) ? [tscBin] : null;
+function runTsc(args) {
+  if (tscArgs) execFileSync(process.execPath, [...tscArgs, ...args], { cwd: root, stdio: "inherit" });
+  else execFileSync(join(root, "node_modules", ".bin", "tsc"), args, { cwd: root, stdio: "inherit" });
+}
+runTsc(["-b", join(root, "tsconfig.json")]);
+
+let rootRefs = new Set();
+try {
+  const cfg = JSON.parse(readFileSync(join(root, "tsconfig.json"), "utf8"));
+  for (const r of cfg.references ?? []) rootRefs.add(resolve(root, r.path));
+} catch {}
+for (const dirName of [...present.values()].sort()) {
+  const dir = join(packagesDir, dirName);
+  const ts = join(dir, "tsconfig.json");
+  if (existsSync(ts) && !rootRefs.has(dir) && !rootRefs.has(ts)) {
+    runTsc(["-b", ts]);
+  }
+}
+console.log("build-workspaces: ok");

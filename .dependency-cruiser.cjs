@@ -62,6 +62,18 @@ module.exports = {
       to: { path: "^packages/ext-" }
     },
     {
+      name: "core-ops-transports-never-import-telemetry-otel",
+      severity: "error",
+      from: { path: "^packages/(core|ops|transport-|auth|mrtr-cache|ext-)/" },
+      to: { path: "^packages/telemetry-otel/" }
+    },
+    {
+      name: "ext-src-never-imports-transports",
+      severity: "error",
+      from: { path: "^packages/ext-[^/]+/src/" },
+      to: { path: "^packages/transport-" }
+    },
+    {
       name: "no-deep-cross-package-imports",
       severity: "error",
       from: { path: "^packages/([^/]+)/" },

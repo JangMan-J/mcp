@@ -356,7 +356,10 @@ export async function runConformance(opts: RunOptions): Promise<RunSummary> {
   const all = loadExchangeFiles(opts.exchangesDir);
   const selected = all.filter((f) => {
     if (opts.tier && f.tier !== opts.tier) return false;
-    if (opts.area && !f.id.startsWith(`${opts.area}/`)) return false;
+    if (opts.area) {
+      const prefixes = opts.area.split(",").map((t) => t.trim().replace(/:/g, "/")).filter(Boolean);
+      if (!prefixes.some((prefix) => f.id.startsWith(`${prefix}/`))) return false;
+    }
     if (opts.idGlob && !globMatch(opts.idGlob, f.id)) return false;
     return true;
   });

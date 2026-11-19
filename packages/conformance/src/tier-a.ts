@@ -2,12 +2,35 @@ import { AssertionError } from "node:assert/strict";
 import type { ExchangeFixture } from "@mcp-client/fixtures";
 import type { FixtureResult } from "./run.js";
 
+async function loadOptionalConformance(specifier: string): Promise<{ runExchange: (fixture: unknown, mutant?: string) => Promise<void> }> {
+  return (await import(specifier)) as { runExchange: (fixture: unknown, mutant?: string) => Promise<void> };
+}
+
+const isObservationMismatch = (error: unknown): boolean =>
+  error instanceof AssertionError ||
+  (error instanceof Error && (error.name === "ObservationMismatch" || (error as { isObservationMismatch?: boolean }).isObservationMismatch === true));
+
 /** Package-specific Tier A scripts; core wire scripts use the in-process adapter. */
 export async function runTierAProvider(fixture: ExchangeFixture, mutant?: string): Promise<FixtureResult | undefined> {
   const result = { id: fixture.id, ...(mutant !== undefined ? { mutant } : {}) };
   const area = fixture.id.split("/", 1)[0];
   let isMismatch: (error: unknown) => boolean = () => false;
   try {
+    const optional: [string, string][] = [
+      ["ext/cc/", "@mcp-client/ext-client-credentials/conformance"],
+      ["ext/ema/", "@mcp-client/ext-enterprise-auth/conformance"],
+      ["ext/tasks/", "@mcp-client/ext-tasks/conformance"],
+      ["ext/skills/", "@mcp-client/ext-skills/conformance"],
+      ["tel/", "@mcp-client/telemetry-otel/conformance"],
+    ];
+    for (const [prefix, specifier] of optional) {
+      if (fixture.id.startsWith(prefix)) {
+        isMismatch = isObservationMismatch;
+        const { runExchange } = await loadOptionalConformance(specifier);
+        await runExchange(fixture, mutant);
+        return { ...result, ok: true };
+      }
+    }
     switch (area) {
       case "auth":
       case "consent": {

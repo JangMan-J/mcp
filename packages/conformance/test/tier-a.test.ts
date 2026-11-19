@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,6 +7,19 @@ import { createCoreAdapter } from "../src/adapter.js";
 import { runConformance, type RunOptions } from "../src/run.js";
 
 const exchangesDir = fileURLToPath(new URL("../../fixtures/exchanges/", import.meta.url));
+const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
+
+for (const [area, subdir] of [["ext:cc", "ext/cc"], ["ext:ema", "ext/ema"], ["ext:tasks", "ext/tasks"], ["ext:skills", "ext/skills"], ["tel", "tel"]] as const) {
+  if (existsSync(join(exchangesDir, subdir))) {
+    it(`runs Tier A ${area} exchanges and detects their mutants by default`, async () => {
+      for (const mutate of [false, true]) {
+        const summary = await runConformance({ exchangesDir, tier: "A", area, mutate });
+        expect(summary.results.filter((r) => !r.ok)).toEqual([]);
+        expect(summary.passed).toBeGreaterThan(0);
+      }
+    });
+  }
+}
 
 it.each(["auth", "consent", "mrtr", "elic", "sub", "cache", "ops", "wire", "ver", "prog", "smoke"])(
   "runs Tier A %s exchanges and detects their mutants by default",
@@ -60,6 +73,45 @@ it("does not count unsupported mutants or a failing baseline as killed", async (
 it("does not count a survivor as killed", async () => {
   const summary = await runSynthetic({ ...coreFixture, mutants: ["omit-protocol-version"] }, { mutate: true });
   expect(summary.results[0]).toMatchObject({ ok: false, error: expect.stringContaining("VACUOUS") });
+});
+
+it("filters comma-separated colon areas ext:cc,ext:ema", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "tier-a-area-"));
+  try {
+    for (const id of ["ext/cc/one", "ext/ema/two", "ext/tasks/three", "tel/four"]) {
+      const f = { ...coreFixture, id };
+      const file = join(dir, `${id.replace(/\//g, "-")}.exchange.json`);
+      writeFileSync(file, JSON.stringify(f));
+    }
+    const summary = await runConformance({ exchangesDir: dir, tier: "A", area: "ext:cc,ext:ema", adapter: createCoreAdapter() });
+    expect(summary.results.map((r) => r.id).sort()).toEqual(["ext/cc/one", "ext/ema/two"]);
+    expect(summary.ok).toBe(true);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+it("counts optional ObservationMismatch as a mutant kill", async () => {
+  const realPkg = join(repoRoot, "packages/ext-client-credentials");
+  if (existsSync(realPkg)) {
+    // Real package present: its fixtures are covered by the optional-area loop above.
+    const summary = await runConformance({ exchangesDir, tier: "A", area: "ext:cc", mutate: true });
+    expect(summary.results.filter((r) => !r.ok)).toEqual([]);
+    expect(summary.passed).toBeGreaterThan(0);
+    return;
+  }
+  const fakeDir = join(repoRoot, "node_modules/@mcp-client/ext-client-credentials");
+  expect(existsSync(fakeDir)).toBe(false);
+  mkdirSync(fakeDir, { recursive: true });
+  try {
+    writeFileSync(join(fakeDir, "package.json"), JSON.stringify({ name: "@mcp-client/ext-client-credentials", version: "0.1.0", type: "module", exports: { "./conformance": "./conformance.js" } }));
+    writeFileSync(join(fakeDir, "conformance.js"), `export async function runExchange(fixture, mutant) { if (mutant) { const e = new Error("mismatch"); e.name = "ObservationMismatch"; throw e; } }`);
+    const dir = mkdtempSync(join(tmpdir(), "tier-a-opt-"));
+    try {
+      writeFileSync(join(dir, "x.exchange.json"), JSON.stringify({ ...coreFixture, id: "ext/cc/synthetic", mutants: ["mismatch-mutant"] }));
+      const summary = await runConformance({ exchangesDir: dir, mutate: true });
+      expect(summary.ok).toBe(true);
+      expect(summary.results[0]).toMatchObject({ ok: true, mutant: "mismatch-mutant" });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  } finally { rmSync(fakeDir, { recursive: true, force: true }); }
 });
 
 it("uses an explicit adapter even for a provider-owned area, and reports adapter setup errors", async () => {
