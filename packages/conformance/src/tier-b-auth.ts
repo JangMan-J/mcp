@@ -49,8 +49,8 @@ async function exercise(fixture: ExchangeFixture, scenario: string, peer: Peer, 
     async onChallenge(challenge, signal) {
       try { return await provider.onChallenge(challenge, signal); }
       catch (e) {
-        // HttpTransport intentionally turns challenge errors into forbidden. Do not
-        // mistake a broken AS or failed discovery for a consent rejection.
+        // Record the port decision separately from the transport's public outcome.
+        // A broken AS or failed discovery is not a consent rejection.
         if (e instanceof AuthError && ['cancelled', 'declined'].includes(e.reason) && !signal.aborted) rejections.push(e.reason);
         else portError = e;
         throw e;
@@ -74,7 +74,7 @@ async function exercise(fixture: ExchangeFixture, scenario: string, peer: Peer, 
     }).done;
     peer.check();
     if (portError) throw portError;
-    if (end.kind === 'failure' && end.failure.kind !== 'forbidden') throw Error(`transport failed: ${end.failure.kind}`);
+    if (end.kind === 'failure' && !['forbidden', 'auth-failure'].includes(end.failure.kind)) throw Error(`transport failed: ${end.failure.kind}`);
     ends.push({ end, id: step.as });
   }
   check(isDeepStrictEqual(peer.posts.map(p => p.status), wire.statuses), 'unexpected MCP rejection/retry sequence');
@@ -92,8 +92,13 @@ async function exercise(fixture: ExchangeFixture, scenario: string, peer: Peer, 
     scenario === '401-retry' ? [undefined, 'Bearer fixture-token-1'] : [undefined];
   check(isDeepStrictEqual(peer.posts.map(p => p.authorization), expectedHeaders), 'incorrect bearer on MCP POST');
   for (const [i, { end, id }] of ends.entries()) {
-    if (decision !== 'accept' || scenario === 'plain-403') {
-      check(end.kind === 'failure' && end.failure.kind === 'forbidden' && end.failure.status === (scenario === 'plain-403' ? 403 : 401) && end.delivery === 'not-sent', 'rejection was not definitive');
+    if (decision !== 'accept') {
+      const reason = decision === 'cancel' ? 'cancelled' : 'declined';
+      check(end.kind === 'failure' && end.delivery === 'not-sent' && end.failure.status === 401 &&
+        isDeepStrictEqual(end.failure.kind, 'auth-failure') && 'reason' in end.failure && end.failure.reason === reason,
+        `expected definitive auth-failure/${reason}`);
+    } else if (scenario === 'plain-403') {
+      check(end.kind === 'failure' && end.failure.kind === 'forbidden' && end.failure.status === 403 && end.delivery === 'not-sent', 'rejection was not definitive');
     } else {
       check(end.kind === 'response' && end.message.id === id && 'result' in end.message && isDeepStrictEqual(end.message.result, { resultType: 'complete', write: i + 1 }), 'write result not mapped to original call');
     }
