@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { McpClient } from "@mcp-client/core";
 import { HttpTransport } from "@mcp-client/transport-http";
 import type { ExchangeFixture } from "@mcp-client/fixtures";
-import type { FixtureResult } from "./run.js";
+import { writeTranscript, type FixtureResult, type Transcript, type TranscriptFrame } from "./run.js";
 
 /** Fixture id (without the "http/" prefix) -> supported client-side fault injections. */
 const OWNED: Record<string, readonly string[]> = {
@@ -21,7 +21,123 @@ export const THIN_FIXTURES: Record<string, string> = {
   "http/stream-break-read-reissue-new-id": "script has no stream break; runner breaks an SSE read and reissues separately (HTTP-RETRY-1)",
 };
 
+type HttpTranscriptFrame = TranscriptFrame & { readonly endpoint?: "mcp" | "oauth" | "registration" | "other" };
+interface TranscriptSink {
+  readonly frames: HttpTranscriptFrame[];
+  setEndpoint(url: string): void;
+}
+
 interface Recorded { readonly method: string; readonly headers: Record<string, string>; readonly body: string }
+
+function tryParseJson(text: string): unknown | undefined {
+  try { return JSON.parse(text); } catch { return undefined; }
+}
+
+function parseSseEvent(block: string): unknown | undefined {
+  const dataLines: string[] = [];
+  for (const rawLine of block.split(/\r?\n/)) {
+    if (rawLine.startsWith("data:")) {
+      const value = rawLine.slice(5);
+      dataLines.push(value.startsWith(" ") ? value.slice(1) : value);
+    }
+  }
+  if (dataLines.length === 0) return undefined;
+  return tryParseJson(dataLines.join("\n"));
+}
+
+function instrumentResponse(res: ServerResponse, sink: TranscriptSink) {
+  const endpoint = "mcp" as const;
+  const responseHeaders: Record<string, string> = {};
+  const bodyChunks: Buffer[] = [];
+  let sseBuffer = "";
+  let emittedServerFrame = false;
+
+  const isSse = () => Object.entries(responseHeaders).some(([k, v]) => k.toLowerCase() === "content-type" && v.includes("text/event-stream"));
+
+  const emitSseBlocks = (flush: boolean) => {
+    const parts = sseBuffer.split(/\r?\n\r?\n/);
+    sseBuffer = flush ? "" : (parts.pop() ?? "");
+    for (const block of parts) {
+      if (!block.trim()) continue;
+      const parsed = parseSseEvent(block);
+      if (parsed !== undefined) {
+        sink.frames.push({
+          direction: "server",
+          endpoint,
+          ...(Object.keys(responseHeaders).length > 0 && { headers: { ...responseHeaders } }),
+          message: parsed,
+        });
+        emittedServerFrame = true;
+      }
+    }
+  };
+
+  const recordChunk = (chunk: unknown, encoding?: BufferEncoding) => {
+    if (chunk === undefined || chunk === null || typeof chunk === "function") return;
+    const buf = Buffer.isBuffer(chunk) ? chunk : typeof chunk === "string" ? Buffer.from(chunk, encoding) : Buffer.from(chunk as Uint8Array);
+    if (isSse()) {
+      sseBuffer += buf.toString("utf8");
+      emitSseBlocks(false);
+    } else {
+      bodyChunks.push(buf);
+    }
+  };
+
+  const flushOnClose = () => {
+    if (emittedServerFrame || Object.keys(responseHeaders).length === 0) return;
+    sink.frames.push({ direction: "server", endpoint, headers: { ...responseHeaders } });
+    emittedServerFrame = true;
+  };
+  res.once("close", flushOnClose);
+
+  const origWriteHead = res.writeHead.bind(res);
+  res.writeHead = ((statusCode: number, ...args: unknown[]) => {
+    const rawHeaders = typeof args[0] === "string" ? args[1] : args[0];
+    if (rawHeaders && typeof rawHeaders === "object") {
+      if (Array.isArray(rawHeaders)) {
+        for (let i = 0; i < rawHeaders.length; i += 2) responseHeaders[String(rawHeaders[i])] = String(rawHeaders[i + 1] ?? "");
+      } else {
+        for (const [k, v] of Object.entries(rawHeaders as Record<string, unknown>)) {
+          if (v !== undefined) responseHeaders[k] = Array.isArray(v) ? v.join(", ") : String(v);
+        }
+      }
+    }
+    return (origWriteHead as (...a: unknown[]) => ServerResponse)(statusCode, ...args);
+  }) as ServerResponse["writeHead"];
+
+  const origWrite = res.write.bind(res);
+  res.write = ((chunk: unknown, ...args: unknown[]) => {
+    recordChunk(chunk, typeof args[0] === "string" ? (args[0] as BufferEncoding) : undefined);
+    return (origWrite as (...a: unknown[]) => boolean)(chunk, ...args);
+  }) as ServerResponse["write"];
+
+  const origEnd = res.end.bind(res);
+  res.end = ((...args: unknown[]) => {
+    const chunk = typeof args[0] === "function" ? undefined : args[0];
+    const encoding = typeof args[1] === "string" ? (args[1] as BufferEncoding) : undefined;
+    recordChunk(chunk, encoding);
+    if (isSse()) {
+      emitSseBlocks(true);
+      if (!emittedServerFrame && Object.keys(responseHeaders).length > 0) {
+        sink.frames.push({ direction: "server", endpoint, headers: { ...responseHeaders } });
+        emittedServerFrame = true;
+      }
+    } else {
+      const text = Buffer.concat(bodyChunks).toString("utf8");
+      const parsed = text ? tryParseJson(text) : undefined;
+      if (Object.keys(responseHeaders).length > 0 || parsed !== undefined) {
+        sink.frames.push({
+          direction: "server",
+          endpoint,
+          ...(Object.keys(responseHeaders).length > 0 && { headers: { ...responseHeaders } }),
+          ...(parsed !== undefined && { message: parsed }),
+        });
+        emittedServerFrame = true;
+      }
+    }
+    return (origEnd as (...a: unknown[]) => ServerResponse)(...args);
+  }) as ServerResponse["end"];
+}
 type Handler = (req: IncomingMessage, res: ServerResponse, msg: { id?: unknown; method?: string }, wire: Recorded[]) => void;
 type Fetch = (input: string, init: RequestInit) => Promise<Response>;
 
@@ -101,8 +217,14 @@ function checkNever(needles: readonly string[], wire: readonly Recorded[]) {
 }
 
 /** Runs `body` against a loopback server driven by `handler`, recording every inbound request. */
-async function withServer<T>(handler: Handler, mutant: string | undefined, body: (client: McpClient, wire: Recorded[]) => Promise<T>): Promise<T> {
+async function withServer<T>(
+  handler: Handler,
+  mutant: string | undefined,
+  body: (client: McpClient, wire: Recorded[]) => Promise<T>,
+  sink?: TranscriptSink,
+): Promise<T> {
   const wire: Recorded[] = [];
+  let serverUrl = "";
   const server = createServer(async (req, res) => {
     const chunks: Buffer[] = [];
     for await (const chunk of req) chunks.push(Buffer.from(chunk));
@@ -110,6 +232,18 @@ async function withServer<T>(handler: Handler, mutant: string | undefined, body:
     const headers: Record<string, string> = {};
     for (let i = 0; i < req.rawHeaders.length; i += 2) headers[req.rawHeaders[i]!] = req.rawHeaders[i + 1]!;
     wire.push({ method: req.method ?? "", headers, body: text });
+    if (sink) {
+      const parsed = text ? tryParseJson(text) : undefined;
+      sink.frames.push({
+        direction: "client",
+        endpoint: "mcp",
+        ...(req.method ? { method: req.method } : {}),
+        url: new URL(req.url ?? "/mcp", serverUrl).toString(),
+        headers,
+        ...(parsed !== undefined && { message: parsed }),
+      });
+      instrumentResponse(res, sink);
+    }
     if (req.method !== "POST") { res.writeHead(405).end(); return; }
     let msg: { id?: unknown; method?: string };
     try { msg = JSON.parse(text); } catch { res.writeHead(400).end(); return; }
@@ -119,8 +253,10 @@ async function withServer<T>(handler: Handler, mutant: string | undefined, body:
   await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
   const addr = server.address();
   if (!addr || typeof addr !== "object") throw new Error("no server address");
+  serverUrl = `http://127.0.0.1:${addr.port}/mcp`;
+  sink?.setEndpoint(serverUrl);
   let id = 0;
-  const transport = new HttpTransport({ url: `http://127.0.0.1:${addr.port}/mcp`, fetchFn: faultyFetch(mutant) });
+  const transport = new HttpTransport({ url: serverUrl, fetchFn: faultyFetch(mutant) });
   const client = new McpClient({ transport, server: { key: "fixture" }, idGenerator: () => ++id });
   try {
     return await body(client, wire);
@@ -134,7 +270,7 @@ async function withServer<T>(handler: Handler, mutant: string | undefined, body:
 }
 
 /** c1: the fixture's own script and expectations (plain SSE round trip). */
-async function runScript(fx: ExchangeFixture, mutant: string | undefined) {
+async function runScript(fx: ExchangeFixture, mutant: string | undefined, sink?: TranscriptSink) {
   const scripted = fx.script.find(s => "server" in s) as Record<string, unknown> | undefined;
   const reply = scripted?.["server"] === "error" ? { error: scripted["error"] } : { result: scripted?.["result"] ?? {} };
   await withServer((_req, res, msg) => {
@@ -167,11 +303,11 @@ async function runScript(fx: ExchangeFixture, mutant: string | undefined) {
         check(JSON.stringify(m[k]) === JSON.stringify(v), `wire.${k}: expected ${JSON.stringify(v)}, got ${JSON.stringify(m[k])}`);
       }
     }
-  });
+  }, sink);
 }
 
 /** HTTP-CANCEL-1: abort closes that request's response stream and does not send notifications/cancelled. */
-async function abortClosesStream(fx: ExchangeFixture, mutant: string | undefined) {
+async function abortClosesStream(fx: ExchangeFixture, mutant: string | undefined, sink?: TranscriptSink) {
   let received!: () => void;
   const gotRequest = new Promise<void>(resolve => { received = resolve; });
   let closed!: () => void;
@@ -193,11 +329,11 @@ async function abortClosesStream(fx: ExchangeFixture, mutant: string | undefined
     check(!wire.some(r => r.body.includes("notifications/cancelled")), "client sent notifications/cancelled on HTTP abort (HTTP-CANCEL-1)");
     check(wire.length === 1, `abort phase: expected 1 request, got ${wire.length}`);
     checkNever(fx.expect.wire?.never ?? [], wire);
-  });
+  }, sink);
 }
 
 /** HTTP-SSE-4: an independent JSON-RPC request on the response SSE stream is a violation; no reply. */
-async function requestOnStream(fx: ExchangeFixture, mutant: string | undefined) {
+async function requestOnStream(fx: ExchangeFixture, mutant: string | undefined, sink?: TranscriptSink) {
   const serverRequestId = "srv-req-1";
   await withServer((_req, res, msg) => {
     res.writeHead(200, { "content-type": "text/event-stream" });
@@ -211,11 +347,11 @@ async function requestOnStream(fx: ExchangeFixture, mutant: string | undefined) 
     check(!wire.some(r => r.body.includes(serverRequestId)), "client replied to a server request on the SSE stream (HTTP-SSE-4)");
     check(wire.length === 1, `violation phase: expected 1 request, got ${wire.length}`);
     checkNever(fx.expect.wire?.never ?? [], wire);
-  });
+  }, sink);
 }
 
 /** HTTP-RETRY-1: a broken response stream loses the request; a reissued read uses a new id (no resume). */
-async function streamBreakReissue(fx: ExchangeFixture, mutant: string | undefined) {
+async function streamBreakReissue(fx: ExchangeFixture, mutant: string | undefined, sink?: TranscriptSink) {
   let posts = 0;
   await withServer((_req, res, msg) => {
     posts += 1;
@@ -237,10 +373,10 @@ async function streamBreakReissue(fx: ExchangeFixture, mutant: string | undefine
     check(ids[0] !== undefined && JSON.stringify(ids[0]) !== JSON.stringify(ids[1]), `reissued read reused id ${JSON.stringify(ids[1])} (HTTP-RETRY-1)`);
     check(second["kind"] === "ok", `reissued read: expected ok, got ${JSON.stringify(second)}`);
     checkNever(fx.expect.wire?.never ?? [], wire);
-  });
+  }, sink);
 }
 
-const OBSERVE: Record<string, (fx: ExchangeFixture, mutant: string | undefined) => Promise<void>> = {
+const OBSERVE: Record<string, (fx: ExchangeFixture, mutant: string | undefined, sink?: TranscriptSink) => Promise<void>> = {
   "abort-closes-stream": abortClosesStream,
   "sse-request-on-stream-violation": requestOnStream,
   "stream-break-read-reissue-new-id": streamBreakReissue,
@@ -252,15 +388,24 @@ export async function runTierBHttpStreamFixture(fixture: ExchangeFixture, mutant
   if (!name || !supported) return undefined;
   const base = { id: fixture.id, ...(mutant !== undefined && { mutant }) };
   if (mutant !== undefined && !supported.includes(mutant)) return { ...base, ok: false, error: `Unsupported mutant ${mutant}` };
+  const frames: HttpTranscriptFrame[] = [];
+  let mcpEndpoint: string | undefined;
+  const sink: TranscriptSink | undefined = mutant === undefined
+    ? { frames, setEndpoint: (u) => { mcpEndpoint ??= u; } }
+    : undefined;
   try {
     if (!fixture.script.some(s => "do" in s && s.do === "call")) throw new Error("fixture script has no call");
-    await runScript(fixture, mutant);
-    await OBSERVE[name]!(fixture, mutant);
+    await runScript(fixture, mutant, sink);
+    await OBSERVE[name]!(fixture, mutant, sink);
     return { ...base, ok: true };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return error instanceof AssertionMismatch
       ? { ...base, ok: false, failure: "assertion", error: message }
       : { ...base, ok: false, error: message };
+  } finally {
+    if (mutant === undefined && frames.length > 0) {
+      writeTranscript({ fixture: fixture.id, ...(mcpEndpoint !== undefined && { mcpEndpoint }), frames } as Transcript);
+    }
   }
 }

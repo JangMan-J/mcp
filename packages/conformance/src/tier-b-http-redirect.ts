@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { McpClient } from "@mcp-client/core";
 import { HttpTransport } from "@mcp-client/transport-http";
 import type { ExchangeFixture } from "@mcp-client/fixtures";
-import type { FixtureResult } from "./run.js";
+import { writeTranscript, type FixtureResult, type Transcript, type TranscriptFrame } from "./run.js";
 
 /** Fixture id (without the "http/" prefix) -> supported client-side fault injections. */
 const OWNED: Record<string, readonly string[]> = {
@@ -21,7 +21,123 @@ export const THIN_FIXTURES: Record<string, string> = {
     "fixture server never breaks the stream; observation: SSE headers then socket destroy on a non-idempotent tools/call yields uncertain-write with exactly one POST (HTTP-AMBIG-1, HTTP-AMBIG-2)",
 };
 
+type HttpEndpoint = "mcp" | "oauth" | "registration" | "other";
+type HttpTranscriptFrame = TranscriptFrame & { readonly endpoint?: HttpEndpoint };
+interface TranscriptSink {
+  readonly frames: HttpTranscriptFrame[];
+  setEndpoint(url: string): void;
+}
+
 interface Recorded { readonly method: string; readonly headers: Record<string, string>; readonly body: string }
+
+function tryParseJson(text: string): unknown | undefined {
+  try { return JSON.parse(text); } catch { return undefined; }
+}
+
+function parseSseEvent(block: string): unknown | undefined {
+  const dataLines: string[] = [];
+  for (const rawLine of block.split(/\r?\n/)) {
+    if (rawLine.startsWith("data:")) {
+      const value = rawLine.slice(5);
+      dataLines.push(value.startsWith(" ") ? value.slice(1) : value);
+    }
+  }
+  if (dataLines.length === 0) return undefined;
+  return tryParseJson(dataLines.join("\n"));
+}
+
+function instrumentResponse(res: ServerResponse, endpoint: HttpEndpoint, sink: TranscriptSink) {
+  const responseHeaders: Record<string, string> = {};
+  const bodyChunks: Buffer[] = [];
+  let sseBuffer = "";
+  let emittedServerFrame = false;
+
+  const isSse = () => Object.entries(responseHeaders).some(([k, v]) => k.toLowerCase() === "content-type" && v.includes("text/event-stream"));
+
+  const emitSseBlocks = (flush: boolean) => {
+    const parts = sseBuffer.split(/\r?\n\r?\n/);
+    sseBuffer = flush ? "" : (parts.pop() ?? "");
+    for (const block of parts) {
+      if (!block.trim()) continue;
+      const parsed = parseSseEvent(block);
+      if (parsed !== undefined) {
+        sink.frames.push({
+          direction: "server",
+          endpoint,
+          ...(Object.keys(responseHeaders).length > 0 && { headers: { ...responseHeaders } }),
+          message: parsed,
+        });
+        emittedServerFrame = true;
+      }
+    }
+  };
+
+  const recordChunk = (chunk: unknown, encoding?: BufferEncoding) => {
+    if (chunk === undefined || chunk === null || typeof chunk === "function") return;
+    const buf = Buffer.isBuffer(chunk) ? chunk : typeof chunk === "string" ? Buffer.from(chunk, encoding) : Buffer.from(chunk as Uint8Array);
+    if (isSse()) {
+      sseBuffer += buf.toString("utf8");
+      emitSseBlocks(false);
+    } else {
+      bodyChunks.push(buf);
+    }
+  };
+
+  const flushOnClose = () => {
+    if (emittedServerFrame || Object.keys(responseHeaders).length === 0) return;
+    sink.frames.push({ direction: "server", endpoint, headers: { ...responseHeaders } });
+    emittedServerFrame = true;
+  };
+  res.once("close", flushOnClose);
+
+  const origWriteHead = res.writeHead.bind(res);
+  res.writeHead = ((statusCode: number, ...args: unknown[]) => {
+    const rawHeaders = typeof args[0] === "string" ? args[1] : args[0];
+    if (rawHeaders && typeof rawHeaders === "object") {
+      if (Array.isArray(rawHeaders)) {
+        for (let i = 0; i < rawHeaders.length; i += 2) responseHeaders[String(rawHeaders[i])] = String(rawHeaders[i + 1] ?? "");
+      } else {
+        for (const [k, v] of Object.entries(rawHeaders as Record<string, unknown>)) {
+          if (v !== undefined) responseHeaders[k] = Array.isArray(v) ? v.join(", ") : String(v);
+        }
+      }
+    }
+    return (origWriteHead as (...a: unknown[]) => ServerResponse)(statusCode, ...args);
+  }) as ServerResponse["writeHead"];
+
+  const origWrite = res.write.bind(res);
+  res.write = ((chunk: unknown, ...args: unknown[]) => {
+    recordChunk(chunk, typeof args[0] === "string" ? (args[0] as BufferEncoding) : undefined);
+    return (origWrite as (...a: unknown[]) => boolean)(chunk, ...args);
+  }) as ServerResponse["write"];
+
+  const origEnd = res.end.bind(res);
+  res.end = ((...args: unknown[]) => {
+    const chunk = typeof args[0] === "function" ? undefined : args[0];
+    const encoding = typeof args[1] === "string" ? (args[1] as BufferEncoding) : undefined;
+    recordChunk(chunk, encoding);
+    if (isSse()) {
+      emitSseBlocks(true);
+      if (!emittedServerFrame && Object.keys(responseHeaders).length > 0) {
+        sink.frames.push({ direction: "server", endpoint, headers: { ...responseHeaders } });
+        emittedServerFrame = true;
+      }
+    } else {
+      const text = Buffer.concat(bodyChunks).toString("utf8");
+      const parsed = text ? tryParseJson(text) : undefined;
+      if (Object.keys(responseHeaders).length > 0 || parsed !== undefined) {
+        sink.frames.push({
+          direction: "server",
+          endpoint,
+          ...(Object.keys(responseHeaders).length > 0 && { headers: { ...responseHeaders } }),
+          ...(parsed !== undefined && { message: parsed }),
+        });
+        emittedServerFrame = true;
+      }
+    }
+    return (origEnd as (...a: unknown[]) => ServerResponse)(...args);
+  }) as ServerResponse["end"];
+}
 
 class AssertionMismatch extends Error {}
 function check(cond: unknown, msg: string): asserts cond { if (!cond) throw new AssertionMismatch(msg); }
@@ -106,7 +222,12 @@ function verify(fx: ExchangeFixture, outcomes: Record<string, Record<string, unk
 type Handler = (req: IncomingMessage, res: ServerResponse, msg: { id?: unknown; method?: string }) => void;
 
 /** Loopback server that records every request, then hands JSON-RPC requests to `handle`. */
-async function startServer(wire: Recorded[], handle: Handler): Promise<{ server: Server; url: string }> {
+async function startServer(
+  wire: Recorded[],
+  handle: Handler,
+  recording?: { sink: TranscriptSink; endpoint: HttpEndpoint },
+): Promise<{ server: Server; url: string }> {
+  let serverUrl = "";
   const server = createServer(async (req, res) => {
     const chunks: Buffer[] = [];
     for await (const chunk of req) chunks.push(Buffer.from(chunk));
@@ -114,6 +235,18 @@ async function startServer(wire: Recorded[], handle: Handler): Promise<{ server:
     const headers: Record<string, string> = {};
     for (let i = 0; i < req.rawHeaders.length; i += 2) headers[req.rawHeaders[i]!] = req.rawHeaders[i + 1]!;
     wire.push({ method: req.method ?? "", headers, body });
+    if (recording) {
+      const parsed = body ? tryParseJson(body) : undefined;
+      recording.sink.frames.push({
+        direction: "client",
+        endpoint: recording.endpoint,
+        ...(req.method ? { method: req.method } : {}),
+        url: new URL(req.url ?? "/mcp", serverUrl).toString(),
+        headers,
+        ...(parsed !== undefined && { message: parsed }),
+      });
+      instrumentResponse(res, recording.endpoint, recording.sink);
+    }
     if (req.method !== "POST") { res.writeHead(405).end(); return; }
     let msg: { id?: unknown; method?: string };
     try { msg = JSON.parse(body); } catch { res.writeHead(400).end(); return; }
@@ -123,7 +256,9 @@ async function startServer(wire: Recorded[], handle: Handler): Promise<{ server:
   await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
   const addr = server.address();
   if (!addr || typeof addr !== "object") throw new Error("no server address");
-  return { server, url: `http://127.0.0.1:${addr.port}/mcp` };
+  serverUrl = `http://127.0.0.1:${addr.port}/mcp`;
+  if (recording?.endpoint === "mcp") recording.sink.setEndpoint(serverUrl);
+  return { server, url: serverUrl };
 }
 
 async function stopServer(server: Server): Promise<void> {
@@ -156,10 +291,10 @@ async function withClient<T>(url: string, mutant: string | undefined, extra: Rec
 }
 
 /** The fixture's own (thin) script against a well-behaved loopback server. */
-async function exercise(fx: ExchangeFixture, mutant: string | undefined) {
+async function exercise(fx: ExchangeFixture, mutant: string | undefined, sink?: TranscriptSink) {
   const wire: Recorded[] = [];
   const scripted = scriptedResult(fx);
-  const { server, url } = await startServer(wire, (_req, res, msg) => replyJson(res, msg.id, scripted));
+  const { server, url } = await startServer(wire, (_req, res, msg) => replyJson(res, msg.id, scripted), sink ? { sink, endpoint: "mcp" } : undefined);
   const outcomes: Record<string, Record<string, unknown>> = {};
   await withClient(url, mutant, {}, async client => {
     for (const step of fx.script) {
@@ -173,14 +308,14 @@ async function exercise(fx: ExchangeFixture, mutant: string | undefined) {
 }
 
 /** HTTP-REDIR-1: a 307 to another origin is refused; Authorization never reaches the other origin. */
-async function observeRedirect(fx: ExchangeFixture, mutant: string | undefined) {
+async function observeRedirect(fx: ExchangeFixture, mutant: string | undefined, sink?: TranscriptSink) {
   const primaryWire: Recorded[] = [];
   const otherWire: Recorded[] = [];
   const scripted = scriptedResult(fx);
-  const other = await startServer(otherWire, (_req, res, msg) => replyJson(res, msg.id, scripted));
+  const other = await startServer(otherWire, (_req, res, msg) => replyJson(res, msg.id, scripted), sink ? { sink, endpoint: "other" } : undefined);
   let primary: { server: Server; url: string };
   try {
-    primary = await startServer(primaryWire, (_req, res) => { res.writeHead(307, { location: other.url }).end(); });
+    primary = await startServer(primaryWire, (_req, res) => { res.writeHead(307, { location: other.url }).end(); }, sink ? { sink, endpoint: "mcp" } : undefined);
   } catch (error) { await stopServer(other.server); throw error; }
   const token = "redirect-observation-token";
   const out = await withClient(primary.url, mutant, { Authorization: `Bearer ${token}` },
@@ -196,7 +331,7 @@ async function observeRedirect(fx: ExchangeFixture, mutant: string | undefined) 
 }
 
 /** HTTP-AMBIG-1/2: an SSE stream that breaks on a write yields uncertain-write and no second POST. */
-async function observeStreamBreak(fx: ExchangeFixture, mutant: string | undefined) {
+async function observeStreamBreak(fx: ExchangeFixture, mutant: string | undefined, sink?: TranscriptSink) {
   const wire: Recorded[] = [];
   const scripted = scriptedResult(fx);
   let posts = 0;
@@ -205,7 +340,7 @@ async function observeStreamBreak(fx: ExchangeFixture, mutant: string | undefine
     res.writeHead(200, { "content-type": "text/event-stream" });
     res.flushHeaders();
     setTimeout(() => res.socket?.destroy(), 20);
-  });
+  }, sink ? { sink, endpoint: "mcp" } : undefined);
   const out = await withClient(url, mutant, {},
     client => bounded(client.request("tools/call", { name: "write", arguments: {} }, { idempotent: false }), "stream-break observation"),
     [server]) as unknown as Record<string, unknown>;
@@ -214,7 +349,7 @@ async function observeStreamBreak(fx: ExchangeFixture, mutant: string | undefine
   check(out["kind"] === "uncertain-write", `HTTP-AMBIG-2: expected uncertain-write, got ${JSON.stringify(out["kind"])}`);
 }
 
-const OBSERVE: Record<string, (fx: ExchangeFixture, mutant: string | undefined) => Promise<void>> = {
+const OBSERVE: Record<string, (fx: ExchangeFixture, mutant: string | undefined, sink?: TranscriptSink) => Promise<void>> = {
   "redirect-cross-origin-refused": observeRedirect,
   "stream-break-write-uncertain": observeStreamBreak,
 };
@@ -225,16 +360,25 @@ export async function runTierBHttpRedirectFixture(fixture: ExchangeFixture, muta
   if (!name || !supported) return undefined;
   const base = { id: fixture.id, ...(mutant !== undefined && { mutant }) };
   if (mutant !== undefined && !supported.includes(mutant)) return { ...base, ok: false, error: `Unsupported mutant ${mutant}` };
+  const frames: HttpTranscriptFrame[] = [];
+  let mcpEndpoint: string | undefined;
+  const sink: TranscriptSink | undefined = mutant === undefined
+    ? { frames, setEndpoint: (u) => { mcpEndpoint ??= u; } }
+    : undefined;
   try {
     if (!fixture.script.some(s => "do" in s && s.do === "call")) throw new Error("fixture script has no call");
-    const { outcomes, wire } = await exercise(fixture, mutant);
+    const { outcomes, wire } = await exercise(fixture, mutant, sink);
     verify(fixture, outcomes, wire);
-    await OBSERVE[name]!(fixture, mutant);
+    await OBSERVE[name]!(fixture, mutant, sink);
     return { ...base, ok: true };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return error instanceof AssertionMismatch
       ? { ...base, ok: false, failure: "assertion", error: message }
       : { ...base, ok: false, error: message };
+  } finally {
+    if (mutant === undefined && frames.length > 0) {
+      writeTranscript({ fixture: fixture.id, ...(mcpEndpoint !== undefined && { mcpEndpoint }), frames } as Transcript);
+    }
   }
 }
