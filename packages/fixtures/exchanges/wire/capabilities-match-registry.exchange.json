@@ -1,7 +1,9 @@
 {
   "id": "wire/capabilities-match-registry",
   "requirements": [
-    "WIRE-META-2"
+    "WIRE-META-2",
+    "DEP-ROOTS-1",
+    "DEP-SAMPLING-1"
   ],
   "pin": "tag",
   "source": [

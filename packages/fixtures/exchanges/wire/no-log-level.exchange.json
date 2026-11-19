@@ -2,7 +2,8 @@
   "id": "wire/no-log-level",
   "requirements": [
     "WIRE-LOG-1",
-    "EDGE-33"
+    "EDGE-33",
+    "DEP-LOG-1"
   ],
   "pin": "tag",
   "source": [
