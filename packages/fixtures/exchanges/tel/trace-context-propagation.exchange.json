@@ -1,0 +1,25 @@
+{
+  "id": "tel/trace-context-propagation",
+  "tier": "A",
+  "binding": "any",
+  "pin": "tag",
+  "source": ["S/basic/index.md#_meta"],
+  "requirements": ["TEL-CTX-1", "TEL-CTX-2", "TEL-CTX-3", "TEL-CTX-4"],
+  "script": [
+    { "op": "request", "method": "tools/list", "withActiveContext": true },
+    { "op": "checkAbsentContext" },
+    { "op": "checkOversizedBounds" }
+  ],
+  "expect": {
+    "metaKeys": ["traceparent", "tracestate", "baggage"],
+    "noHttpTraceparentHeader": true,
+    "noFabricatedContext": true,
+    "dropOversizedWithDiagnostics": true
+  },
+  "mutants": [
+    "prefixed-meta-keys",
+    "http-traceparent-header",
+    "fabricate-traceparent",
+    "skip-w3c-bounds"
+  ]
+}

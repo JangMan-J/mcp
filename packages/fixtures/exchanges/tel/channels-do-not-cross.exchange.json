@@ -1,0 +1,19 @@
+{
+  "id": "tel/channels-do-not-cross",
+  "tier": "A",
+  "binding": "any",
+  "pin": "tag",
+  "source": ["S/basic/index.md#_meta"],
+  "requirements": ["TEL-SEP-1", "TEL-ADAPT-1"],
+  "script": [
+    { "op": "instrumentTransport", "binding": "stdio", "method": "tools/call", "withProgress": true, "withDiagnostics": true }
+  ],
+  "expect": {
+    "spanCount": 1,
+    "spanEventCount": 0
+  },
+  "mutants": [
+    "span-per-progress",
+    "span-per-diagnostic"
+  ]
+}

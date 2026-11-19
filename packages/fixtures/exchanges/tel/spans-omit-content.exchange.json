@@ -1,0 +1,21 @@
+{
+  "id": "tel/spans-omit-content",
+  "tier": "A",
+  "binding": "any",
+  "pin": "tag",
+  "source": ["S/basic/index.md#_meta"],
+  "requirements": ["TEL-PRIV-1"],
+  "script": [
+    { "op": "startClientSpan", "method": "tools/call", "withSensitiveAttrs": true },
+    { "op": "recordException", "withCredentialUrl": true }
+  ],
+  "expect": {
+    "defaultCaptureContent": false,
+    "omitContentAttributes": true,
+    "redactSecretsAndUrls": true
+  },
+  "mutants": [
+    "default-capture-content-true",
+    "leak-secret-in-exception"
+  ]
+}
