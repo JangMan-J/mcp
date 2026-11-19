@@ -111,6 +111,8 @@ export class RequestManager {
   private readonly supportedVersions: readonly string[];
   private activeProtocolVersion: string;
   private readonly inFlight = new Set<AbortController>();
+  // LIM-CONC-1: over-cap requests wait here in FIFO order; nothing is sent while queued.
+  private readonly admissionQueue: Array<{ readonly ac: AbortController; readonly admit: () => void }> = [];
   private closed = false;
 
   constructor(cfg: RequestManagerConfig) {
@@ -266,12 +268,32 @@ export class RequestManager {
       };
     }
 
-    if (this.inFlight.size >= this.limits.maxInFlight) {
-      return {
-        kind: "limit-exceeded",
-        detail: { limit: "maxInFlight", max: this.limits.maxInFlight, observed: this.inFlight.size },
-        meta: baseMeta(firstId, 0),
-      };
+    // LIM-CONC-1: cap in-flight requests; queue FIFO beyond the cap, abortable while queued.
+    if (this.inFlight.size >= this.limits.maxInFlight || this.admissionQueue.length > 0) {
+      const admitted = await new Promise<boolean>((resolve) => {
+        const onAbort = () => {
+          const i = this.admissionQueue.indexOf(entry);
+          if (i >= 0) this.admissionQueue.splice(i, 1);
+          resolve(false);
+        };
+        const entry = {
+          ac,
+          admit: () => {
+            ac.signal.removeEventListener("abort", onAbort);
+            resolve(true);
+          },
+        };
+        this.admissionQueue.push(entry);
+        ac.signal.addEventListener("abort", onAbort, { once: true });
+      });
+      if (!admitted) {
+        return {
+          kind: "cancelled",
+          wasSent: false,
+          phase: "queue",
+          meta: baseMeta(firstId, 0),
+        };
+      }
     }
 
     const timeoutMs = Math.min(opts.timeoutMs ?? this.limits.defaultTimeoutMs, this.limits.hardMaxTimeoutMs);
@@ -493,12 +515,25 @@ export class RequestManager {
       } finally {
         cancelTimer?.();
         this.inFlight.delete(ac);
+        this.admitQueued();
       }
+    }
+  }
+
+  /** LIM-CONC-1: hand freed slots to the oldest queued requests (slot reserved before resume). */
+  private admitQueued(): void {
+    while (this.inFlight.size < this.limits.maxInFlight && this.admissionQueue.length > 0) {
+      const next = this.admissionQueue.shift()!;
+      this.inFlight.add(next.ac);
+      next.admit();
     }
   }
 
   async close(opts?: { readonly graceMs?: number }): Promise<void> {
     this.closed = true;
+    for (const queued of [...this.admissionQueue]) {
+      queued.ac.abort("client-closed");
+    }
     for (const ac of this.inFlight) {
       ac.abort("client-closed");
     }
