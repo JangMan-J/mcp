@@ -243,6 +243,23 @@ describe("schema rejection", () => {
     expect(c).toMatchObject({ ok: false, reason: "invalid-schema", message: expect.stringContaining("never resolved") });
   });
 
+  it("Ajv $async schemas are rejected at compile; no async success path (Ajv regression)", () => {
+    for (const s of [
+      { $async: true, type: "string" },
+      { properties: { x: { $async: true, type: "string" } } },
+      { $defs: { a: { $async: true, type: "string" } }, properties: { x: { $ref: "#/$defs/a" } } },
+    ]) {
+      expect(v.compile(s), JSON.stringify(s)).toMatchObject({ ok: false, reason: "invalid-schema", message: expect.stringContaining("async") });
+    }
+    // $async:false stays synchronous: validate returns a plain result, never a Promise.
+    const c = v.compile({ $async: false, type: "string" });
+    if (!c.ok) throw new Error(c.message);
+    const r = c.validate(1);
+    expect(r).not.toBeInstanceOf(Promise);
+    expect(r.valid).toBe(false);
+    expect(c.validate("a")).toEqual({ valid: true, errors: [] });
+  });
+
   it("the SchemaValidator seam accepts another implementation", () => {
     const seen: unknown[] = [];
     const custom: SchemaValidator = {

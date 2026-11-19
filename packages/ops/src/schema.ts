@@ -163,11 +163,19 @@ export function createBuiltinValidator(opts: BuiltinValidatorOptions = {}): Sche
           }
           throw new SchemaError("invalid-schema", msg);
         }
+        // The SchemaValidator port is synchronous; Ajv's `$async` extension would return a Promise.
+        if ((fn as { $async?: unknown }).$async === true) {
+          throw new SchemaError("invalid-schema", "'$async' schemas are not supported (validation is synchronous)");
+        }
         return {
           ok: true,
           validate(value: unknown): ValidationResult {
             try {
-              if (fn(value)) return { valid: true, errors: [] };
+              const r: unknown = fn(value);
+              if (r !== true && r !== false) {
+                return { valid: false, errors: [{ path: "/", keyword: "$async", message: "non-boolean validation result" }] };
+              }
+              if (r) return { valid: true, errors: [] };
               const errors = (fn.errors ?? []).map(toIssue);
               return { valid: false, errors: errors.length ? errors : [{ path: "/", keyword: "schema", message: "invalid" }] };
             } catch (e) {
