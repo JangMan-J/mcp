@@ -2,7 +2,7 @@ import { createServer } from "node:http";
 import { McpClient } from "@mcp-client/core";
 import { HttpTransport } from "@mcp-client/transport-http";
 import type { ExchangeFixture } from "@mcp-client/fixtures";
-import type { FixtureResult } from "./run.js";
+import { writeTranscript, type FixtureResult, type Transcript, type TranscriptFrame } from "./run.js";
 
 /** Fixture id (without the "http/" prefix) -> supported client-side fault injections. */
 const OWNED: Record<string, readonly string[]> = {
@@ -188,9 +188,16 @@ const OBSERVE: Record<string, Observation> = {
   },
 };
 
+function parseJson(body: string): unknown {
+  if (body.length === 0) return undefined;
+  try { return JSON.parse(body); } catch { return undefined; }
+}
+
 async function exercise(fx: ExchangeFixture, name: string, mutant: string | undefined) {
   const obs = OBSERVE[name]!;
   const wire: Recorded[] = [];
+  const frames: TranscriptFrame[] = [];
+  let mcpEndpoint = "";
   const results = new Map<string, Record<string, unknown>>();
   for (const step of fx.script) if ("server" in step && step.for) results.set(step.for, step.server === "result" ? { result: step.result } : { error: step.error });
   const scripted = [...results.values()][0] ?? { result: {} };
@@ -202,20 +209,49 @@ async function exercise(fx: ExchangeFixture, name: string, mutant: string | unde
     const headers: Record<string, string> = {};
     for (let i = 0; i < req.rawHeaders.length; i += 2) headers[req.rawHeaders[i]!] = req.rawHeaders[i + 1]!;
     wire.push({ method: req.method ?? "", headers, body });
-    if (req.method !== "POST") { res.writeHead(405).end(); return; }
+    const parsed = parseJson(body);
+    frames.push({
+      direction: "client",
+      endpoint: "mcp",
+      ...(req.method ? { method: req.method } : {}),
+      url: new URL(req.url ?? "/mcp", mcpEndpoint).toString(),
+      headers,
+      ...(parsed !== undefined ? { message: parsed } : {}),
+    } as TranscriptFrame);
+    if (req.method !== "POST") {
+      frames.push({ direction: "server", endpoint: "mcp", headers: {} } as TranscriptFrame);
+      res.writeHead(405).end();
+      return;
+    }
     const accept = req.headers.accept ?? "";
-    if (!accept.includes("application/json") || !accept.includes("text/event-stream")) { res.writeHead(406).end(); return; }
+    if (!accept.includes("application/json") || !accept.includes("text/event-stream")) {
+      frames.push({ direction: "server", endpoint: "mcp", headers: {} } as TranscriptFrame);
+      res.writeHead(406).end();
+      return;
+    }
     let msg: { id?: unknown; method?: string };
-    try { msg = JSON.parse(body); } catch { res.writeHead(400).end(); return; }
-    if (msg.id === undefined) { res.writeHead(202).end(); return; }
-    res.writeHead(200, { "content-type": "application/json", ...obs.responseHeaders });
-    res.end(JSON.stringify({ jsonrpc: "2.0", id: msg.id, ...respond(msg) }));
+    try { msg = JSON.parse(body); } catch {
+      frames.push({ direction: "server", endpoint: "mcp", headers: {} } as TranscriptFrame);
+      res.writeHead(400).end();
+      return;
+    }
+    if (msg.id === undefined) {
+      frames.push({ direction: "server", endpoint: "mcp", headers: {} } as TranscriptFrame);
+      res.writeHead(202).end();
+      return;
+    }
+    const resHeaders = { "content-type": "application/json", ...obs.responseHeaders };
+    const resMsg = { jsonrpc: "2.0", id: msg.id, ...respond(msg) };
+    frames.push({ direction: "server", endpoint: "mcp", headers: resHeaders, message: resMsg } as TranscriptFrame);
+    res.writeHead(200, resHeaders);
+    res.end(JSON.stringify(resMsg));
   });
   await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
   const addr = server.address();
   if (!addr || typeof addr !== "object") throw new Error("no server address");
+  mcpEndpoint = `http://127.0.0.1:${addr.port}/mcp`;
   let id = 0;
-  const transport = new HttpTransport({ url: `http://127.0.0.1:${addr.port}/mcp`, fetchFn: faultyFetch(mutant) });
+  const transport = new HttpTransport({ url: mcpEndpoint, fetchFn: faultyFetch(mutant) });
   const client = new McpClient({ transport, server: { key: "fixture" }, idGenerator: () => ++id });
   const outcomes: Record<string, Record<string, unknown>> = {};
   try {
@@ -232,7 +268,7 @@ async function exercise(fx: ExchangeFixture, name: string, mutant: string | unde
       const out = await bounded(client.request(call.method, call.params, { idempotent: call.method !== "tools/call" }), call.method);
       extraOutcomes.push(out as unknown as Record<string, unknown>);
     }
-    return { outcomes, scriptWire, extraWire: wire.slice(scriptWire.length), extraOutcomes, obs };
+    return { outcomes, scriptWire, extraWire: wire.slice(scriptWire.length), extraOutcomes, obs, frames, mcpEndpoint };
   } finally {
     try { await bounded(client.close(), "client close"); } finally {
       const stopped = new Promise<void>(resolve => server.close(() => resolve()));
@@ -250,7 +286,10 @@ export async function runTierBHttpHeadersFixture(fixture: ExchangeFixture, mutan
   if (mutant !== undefined && !supported.includes(mutant)) return { ...base, ok: false, error: `Unsupported mutant ${mutant}` };
   try {
     if (!fixture.script.some(s => "do" in s && s.do === "call")) throw new Error("fixture script has no call");
-    const { outcomes, scriptWire, extraWire, extraOutcomes, obs } = await exercise(fixture, name, mutant);
+    const { outcomes, scriptWire, extraWire, extraOutcomes, obs, frames, mcpEndpoint } = await exercise(fixture, name, mutant);
+    if (mutant === undefined) {
+      writeTranscript({ fixture: fixture.id, mcpEndpoint, frames } as Transcript);
+    }
     verify(fixture, outcomes, scriptWire);
     obs.verify(scriptWire, extraWire, extraOutcomes);
     return { ...base, ok: true };

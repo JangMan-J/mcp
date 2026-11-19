@@ -2,7 +2,7 @@ import { createServer } from "node:http";
 import { McpClient, META_PROGRESS_TOKEN } from "@mcp-client/core";
 import { HttpTransport } from "@mcp-client/transport-http";
 import type { ExchangeFixture } from "@mcp-client/fixtures";
-import type { FixtureResult } from "./run.js";
+import { writeTranscript, type FixtureResult, type Transcript, type TranscriptFrame } from "./run.js";
 
 /** Fixture id (without the "http/" prefix) -> supported client-side fault injections. */
 const OWNED: Record<string, readonly string[]> = {
@@ -122,6 +122,8 @@ interface Observed {
   /** Ordered client-side events: "progress" and "settled:<as>". */
   readonly events: readonly string[];
   readonly results: ReadonlyMap<string, unknown>;
+  readonly frames: readonly TranscriptFrame[];
+  readonly mcpEndpoint: string;
 }
 
 function verify(name: string, fx: ExchangeFixture, { outcomes, wire, events, results }: Observed) {
@@ -170,8 +172,30 @@ function verify(name: string, fx: ExchangeFixture, { outcomes, wire, events, res
   }
 }
 
+function parseJson(body: string): unknown {
+  if (body.length === 0) return undefined;
+  try { return JSON.parse(body); } catch { return undefined; }
+}
+
+function parseSseMessages(raw: string): unknown[] {
+  const out: unknown[] = [];
+  for (const block of raw.split(/\r?\n\r?\n/)) {
+    const dataLines: string[] = [];
+    for (const line of block.split(/\r?\n/)) {
+      if (line.startsWith("data:")) {
+        dataLines.push(line.startsWith("data: ") ? line.slice(6) : line.slice(5));
+      }
+    }
+    if (dataLines.length === 0) continue;
+    try { out.push(JSON.parse(dataLines.join("\n"))); } catch { /* ignore non-JSON SSE event */ }
+  }
+  return out;
+}
+
 async function exercise(name: string, fx: ExchangeFixture, mutant: string | undefined): Promise<Observed> {
   const wire: Recorded[] = [];
+  const frames: TranscriptFrame[] = [];
+  let mcpEndpoint = "";
   const events: string[] = [];
   const results = new Map<string, unknown>();
   for (const step of fx.script) if ("server" in step && step.for && step.server === "result") results.set(step.for, step.result);
@@ -182,22 +206,58 @@ async function exercise(name: string, fx: ExchangeFixture, mutant: string | unde
     const headers: Record<string, string> = {};
     for (let i = 0; i < req.rawHeaders.length; i += 2) headers[req.rawHeaders[i]!] = req.rawHeaders[i + 1]!;
     wire.push({ method: req.method ?? "", headers, body });
-    if (req.method !== "POST") { res.writeHead(405).end(); return; }
+    const parsed = parseJson(body);
+    frames.push({
+      direction: "client",
+      endpoint: "mcp",
+      ...(req.method ? { method: req.method } : {}),
+      url: new URL(req.url ?? "/mcp", mcpEndpoint).toString(),
+      headers,
+      ...(parsed !== undefined ? { message: parsed } : {}),
+    } as TranscriptFrame);
+    if (req.method !== "POST") {
+      frames.push({ direction: "server", endpoint: "mcp", headers: {} } as TranscriptFrame);
+      res.writeHead(405).end();
+      return;
+    }
     const accept = req.headers.accept ?? "";
-    if (!accept.includes("application/json") || !accept.includes("text/event-stream")) { res.writeHead(406).end(); return; }
+    if (!accept.includes("application/json") || !accept.includes("text/event-stream")) {
+      frames.push({ direction: "server", endpoint: "mcp", headers: {} } as TranscriptFrame);
+      res.writeHead(406).end();
+      return;
+    }
     let msg: { id?: unknown; params?: { _meta?: Record<string, unknown> } };
-    try { msg = JSON.parse(body); } catch { res.writeHead(400).end(); return; }
-    if (msg.id === undefined) { res.writeHead(202).end(); return; }
+    try { msg = JSON.parse(body); } catch {
+      frames.push({ direction: "server", endpoint: "mcp", headers: {} } as TranscriptFrame);
+      res.writeHead(400).end();
+      return;
+    }
+    if (msg.id === undefined) {
+      frames.push({ direction: "server", endpoint: "mcp", headers: {} } as TranscriptFrame);
+      res.writeHead(202).end();
+      return;
+    }
     const result = [...results.values()][0] ?? {};
-    res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
-    for (const part of sseBody(name, msg.id, msg.params?._meta?.[META_PROGRESS_TOKEN] ?? msg.id, result)) res.write(part);
+    const resHeaders = { "content-type": "text/event-stream", "cache-control": "no-cache" };
+    const parts = sseBody(name, msg.id, msg.params?._meta?.[META_PROGRESS_TOKEN] ?? msg.id, result);
+    const sseMsgs = parseSseMessages(parts.join(""));
+    if (sseMsgs.length === 0) {
+      frames.push({ direction: "server", endpoint: "mcp", headers: resHeaders } as TranscriptFrame);
+    } else {
+      for (const sseMsg of sseMsgs) {
+        frames.push({ direction: "server", endpoint: "mcp", headers: resHeaders, message: sseMsg } as TranscriptFrame);
+      }
+    }
+    res.writeHead(200, resHeaders);
+    for (const part of parts) res.write(part);
     res.end();
   });
   await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
   const addr = server.address();
   if (!addr || typeof addr !== "object") throw new Error("no server address");
+  mcpEndpoint = `http://127.0.0.1:${addr.port}/mcp`;
   let id = 0;
-  const transport = new HttpTransport({ url: `http://127.0.0.1:${addr.port}/mcp`, fetchFn: faultyFetch(mutant) });
+  const transport = new HttpTransport({ url: mcpEndpoint, fetchFn: faultyFetch(mutant) });
   const client = new McpClient({ transport, server: { key: "fixture" }, idGenerator: () => ++id });
   const outcomes: Record<string, Record<string, unknown>> = {};
   try {
@@ -213,7 +273,7 @@ async function exercise(name: string, fx: ExchangeFixture, mutant: string | unde
     }
     // Let any stray reconnect reach the server before the wire is judged.
     await new Promise(resolve => setTimeout(resolve, 50));
-    return { outcomes, wire, events, results };
+    return { outcomes, wire, events, results, frames, mcpEndpoint };
   } finally {
     try { await bounded(client.close(), "client close"); } finally {
       const stopped = new Promise<void>(resolve => server.close(() => resolve()));
@@ -231,7 +291,11 @@ export async function runTierBHttpSseFixture(fixture: ExchangeFixture, mutant?: 
   if (mutant !== undefined && !supported.includes(mutant)) return { ...base, ok: false, error: `Unsupported mutant ${mutant}` };
   try {
     if (!fixture.script.some(s => "do" in s && s.do === "call")) throw new Error("fixture script has no call");
-    verify(name, fixture, await exercise(name, fixture, mutant));
+    const observed = await exercise(name, fixture, mutant);
+    if (mutant === undefined) {
+      writeTranscript({ fixture: fixture.id, mcpEndpoint: observed.mcpEndpoint, frames: observed.frames } as Transcript);
+    }
+    verify(name, fixture, observed);
     return { ...base, ok: true };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
