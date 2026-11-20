@@ -1,6 +1,6 @@
 # Pins
 
-Director pin list for Wave 0. This file is the only place pin values are written. Lane files and `requirements.md` point here. A pin is a kind, an id, and an observed-at time. Re-verified 2026-11-19T06:47:10Z from `git ls-remote`, `git cat-file`, `git log`, and `git show` of the named blobs. No MCP implementation, Pi MCP package, Pi adapter, or Pi diff was read.
+Director pin list for Wave 0. This file records the selected revisions and their scope. Lane files and `requirements.md` point here. A pin is a kind, an id, and an observed-at time. Re-verified 2026-11-19T06:47:10Z from `git ls-remote`, `git cat-file`, `git log`, and `git show` of the named blobs. No MCP implementation, Pi MCP package, Pi adapter, or Pi diff was read.
 
 Selected means this project uses that id as the authority named in the authority column. Observed means the id was read and is not adopted. Missing means no object was found for that name. Unverified means this pass did not open the object.
 
@@ -73,8 +73,8 @@ Re-verify any row with `git ls-remote https://github.com/modelcontextprotocol/<r
 | Kind | Id | Observed-at | Authority / stage | Use |
 |---|---|---|---|---|
 | semantic-conventions-genai | `76e0c19e7fe11dc693fe258642363a438af4d3aa` | 2026-11-19 01:34:29 +0000 `Lock file maintenance (#701)`. Re-read 2026-11-19T06:47:10Z | observed only. Page status Development. `CHANGELOG.md` has an Unreleased section and no release section. `git ls-remote` refs/tags returned no tags | `docs/gen-ai/mcp.md`. Not a baseline |
-| conformance release | tag `v0.1.16` = `21a9a2febd7100d7c17ac1021ee7f2ed9f66a1e0` | 2026-03-27 11:29:13 +0000 `chore: bump version to 0.1.16 (#198)`. No `^{}` peel | selected black-box release pin. README has no `2026-07-28`. Client example is `--scenario initialize` | Do not treat this tag as a 2026-07-28 scenario catalog |
-| conformance main | `96a6f9478b7f2e125cf0360a213383cf57533893` | 2026-11-10 17:49:31 +0000 `chore(sep-2640): repoint the requirements at the Skills beta page (#511)` | observed, not selected | README documents `npx @modelcontextprotocol/conformance client`, `--spec-version` (including `2026-07-28`), and `--requirements 2026-07-28`. No scenario id from this README is a check |
+| conformance release | tag `v0.1.16` = `21a9a2febd7100d7c17ac1021ee7f2ed9f66a1e0` | 2026-03-27 11:29:13 +0000 `chore: bump version to 0.1.16 (#198)`. No `^{}` peel | superseded black-box release pin. README has no `2026-07-28`. Client example is `--scenario initialize` | Do not treat this tag as a 2026-07-28 scenario catalog |
+| conformance main | `@modelcontextprotocol/conformance` `0.2.0-alpha.12` at `96a6f9478b7f2e125cf0360a213383cf57533893` | 2026-11-10 17:49:31 +0000 `chore(sep-2640): repoint the requirements at the Skills beta page (#511)` | selected black-box runner for G12; use this commit, not a moving `main` | `requirements/2026-07-28.yaml` lists 32 required client scenarios. The README and `SDK_INTEGRATION.md` describe how to run them |
 
 Span text observed on the OTel page and not adopted: span name SHOULD be `{mcp.method.name} {target}` when a low-cardinality target exists, otherwise `{mcp.method.name}`.
 
@@ -93,7 +93,7 @@ Local `node --version` at the same time was `v26.13.1`. That is the machine, not
 
 ## Not pinned
 
-- No conformance scenario id for a 2026-07-28 client run.
+- The catalog’s `not_scored` client entries (extension and `added-after-release` scenarios) do not count toward core conformance.
 - No OTel release tag.
 - No ext-auth git tag. The stable directory revision above is the pin.
 - SEP-2640 has no upstream SHA beyond the wiki docs mirror.
