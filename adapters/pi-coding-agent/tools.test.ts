@@ -33,7 +33,7 @@ it("maps aliases and exposure; end to end through the host pipeline", async () =
   expect([...f.tools.keys()].sort()).toEqual(["mcp__s__cat", "mcp__s__run", "tool_search"]);
 
   const direct = await f.tools.get("mcp__s__cat")!.execute("1", { p: 1 }, new AbortController().signal);
-  expect(direct.content[0]!.text).toBe("read!");
+  expect((direct.content[0] as { text: string }).text).toBe("read!");
   expect(calls[0]).toEqual(["read", { p: 1 }]);
 
   const raw: any = await f.bindings.get("mcp__s__run")!({ x: 1 }, { parentToolCallId: "p" });
@@ -51,7 +51,7 @@ it("tool_search declares deferred tools and reachesTools names them before execu
   const sig = new AbortController().signal;
   expect(await search.reachesTools!({ query: "find" }, sig)).toEqual(["mcp__s__find"]);
   expect(f.tools.get("mcp__s__find")!.exposure).toBe("deferred");
-  expect((await search.execute("2", { query: "find" }, sig)).content[0]!.text).toContain("mcp__s__find");
+  expect(((await search.execute("2", { query: "find" }, sig)).content[0] as { text: string }).text).toContain("mcp__s__find");
 });
 
 it("dispose unregisters", async () => {

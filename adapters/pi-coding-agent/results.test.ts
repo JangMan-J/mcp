@@ -12,7 +12,7 @@ it("middle-cuts multibyte text across blocks and spills the complete text privat
   const result = await renderOutcome(outcome);
   const path = result.details.spillPath!;
   try {
-    const { text } = result.content[0]!;
+    const { text } = result.content[0]! as { text: string };
     expect(Buffer.byteLength(text)).toBeLessThanOrEqual(20 * 1024);
     expect(text).toMatch(/^head🙂/);
     expect(text).toMatch(/中tail$/);
@@ -43,7 +43,7 @@ it("warns against blind retries when the write may have run", async () => {
     requestId: 1, method: "tools/call", argsDigest: "abc", sentAt: 0, binding: "http", evidence: "timeout",
   } });
   expect(result.isError).toBe(true);
-  expect(result.content[0]!.text).toMatch(/may or may not have run; do not retry blindly/i);
+  expect((result.content[0] as { text: string }).text).toMatch(/may or may not have run; do not retry blindly/i);
 });
 
 it("shows images and renders resource_link as text with server, keeping the raw result [PICA-6]", async () => {
