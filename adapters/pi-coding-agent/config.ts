@@ -13,7 +13,7 @@ export interface LegacyServerConfig {
   readonly oauth?: Readonly<Record<string, unknown>>;
 }
 type Rec = Record<string, unknown>; const isRec = (v: unknown): v is Rec => typeof v === "object" && v !== null && !Array.isArray(v);
-const bad = (m: string): never => { throw new TypeError(`readLegacyConfig: ${m}`); };
+function bad(m: string): never { throw new TypeError(`readLegacyConfig: ${m}`); }
 function strMap(v: unknown, field: string): Record<string, string> | undefined {
   if (v === undefined) return undefined;
   if (!isRec(v) || Object.values(v).some((x) => typeof x !== "string")) bad(`${field} must be a string map`);
@@ -61,14 +61,14 @@ export function readLegacyConfig(input: unknown, opts: ReadOptions = {}): Legacy
     if (raw.oauth !== undefined && !isRec(raw.oauth)) bad(`server "${name}": oauth must be an object`);
     const toolExposure = raw.toolExposure === undefined ? undefined : Object.fromEntries(
       Object.entries(strMap(raw.toolExposure, `server "${name}" toolExposure`) ?? {}).map(([k, v]) => [k, exposure(v, "toolExposure")]));
+    const env = strMap(raw.env, "env"); const headers = strMap(raw.headers, "headers");
     return {
       name, source, trusted, transport: http ? "http" as const : "stdio" as const,
       enabled: raw.enabled ?? true, exposure: exposure(raw.exposure),
       ...(command ? { command } : {}), ...(url ? { url } : {}),
       ...(raw.args ? { args: [...raw.args as string[]] } : {}),
       ...(optStr(raw.cwd, "cwd") ? { cwd: raw.cwd as string } : {}),
-      ...(strMap(raw.env, "env") ? { env: strMap(raw.env, "env") } : {}),
-      ...(strMap(raw.headers, "headers") ? { headers: strMap(raw.headers, "headers") } : {}),
+      ...(env ? { env } : {}), ...(headers ? { headers } : {}),
       ...(optStr(raw.description, "description") ? { description: raw.description as string } : {}),
       ...(raw.timeout !== undefined ? { timeout: raw.timeout as number } : {}),
       ...(raw.aliases ? { aliases: [...raw.aliases as string[]] } : {}),
