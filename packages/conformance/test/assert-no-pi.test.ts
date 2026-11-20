@@ -184,4 +184,26 @@ spawnSync(process.execPath, ["-e", ${JSON.stringify(`import(${JSON.stringify(PI_
     expect(r.err).toMatch(/adapter code/);
     expect(r.code).toBe(1);
   });
+
+  it("[PICA-13] fails the process when a package imports a synthetic adapters module", () => {
+    const root = cleanRoot();
+    mkdirSync(join(root, "adapters/synthetic"), { recursive: true });
+    writeFileSync(join(root, "adapters/synthetic/index.mjs"), "export const synthetic = true;\n");
+    mkdirSync(join(root, "packages/synthetic-consumer"), { recursive: true });
+    writeFileSync(
+      join(root, "packages/synthetic-consumer/package.json"),
+      JSON.stringify({ name: "synthetic-consumer", version: "1.0.0", type: "module", main: "index.mjs" }),
+    );
+    writeFileSync(
+      join(root, "packages/synthetic-consumer/index.mjs"),
+      "export { synthetic } from '../../adapters/synthetic/index.mjs';\n",
+    );
+    const entry = join(root, "entry.mjs");
+    writeFileSync(entry, "try { await import('./packages/synthetic-consumer/index.mjs'); console.log('imported'); } catch {}\nconsole.log('done');\n");
+    const r = run(["--root", root, "--", entry], { cwd: root });
+    expect(r.out).toContain("done");
+    expect(r.out).not.toContain("imported");
+    expect(r.err).toMatch(/adapter code/);
+    expect(r.code).toBe(1);
+  });
 });
