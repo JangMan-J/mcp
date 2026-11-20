@@ -85,19 +85,31 @@ Pinned from the Pi fork revision recorded in `docs/decisions/pi-target.md`. The 
 | `enabled` | yes | both | optional `boolean`; default `true` |
 | `description` | yes | both | optional `string` |
 | `timeout` | yes | both | optional positive `number` seconds; progress resets it (Pi) |
-| `oauth.clientId` | yes | http | optional `string` |
-| `oauth.clientSecret` | yes | http | optional `string`; Pi resolves `${NAME}` / `!cmd` |
-| `oauth.callbackPort` | yes | http | optional integer `1..65535` |
-| `oauth.callbackUrl` | yes | http | optional loopback `http:` on `localhost`, `127.0.0.1`, `[::1]` without query/fragment; must agree with `callbackPort` |
-| `oauth.scope` | yes | http | optional `string` |
-| `oauth.clientName` | yes | http | optional non-empty `string` |
-| `oauth.clientRegistration` | yes | http | optional `"auto"`/`"dcr"`/`"cimd"`; `cimd` requires loopback `/callback` and a metadata-document callback |
-| `oauth.authServerMetadataUrl` | yes | http | optional `https:` or loopback `http:` URL |
-| `exposure` | yes (Pi layer) | both | optional `"codemode"`/`"deferred"`/`"direct"`/`"hidden"`; alias `codemode-deferred` → `codemode` |
-| `toolExposure` | yes (Pi layer) | both | optional `Record<string, exposure>`; pattern `*` allowed |
-| `auth.provider` | yes (Pi layer) | http only | optional `{provider: string}`; requires `https:` or loopback; not allowed in project `mcp.json` |
-| unknown fields | kept | preserved | validator keeps unknown fields unchecked; Pi checks `exposure`/`toolExposure`/`auth` after |
-| override entry (no `command`/`url`/`type`) | not a server | project overlay | `isMcpServerOverride` → overrides `enabled` etc. of a trusted entry |
+| `oauth.clientId` | passthrough, unchecked | http | optional `string` |
+| `oauth.clientSecret` | passthrough, unchecked | http | optional `string`; Pi resolves `${NAME}` / `!cmd` |
+| `oauth.callbackPort` | passthrough, unchecked | http | optional integer `1..65535` |
+| `oauth.callbackUrl` | passthrough, unchecked | http | optional loopback `http:` on `localhost`, `127.0.0.1`, `[::1]` without query/fragment; must agree with `callbackPort` |
+| `oauth.scope` | passthrough, unchecked | http | optional `string` |
+| `oauth.clientName` | passthrough, unchecked | http | optional non-empty `string` |
+| `oauth.clientRegistration` | passthrough, unchecked | http | optional `"auto"`/`"dcr"`/`"cimd"`; `cimd` requires loopback `/callback` and a metadata-document callback |
+| `oauth.authServerMetadataUrl` | passthrough, unchecked | http | optional `https:` or loopback `http:` URL |
+| `exposure` | yes | both | optional `"codemode"`/`"deferred"`/`"direct"`/`"hidden"`; alias `codemode-deferred` → `codemode` |
+| `toolExposure` | yes | both | optional `Record<string, exposure>`; pattern `*` allowed |
+| `auth.provider` | no (dropped) | http only | optional `{provider: string}`; requires `https:` or loopback; not allowed in project `mcp.json` |
+| unknown fields | dropped (except `aliases`) | not preserved | validator keeps unknown fields unchecked; Pi checks `exposure`/`toolExposure`/`auth` after |
+| override entry (no `command`/`url`/`type`) | no (rejected) | project overlay | `isMcpServerOverride` → overrides `enabled` etc. of a trusted entry |
+
+### Gaps between this table and `adapters/pi-coding-agent/config.ts`
+
+"Parser rule" describes the pinned Pi parser, not the adapter. The adapter's `readLegacyConfig` is a pure, read-only reader with this exact surface: `mcpServers` map with names `^[A-Za-z0-9_-]+$`; per server `command`, `args`, `env`, `cwd`, `url`, `headers`, `type`, `enabled`, `description`, `timeout`, `aliases`, `exposure`, `toolExposure`, `oauth`. Explicit gaps:
+
+- **No execution or substitution.** `${NAME}` and `!cmd` in `env`, `headers`, and `oauth.clientSecret` are returned as literal strings. The reader never runs commands, reads the environment, or resolves `cwd` against a session. Progress-resets-timeout is Pi runtime behavior and is not implemented here.
+- **`oauth` is unvalidated.** It must be an object and is copied as-is. The adapter does not check `clientId`, `clientSecret`, `callbackPort`, `callbackUrl` (loopback and port agreement), `scope`, `clientName`, `clientRegistration` (`cimd` rules), or `authServerMetadataUrl`; those Parser rule cells apply only to Pi.
+- **`auth` (`auth.provider`) is unsupported.** It is not read or validated and is absent from the output. Servers relying on it lose that setting when read through the adapter.
+- **Overlay entries are unsupported.** An entry without `command`, `url`, or `type` fails with "command is required for stdio" (`isMcpServerOverride` is not implemented). A project entry cannot override `enabled` etc. of a trusted entry. Source `project` with `trusted` false returns `[]` before inspecting input.
+- **Unknown fields are dropped**, not preserved; only `aliases` (string[]) is kept beyond the table rows.
+- **Narrower or different checks:** `url` is checked only for `http:`/`https:` (no loopback rule); `toolExposure` patterns such as `*` are kept as plain keys with no matching logic; `exposure` and `toolExposure` values are validated by the adapter, not a Pi layer; `type` outside `stdio`/`http`/`streamable-http` is rejected, and `command` together with `url` is rejected.
+- **Config variants not read:** only the `{ mcpServers: {...} }` shape of `mcp.json`. Other files, layering or merge of global and project config, and settings (`-builtin:mcp`) are not handled by the reader.
 
 ## Rollback drill (described, not yet executed)
 
