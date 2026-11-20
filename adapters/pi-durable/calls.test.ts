@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { DurableCalls, type CallRecord, type DurableCallStore, type PerKeyMutex } from "./calls.ts";
+import { DurableCalls, type CallRecord, type DurableCallStore, type PerKeyMutex, type RequestIntent } from "./calls.ts";
 
 type Rec = CallRecord<string, { id: number }>;
 class FakeStore implements DurableCallStore<string, { id: number }> {
@@ -11,7 +11,7 @@ class FakeStore implements DurableCallStore<string, { id: number }> {
   async get(key: string) { return this.backing.get(key); }
   async commitIntent(key: string, request: string, meta?: { attempts: number }) {
     this.events.push("intent");
-    this.backing.set(key, { status: "intent", request, meta });
+    this.backing.set(key, { status: "intent", request, ...(meta ? { meta } : {}) });
   }
   async commitOutcome(key: string, result: { id: number }) {
     if (this.crashOnOutcome) throw new Error("crash after send");
@@ -100,9 +100,15 @@ describe("DurableCalls", () => {
   });
 
   it("[PICD-3] [PICD-6] MCP write interrupts with structured intent; list defaults replay; conflicts and stale ids rejected", async () => {
-    const describe = (r: string) => {
-      const [method, name, requestId, digest] = r.split("|");
-      return { method, server: "s", name: name || undefined, digest, requestId };
+    const describe = (r: string): RequestIntent => {
+      const [method = "", name, requestId, digest] = r.split("|");
+      return {
+        method,
+        server: "s",
+        ...(name ? { name } : {}),
+        ...(digest !== undefined ? { digest } : {}),
+        ...(requestId !== undefined ? { requestId } : {}),
+      };
     };
     const send = vi.fn(async (_req: string) => ({ id: 1 }));
     const backing = new Map<string, Rec>([
