@@ -13,7 +13,7 @@ const call: NestedToolCall = {
 };
 
 describe("runNestedTool [PICA-9]", () => {
-  it("invokes only the host pipeline, once, preserving parentToolCallId and the call", async () => {
+  it("[PICA-9] invokes only the host pipeline, once, preserving parentToolCallId and the call", async () => {
     const host = vi.fn(async (c: NestedToolCall, _signal: AbortSignal) => ({ ok: true, saw: c.parentToolCallId }));
     const directClient = vi.fn(async () => ({ ok: false }));
     void directClient; // nested calls must never bypass the host pipeline
@@ -51,7 +51,7 @@ describe("runNestedTool [PICA-9]", () => {
     await expect(pending).rejects.toThrow(`stop-${which}`);
   });
 
-  it("does not invoke the host pipeline when already aborted", async () => {
+  it("[PICA-7] does not invoke the host pipeline when already aborted", async () => {
     const parent = new AbortController();
     parent.abort();
     const host = vi.fn(async () => "x");
@@ -67,7 +67,7 @@ describe("runNestedTool [PICA-9]", () => {
 });
 
 describe("combineAbortSignals", () => {
-  it("aborts when any input aborts and ignores missing signals", () => {
+  it("[PICA-7] aborts when any input aborts and ignores missing signals", () => {
     const a = new AbortController();
     const combined = combineAbortSignals(undefined, a.signal, null);
     expect(combined).toBe(a.signal);
@@ -80,7 +80,7 @@ describe("combineAbortSignals", () => {
 });
 
 describe("cancellableConsentPort", () => {
-  it("forwards the prompt with a combined signal and returns the decision", async () => {
+  it("[PICA-7] forwards the prompt with a combined signal and returns the decision", async () => {
     const inner = { request: vi.fn(async (_p: unknown, _s: AbortSignal) => ({ decision: "accept" as const })) };
     const parent = new AbortController();
     const port = cancellableConsentPort(inner, parent.signal);
@@ -91,7 +91,7 @@ describe("cancellableConsentPort", () => {
     expect(inner.request.mock.calls[0]![1].aborted).toBe(false);
   });
 
-  it("drops a late accept when the parent aborts during the prompt", async () => {
+  it("[PICA-7] drops a late accept when the parent aborts during the prompt", async () => {
     let decide!: (v: { decision: "accept" }) => void;
     const inner = { request: vi.fn(() => new Promise<{ decision: "accept" }>((r) => { decide = r; })) };
     const parent = new AbortController();
@@ -102,7 +102,7 @@ describe("cancellableConsentPort", () => {
     await expect(pending).rejects.toThrow("parent gone");
   });
 
-  it("never auto-approves when there is no inner port, and does not call inner when pre-aborted", async () => {
+  it("[PICA-7] never auto-approves when there is no inner port, and does not call inner when pre-aborted", async () => {
     await expect(
       cancellableConsentPort(undefined).request({ kind: "authorize", serverLabel: "s" }, new AbortController().signal),
     ).resolves.toEqual({ decision: "cancel" });
