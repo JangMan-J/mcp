@@ -66,7 +66,7 @@ describe("DurableCalls", () => {
     expect(send).toHaveBeenCalledTimes(1);
   });
 
-  it("[PICD-3/6/8] acceptDuplicate restarts interrupted call, persists attempts, honors restartLimit", async () => {
+  it("[PICD-3] [PICD-6] [PICD-8] acceptDuplicate restarts interrupted call, persists attempts, honors restartLimit", async () => {
     const backing = new Map<string, Rec>();
     backing.set("k4", { status: "intent", request: "req" });
     const send = vi.fn(async (_req: string) => ({ id: 9 }));
@@ -77,6 +77,39 @@ describe("DurableCalls", () => {
     await expect(calls.execute("k5", "req", send, { acceptDuplicate: true })).resolves.toEqual({ status: "interrupted" });
     backing.set("k6", { status: "intent", request: "req" });
     await expect(calls.execute("k6", "req", send)).resolves.toEqual({ status: "interrupted" });
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("[PICD-3] read-only policy replays with a fresh request ID; legacy records without meta work", async () => {
+    const backing = new Map<string, Rec>([["r1", { status: "intent", request: "id0" }]]);
+    const send = vi.fn(async (_req: string) => ({ id: 1 }));
+    const out = await setup(backing, []).execute("r1", "id0", send, {
+      tool: "read", readOnlyTools: ["read"], restartRequest: (_r, n) => `id${n}`,
+    });
+    expect(out.status).toBe("completed");
+    expect(send).toHaveBeenCalledWith("id2");
+    expect(backing.get("r1")).toMatchObject({ status: "completed" });
+  });
+
+  it("[PICD-6] non-read-only tool reports host-restart uncertain write", async () => {
+    const backing = new Map<string, Rec>([["w1", { status: "intent", request: "x" }]]);
+    const send = vi.fn(async (_req: string) => ({ id: 1 }));
+    await expect(setup(backing, []).execute("w1", "x", send, { tool: "write", readOnlyTools: ["read"] }))
+      .resolves.toEqual({ status: "interrupted", diagnostic: "host-restart-uncertain-write" });
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("[PICD-8] operator per-tool override beats read-only policy and acceptDuplicate", async () => {
+    const backing = new Map<string, Rec>([
+      ["o1", { status: "intent", request: "x" }],
+      ["o2", { status: "intent", request: "x" }],
+    ]);
+    const send = vi.fn(async (_req: string) => ({ id: 1 }));
+    const calls = setup(backing, []);
+    await expect(calls.execute("o1", "x", send, { tool: "read", readOnlyTools: ["read"], toolOverrides: { read: "interrupt" } }))
+      .resolves.toMatchObject({ status: "interrupted" });
+    await expect(calls.execute("o2", "x", send, { tool: "write", toolOverrides: { write: "replay" } }))
+      .resolves.toMatchObject({ status: "completed" });
     expect(send).toHaveBeenCalledTimes(1);
   });
 });

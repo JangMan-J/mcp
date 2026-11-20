@@ -15,7 +15,20 @@ export interface PerKeyMutex {
 export type Send<Req, Res> = (request: Req) => Promise<Res>;
 export type CallOutcome<Res> =
   | { status: "completed"; result: Res }
-  | { status: "interrupted" };
+  | { status: "interrupted"; diagnostic?: "host-restart-uncertain-write" };
+
+export interface ExecuteOptions<Req> {
+  acceptDuplicate?: boolean;
+  restartLimit?: number;
+  /** Tool name used for policy lookup. */
+  tool?: string;
+  /** Tools known read-only: restart is safe without acceptDuplicate. */
+  readOnlyTools?: readonly string[];
+  /** Operator per-tool override; wins over readOnlyTools and acceptDuplicate. */
+  toolOverrides?: Readonly<Record<string, "replay" | "interrupt">>;
+  /** Builds the request for a restart attempt (e.g. fresh actual request ID). */
+  restartRequest?: (request: Req, attempt: number) => Req;
+}
 
 export class DurableCalls<Req = unknown, Res = unknown> {
   constructor(
@@ -28,7 +41,7 @@ export class DurableCalls<Req = unknown, Res = unknown> {
     key: string,
     request: Req,
     send: Send<Req, Res>,
-    opts: { acceptDuplicate?: boolean; restartLimit?: number } = {},
+    opts: ExecuteOptions<Req> = {},
   ): Promise<CallOutcome<Res>> {
     return this.deps.mutex.withLock(key, async () => {
       const existing = await this.deps.store.get(key);
@@ -37,8 +50,17 @@ export class DurableCalls<Req = unknown, Res = unknown> {
       let attempts = 1;
       if (existing) {
         attempts = (existing.meta?.attempts ?? 1) + 1;
-        if (!opts.acceptDuplicate || attempts - 1 > (opts.restartLimit ?? 1))
-          return { status: "interrupted" };
+        const override = opts.tool ? opts.toolOverrides?.[opts.tool] : undefined;
+        const replay =
+          override !== undefined
+            ? override === "replay"
+            : !!opts.acceptDuplicate ||
+              (!!opts.tool && !!opts.readOnlyTools?.includes(opts.tool));
+        if (!replay || attempts - 1 > (opts.restartLimit ?? 1))
+          return opts.tool && !opts.readOnlyTools?.includes(opts.tool)
+            ? { status: "interrupted", diagnostic: "host-restart-uncertain-write" }
+            : { status: "interrupted" };
+        request = opts.restartRequest?.(request, attempts) ?? request;
       }
       await this.deps.store.commitIntent(key, request, { attempts });
       const result = await send(request);
