@@ -66,9 +66,9 @@ it('allocates a fresh wire requestId on replay and sends the committed one', asy
     method: 'tools/call', server: 's', name: 'pay', durableId, requestId: 'old', digest: argsDigest(args) } });
   await expect(adapter.callTool('p', { position: 0 }, call({ secret: 'x' }))).resolves.toEqual({ status: 'completed', result: 5 });
   expect(committed).toHaveLength(1);
-  expect(committed[0].requestId).not.toBe('old');
-  expect(committed[0].requestId).toBe('r2');
-  expect(committed[0].durableId).toBe(durableId);
+  expect(committed[0]?.requestId).not.toBe('old');
+  expect(committed[0]?.requestId).toBe('r2');
+  expect(committed[0]?.durableId).toBe(durableId);
   expect(send).toHaveBeenCalledWith({ requestId: 'r2', serverId: 's', toolName: 'pay', args });
   expect(JSON.stringify(committed)).not.toContain('secret');
 });
