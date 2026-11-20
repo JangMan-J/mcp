@@ -11,7 +11,7 @@ const setup = (restart?: ConstructorParameters<typeof DurableToolAdapter<number>
     async commitIntent(key: string, request: ToolIntent, meta?: { attempts: number }) {
       events.push('intent');
       committed.push(request);
-      records.set(key, { status: 'intent', request, meta });
+      records.set(key, meta ? { status: 'intent', request, meta } : { status: 'intent', request });
     },
     async commitOutcome(key: string, result: number) {
       events.push('commit');
@@ -23,7 +23,7 @@ const setup = (restart?: ConstructorParameters<typeof DurableToolAdapter<number>
   let n = 0;
   const adapter = new DurableToolAdapter<number>({
     store, mutex: { withLock: (_k, fn) => fn() }, send, onWake,
-    restart, newRequestId: () => `r${++n}`,
+    ...(restart ? { restart } : {}), newRequestId: () => `r${++n}`,
     policies: [{ serverId: 's', toolName: 'pay', field: 'requestKey' }],
   });
   return { committed, records, events, send, adapter };
@@ -32,7 +32,7 @@ const call = (args: Record<string, unknown>) => ({
   serverId: 's', toolName: 'pay', inputSchema: { properties: { requestKey: { type: 'string' } } }, args,
 });
 
-it('commits durable id and digest (no raw args) in order, and keeps restart identity', async () => {
+it('[PICD-1] commits durable id and digest (no raw args) in order, and keeps restart identity', async () => {
   const { committed, records, events, send, adapter } = setup();
   const key = '["p","position","0"]';
   const wire = { secret: 'x', requestKey: key };
