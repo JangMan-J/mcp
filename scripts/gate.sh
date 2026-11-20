@@ -87,6 +87,21 @@ isolated() {
 
 export_head() { git -C "$ROOT" archive --format=tar "$GATE_SHA" | tar -x -C "$1"; }
 
+# Stage the local official runner, including its built output and dependencies.
+# A local clone supplies independent git metadata even when the source is a worktree.
+stage_official_runner() {
+  local src="$1" dest="$2"
+  [ -d "$src" ] || return 0
+  rm -rf "$dest"
+  mkdir -p "$(dirname "$dest")"
+  if [ -e "$src/.git" ]; then
+    git -c advice.detachedHead=false clone --quiet --no-hardlinks --no-local "$src" "$dest"
+  else
+    mkdir -p "$dest"
+  fi
+  tar -C "$src" --exclude=./.git -cf - . | tar -C "$dest" -xf -
+}
+
 echo "gate: sha $GATE_SHA, work $WORK, reports $GATE_REPORTS_DIR"
 
 # --- 1. prereq stage (dev toolchain, outside production runtime) ---
@@ -148,6 +163,10 @@ for d in "$DEV"/packages/*/dist; do
 done
 isolated "$PROD" "$GATE_PREREQ_DIR/npm-ci-prod.log" -- "$NPM_BIN" ci --omit=dev --prefer-offline --ignore-scripts \
   || { echo "gate: production npm ci failed (see $GATE_PREREQ_DIR/npm-ci-prod.log)" >&2; exit 1; }
+runner_rel="$("$NODE_BIN" -e 'process.stdout.write(require(process.argv[1]).runner.checkoutDir)' "$PROD/packages/conformance/official-map.json")"
+runner_src="${MCP_CONFORMANCE_CHECKOUT:-$ROOT/$runner_rel}"
+stage_official_runner "$runner_src" "$PROD/$runner_rel"
+unset MCP_CONFORMANCE_CHECKOUT
 # $DEV stays until cleanup: gate.js reruns the removal suite there via GATE_DEV_WORKSPACE.
 
 GATE_JS="$PROD/packages/conformance/dist/gate.js"
