@@ -1,12 +1,21 @@
 # Gate status
 
+## Wave 3 verification at `b6c1f214db735b86f152c5413f144ef407a7d1d2`
+
+Observed in an integrated worktree at this commit. This is not a release gate result: `npm run gate` was not run, so no release-eligibility claim is made.
+
+- `npm run build`, `npx --no-install tsc -b adapters`, `npm test`, `npm run req:build`, `npm run check:deps`, `npm run check:forbidden`, `npm run check:deps-doc` and `npm run check:coverage` all exited 0.
+- Vitest: 1102 tests passed in 106 files. Coverage checked 610 requirements and 265 fixtures with no errors. `check:deps` found no violations (136 modules, 296 dependencies).
+- Targeted Vitest JSON run over `adapters`, `packages/conformance/test/cutover.test.ts` and `packages/conformance/test/assert-no-pi.test.ts`: 130 passed, 0 failed. Passing titles carry all 25 Wave 3 tags: `[PICA-1]`…`[PICA-14]`, `[PICD-1]`…`[PICD-9]`, `[CUT-PI-MCP-1]`, `[CUT-ROLLBACK-1]`.
+- No live Pi trial or run took place, and no official external runner checkout was present or used; the official suite was not run.
+
 ## Milestone 5: G12 restoration and verification status
 
 **Not release eligible.** The isolated `npm run gate` at `374d595ff51643ba60b57f0f4343b2e45bf2bf5d` exited 1 (`BLOCKED`). The official runner checkout was absent from the isolated runtime. The `official` suite reported `checkout-missing` with `ok: false`, `total: 0`, and an empty `scenarios` array. No official scenario ran; G12 remains blocked on a missing prerequisite.
 
 The G12 files restored at `374d595` match the versions in salvage commit `1d30a252739e3c1be36ed394043b7456621a7bc3`. This restores the `official --json` reporting contract: the CLI supplies `total` and `reason` alongside the scenario details, so the gate now records the checkout diagnosis instead of `total=?`. G12 still requires both the official and evidence suites to pass.
 
-The restored base passed 982/982 tests and 265/265 baseline fixtures and killed 342/342 mutants. Those counts apply to the restored base only. No live Pi trial or run took place, and Wave 3 has not been verified.
+The restored base passed 982/982 tests and 265/265 baseline fixtures and killed 342/342 mutants. Those counts apply to the restored base only. No live Pi trial or run took place. (Wave 3 was not verified at that commit; see the top section for later verification.)
 
 To run the 32 required `2026-07-28` client scenarios, provide a clean local checkout of `@modelcontextprotocol/conformance` `0.2.0-alpha.12` at `96a6f9478b7f2e125cf0360a213383cf57533893`, with `dist/index.js` and installed dependencies. Use `.cache/conformance/checkout` in a disposable worktree, or pass a local checkout via `MCP_CONFORMANCE_CHECKOUT`; the gate stages it in its disposable production tree before entering the isolated runtime. No prebuilt checkout at the pin was found in the adjacent project, worktree, cache, or temporary directories searched. Nothing was staged or downloaded.
 
