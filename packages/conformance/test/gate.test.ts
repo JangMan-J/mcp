@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -519,5 +519,115 @@ describe("gate", () => {
     const c = base();
     const rep2 = runGate({ ...c.opts, requirements: [...REQS, { id: "X-9", disposition: "required" }] });
     expect(rep2.claim.startsWith("Not release eligible: 1/3 requirement rows pass (1/2 ")).toBe(true);
+  });
+
+  it("gate.sh stages from MCP_CONFORMANCE_CHECKOUT offline, isolates child env to staged dest, and .gitignore ignores .cache/", () => {
+    const repoRoot = fileURLToPath(new URL("../../..", import.meta.url));
+    const gitignore = readFileSync(join(repoRoot, ".gitignore"), "utf8");
+    expect(gitignore.split(/\r?\n/)).toContain(".cache/");
+
+    const gateSh = readFileSync(join(repoRoot, "scripts/gate.sh"), "utf8");
+    expect(gateSh).toContain("runner.checkoutDir");
+    expect(gateSh).toContain('runner_src="${MCP_CONFORMANCE_CHECKOUT:-$ROOT/$runner_rel}"');
+    expect(gateSh).not.toContain("GATE_OFFICIAL_CHECKOUT");
+    const stageFn = gateSh.match(/stage_official_runner\(\)\s*\{[\s\S]*?\n\}/);
+    const isolatedFn = gateSh.match(/isolated\(\)\s*\{[\s\S]*?\n\}/);
+    expect(stageFn).not.toBeNull();
+    expect(isolatedFn).not.toBeNull();
+
+    const tmp = mkdtempSync(join(tmpdir(), "gate-stage-test-"));
+    try {
+      const origin = join(tmp, "origin");
+      const wt = join(tmp, "wt");
+      const prod = join(tmp, "prod");
+      const runnerRel = ".cache/conformance/checkout";
+      const dest = join(prod, runnerRel);
+      const git = (args: string[], cwd?: string) => {
+        const r = spawnSync("git", args, { cwd, encoding: "utf8" });
+        expect(r.status, r.stderr).toBe(0);
+        return r.stdout.trim();
+      };
+      git(["init", "-q", origin]);
+      git(["config", "user.email", "test@example.com"], origin);
+      git(["config", "user.name", "Test"], origin);
+      writeFileSync(join(origin, "package.json"), JSON.stringify({ name: "staging-fixture", version: "0.2.0-alpha.12", bin: "dist/bin.js" }));
+      git(["add", "package.json"], origin);
+      git(["commit", "-q", "-m", "c1"], origin);
+      const c1 = git(["rev-parse", "HEAD"], origin);
+      writeFileSync(join(origin, "extra.txt"), "v2\n");
+      git(["add", "extra.txt"], origin);
+      git(["commit", "-q", "-m", "c2"], origin);
+      git(["worktree", "add", "-q", "--detach", wt, c1], origin);
+
+      // Untracked built output and dependencies inside the local runner worktree.
+      mkdirSync(join(wt, "dist"), { recursive: true });
+      writeFileSync(join(wt, "dist/bin.js"), "#!/usr/bin/env node\nconsole.log('ok');\n");
+      mkdirSync(join(wt, "node_modules/dep"), { recursive: true });
+      writeFileSync(join(wt, "node_modules/dep/index.js"), "module.exports = 1;\n");
+
+      // 1. Stage via MCP_CONFORMANCE_CHECKOUT and verify isolated subprocess resolves staged dest, not host env.
+      const gateHome = join(tmp, "home");
+      const gateTmp = join(tmp, "tmp");
+      mkdirSync(prod, { recursive: true });
+      mkdirSync(gateHome, { recursive: true });
+      mkdirSync(gateTmp, { recursive: true });
+      const stageAndIsolate = spawnSync(
+        "bash",
+        [
+          "-euo",
+          "pipefail",
+          "-c",
+          [
+            stageFn![0],
+            isolatedFn![0],
+            `ROOT="$1"; PROD="$2"; runner_rel="$3"; NODE_BIN="$4"`,
+            `GATE_HOME="$5"; GATE_TMP="$6"; NPM_CACHE=""; child=""`,
+            `BASE_PATH="$(dirname "$NODE_BIN"):/usr/bin:/bin"`,
+            `runner_src="\${MCP_CONFORMANCE_CHECKOUT:-\$ROOT/\$runner_rel}"`,
+            `stage_official_runner "$runner_src" "$PROD/$runner_rel"`,
+            `unset MCP_CONFORMANCE_CHECKOUT`,
+            `isolated "$PROD" - GATE_RUNTIME_ROOT="$PROD" -- "$NODE_BIN" -e 'const path=require("node:path"); process.stdout.write(JSON.stringify({ env: process.env.MCP_CONFORMANCE_CHECKOUT ?? null, resolved: path.resolve(process.cwd(), process.env.MCP_CONFORMANCE_CHECKOUT || process.argv[1]) }));' "$runner_rel"`,
+          ].join("\n"),
+          "_",
+          join(tmp, "unused-root"),
+          prod,
+          runnerRel,
+          process.execPath,
+          gateHome,
+          gateTmp,
+        ],
+        { encoding: "utf8", env: { ...process.env, MCP_CONFORMANCE_CHECKOUT: wt } },
+      );
+      expect(stageAndIsolate.status, stageAndIsolate.stderr).toBe(0);
+      const childReport = JSON.parse(stageAndIsolate.stdout) as { env: string | null; resolved: string };
+      expect(childReport.env).toBeNull();
+      expect(childReport.resolved).toBe(dest);
+      expect(childReport.resolved).not.toBe(wt);
+      expect(statSync(join(dest, ".git")).isDirectory()).toBe(true);
+      expect(git(["rev-parse", "HEAD"], dest)).toBe(c1);
+      expect(existsSync(join(dest, "dist/bin.js"))).toBe(true);
+      expect(existsSync(join(dest, "node_modules/dep/index.js"))).toBe(true);
+
+      const runStage = (src: string, dst: string) =>
+        spawnSync("bash", ["-euo", "pipefail", "-c", `${stageFn![0]}\nstage_official_runner "$1" "$2"`, "_", src, dst], { encoding: "utf8" });
+
+      // 2. Non-git directory stages contents without aborting gate.sh.
+      const plain = join(tmp, "plain");
+      const plainDest = join(tmp, "plain-dest");
+      mkdirSync(plain, { recursive: true });
+      writeFileSync(join(plain, "marker.txt"), "present\n");
+      const r2 = runStage(plain, plainDest);
+      expect(r2.status, r2.stderr).toBe(0);
+      expect(existsSync(join(plainDest, "marker.txt"))).toBe(true);
+      expect(existsSync(join(plainDest, ".git"))).toBe(false);
+
+      // 3. Missing source is a no-op.
+      const missingDest = join(tmp, "missing-dest");
+      const r3 = runStage(join(tmp, "does-not-exist"), missingDest);
+      expect(r3.status, r3.stderr).toBe(0);
+      expect(existsSync(missingDest)).toBe(false);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });
