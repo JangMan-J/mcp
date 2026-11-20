@@ -3,7 +3,7 @@ import type { ClientRequest, Outcome, RequestOptions } from "@mcp-client/core";
 import { ResourcesApi } from "../../packages/ops/src/resources.ts";
 import { createResourceTools } from "./resources.ts";
 
-it("routes each native tool through ready ops, preserving alias, cursor and URI semantics", async () => {
+it("[PICA-4] routes each native tool through ready ops, preserving alias, cursor and URI semantics", async () => {
   const uri = "https://example.test/manual";
   const signal = new AbortController().signal;
   const activeSignal = new AbortController().signal;

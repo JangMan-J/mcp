@@ -7,7 +7,7 @@ function readinessGate() {
   return { ready, open };
 }
 
-test("tool_search waits for readiness, then declares only matching deferred tools once", async () => {
+test("[PICA-5] tool_search waits for readiness, then declares only matching deferred tools once", async () => {
   const gate = readinessGate();
   const declared: string[] = [];
   let listed = false;
