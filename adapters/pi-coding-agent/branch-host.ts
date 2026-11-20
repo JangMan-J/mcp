@@ -104,7 +104,7 @@ export function restoreBranch(
   source: BranchSessionPort | readonly unknown[],
   leafId?: string | null,
 ): BranchState | undefined {
-  if (Array.isArray(source)) return decodeBranch(activeBranchEntries(source, leafId));
+  if (isEntryList(source)) return decodeBranch(activeBranchEntries(source, leafId));
   return decodeBranch(source.getBranch());
 }
 
@@ -115,4 +115,8 @@ export function createBranchHost(host: BranchSessionPort): BranchHost {
     restoreBranch: (entries, leafId) =>
       entries === undefined ? restoreBranch(host) : decodeBranch(activeBranchEntries(entries, leafId)),
   };
+}
+
+function isEntryList(source: BranchSessionPort | readonly unknown[]): source is readonly unknown[] {
+  return Array.isArray(source);
 }

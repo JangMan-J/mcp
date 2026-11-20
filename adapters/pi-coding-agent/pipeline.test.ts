@@ -81,7 +81,7 @@ describe("combineAbortSignals", () => {
 
 describe("cancellableConsentPort", () => {
   it("forwards the prompt with a combined signal and returns the decision", async () => {
-    const inner = { request: vi.fn(async () => ({ decision: "accept" as const })) };
+    const inner = { request: vi.fn(async (_p: unknown, _s: AbortSignal) => ({ decision: "accept" as const })) };
     const parent = new AbortController();
     const port = cancellableConsentPort(inner, parent.signal);
     const prompt = { kind: "tool-call" as const, serverLabel: "srv" };
@@ -107,7 +107,7 @@ describe("cancellableConsentPort", () => {
       cancellableConsentPort(undefined).request({ kind: "authorize", serverLabel: "s" }, new AbortController().signal),
     ).resolves.toEqual({ decision: "cancel" });
 
-    const inner = { request: vi.fn(async () => ({ decision: "accept" as const })) };
+    const inner = { request: vi.fn(async (_p: unknown, _s: AbortSignal) => ({ decision: "accept" as const })) };
     const signal = new AbortController();
     signal.abort();
     await expect(
