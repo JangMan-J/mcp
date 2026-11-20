@@ -6,6 +6,7 @@
     "types": ["node"]
   },
   "references": [
+    { "path": "./tsconfig.cut.json" },
     { "path": "../auth" },
     { "path": "../core" },
     { "path": "../fixtures" },

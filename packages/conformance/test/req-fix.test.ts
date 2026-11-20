@@ -230,7 +230,13 @@ describe("[FIX-5] official runner is a subprocess only (static grep no-runner-im
     expect(typeof catalog.reason).toBe("string");
     const rs = map.resultSchema as Record<string, unknown> | null;
     if (rs === null) expect(typeof map.resultSchemaReason).toBe("string");
-    else for (const k of ["source", "idField", "statusField"]) expect(typeof rs[k]).toBe("string");
+    else expect(rs).toMatchObject({
+      source: expect.any(String),
+      passedField: "passed",
+      failedField: "failed",
+      totalField: "total",
+      notScoredField: "not_scored",
+    });
     const el = map.eligibility as { specVersion: unknown; requires: Record<string, unknown> };
     expect(el.specVersion).toBe(map.targetSpecVersion);
     for (const f of ["legacy", "experimental", "extension", "disputed"]) expect(typeof el.requires[f], f).toBe("boolean");
