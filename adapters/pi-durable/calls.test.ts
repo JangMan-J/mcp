@@ -1,0 +1,68 @@
+import { describe, expect, it, vi } from "vitest";
+import { DurableCalls, type CallRecord, type DurableCallStore, type PerKeyMutex } from "./calls.ts";
+
+type Rec = CallRecord<string, { id: number }>;
+class FakeStore implements DurableCallStore<string, { id: number }> {
+  constructor(
+    private backing: Map<string, Rec>,
+    private events: string[],
+    private crashOnOutcome = false,
+  ) {}
+  async get(key: string) { return this.backing.get(key); }
+  async commitIntent(key: string, request: string) {
+    this.events.push("intent");
+    this.backing.set(key, { status: "intent", request });
+  }
+  async commitOutcome(key: string, result: { id: number }) {
+    if (this.crashOnOutcome) throw new Error("crash after send");
+    this.events.push("outcome");
+    this.backing.set(key, { status: "completed", result });
+  }
+}
+class FakeMutex implements PerKeyMutex {
+  private tails = new Map<string, Promise<unknown>>();
+  async withLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.tails.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const cur = new Promise<void>((r) => (release = r));
+    this.tails.set(key, prev.then(() => cur));
+    await prev;
+    try { return await fn(); } finally { release(); }
+  }
+}
+const setup = (backing = new Map<string, Rec>(), events: string[] = [], crash = false) =>
+  new DurableCalls<string, { id: number }>({ store: new FakeStore(backing, events, crash), mutex: new FakeMutex() });
+
+describe("DurableCalls", () => {
+  it("commits intent, sends, commits outcome in order, then replays exact result", async () => {
+    const events: string[] = [];
+    const calls = setup(new Map(), events);
+    const result = { id: 1 };
+    const send = vi.fn(async (_req: string) => { events.push("send"); return result; });
+    await expect(calls.execute("k1", "req", send)).resolves.toEqual({ status: "completed", result });
+    expect(events).toEqual(["intent", "send", "outcome"]);
+    const replay = await calls.execute("k1", "req", vi.fn(async () => ({ id: 2 })));
+    expect(replay.status).toBe("completed");
+    if (replay.status === "completed") expect(replay.result).toBe(result);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("crash after send: reopened store reports interrupted without resending", async () => {
+    const backing = new Map<string, Rec>();
+    const send = vi.fn(async (_req: string) => ({ id: 7 }));
+    await expect(setup(backing, [], true).execute("k2", "req", send)).rejects.toThrow("crash after send");
+    expect(backing.get("k2")?.status).toBe("intent");
+    const reopened = setup(backing, []);
+    await expect(reopened.execute("k2", "req", send)).resolves.toEqual({ status: "interrupted" });
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("serializes concurrent calls for the same key under the mutex", async () => {
+    const calls = setup();
+    const send = vi.fn(async (_req: string) => ({ id: 3 }));
+    const [a, b] = await Promise.all([calls.execute("k3", "r", send), calls.execute("k3", "r", send)]);
+    expect(a).toEqual({ status: "completed", result: { id: 3 } });
+    expect(b).toEqual(a);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+});
