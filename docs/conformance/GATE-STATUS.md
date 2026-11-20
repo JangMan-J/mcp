@@ -1,6 +1,16 @@
 # Gate status
 
-## M3 integrated verification
+## Milestone 5: G12 restoration and verification status
+
+**Not release eligible.** The isolated `npm run gate` at `374d595ff51643ba60b57f0f4343b2e45bf2bf5d` exited 1 (`BLOCKED`). The official runner checkout was absent from the isolated runtime. The `official` suite reported `checkout-missing` with `ok: false`, `total: 0`, and an empty `scenarios` array. No official scenario ran; G12 remains blocked on a missing prerequisite.
+
+The G12 files restored at `374d595` match the versions in salvage commit `1d30a252739e3c1be36ed394043b7456621a7bc3`. This restores the `official --json` reporting contract: the CLI supplies `total` and `reason` alongside the scenario details, so the gate now records the checkout diagnosis instead of `total=?`. G12 still requires both the official and evidence suites to pass.
+
+The restored base passed 982/982 tests and 265/265 baseline fixtures and killed 342/342 mutants. Those counts apply to the restored base only. No live Pi trial or run took place, and Wave 3 has not been verified.
+
+To run the 32 required `2026-07-28` client scenarios, provide a clean local checkout of `@modelcontextprotocol/conformance` `0.2.0-alpha.12` at `96a6f9478b7f2e125cf0360a213383cf57533893`, with `dist/index.js` and installed dependencies. Use `.cache/conformance/checkout` in a disposable worktree, or pass a local checkout via `MCP_CONFORMANCE_CHECKOUT`; the gate stages it in its disposable production tree before entering the isolated runtime. No prebuilt checkout at the pin was found in the adjacent project, worktree, cache, or temporary directories searched. Nothing was staged or downloaded.
+
+## Historical M3 integrated verification (`6b9f821`)
 
 **Not release eligible.** `npm run gate` exited 1 (`BLOCKED`) at commit `6b9f8217d031c1c4a44805998c39b8bef131d742`. The report (`reports/gate-6b9f8217d031c1c4a44805998c39b8bef131d742.json`, generated 2026-11-19T23:35:16.618Z, not committed) records 520/610 requirement rows passing, 0 failing and 90 missing. G1–G11 passed. G12 was blocked on the official suite; its evidence suite passed.
 
