@@ -95,8 +95,36 @@ describe("DurableCalls", () => {
     const backing = new Map<string, Rec>([["w1", { status: "intent", request: "x" }]]);
     const send = vi.fn(async (_req: string) => ({ id: 1 }));
     await expect(setup(backing, []).execute("w1", "x", send, { tool: "write", readOnlyTools: ["read"] }))
-      .resolves.toEqual({ status: "interrupted", diagnostic: "host-restart-uncertain-write" });
+      .resolves.toEqual({ status: "interrupted", classification: { kind: "uncertain-write", evidence: "host-restart" } });
     expect(send).not.toHaveBeenCalled();
+  });
+
+  it("[PICD-3] [PICD-6] MCP write interrupts with structured intent; list defaults replay; conflicts and stale ids rejected", async () => {
+    const describe = (r: string) => {
+      const [method, name, requestId, digest] = r.split("|");
+      return { method, server: "s", name: name || undefined, digest, requestId };
+    };
+    const send = vi.fn(async (_req: string) => ({ id: 1 }));
+    const backing = new Map<string, Rec>([
+      ["m1", { status: "intent", request: "tools/call|w|a|d1" }],
+      ["m2", { status: "intent", request: "tools/list||a|d" }],
+      ["m3", { status: "intent", request: "tasks/list||a|d" }],
+      ["m4", { status: "intent", request: "tools/list||a|d" }],
+      ["m5", { status: "intent", request: "tools/list||a|d" }],
+    ]);
+    const calls = setup(backing, []);
+    await expect(calls.execute("m1", "tools/call|w|a|d1", send, { describe })).resolves.toEqual({
+      status: "interrupted",
+      classification: { kind: "uncertain-write", evidence: "host-restart", intent: { method: "tools/call", server: "s", name: "w", digest: "d1", requestId: "a" } },
+    });
+    await expect(calls.execute("m1", "tools/call|w|a|d2", send, { describe })).rejects.toThrow("conflicting intent identity");
+    await expect(calls.execute("m2", "tools/list||a|d", send, { describe, restartRequest: (_r, n) => `tools/list||b${n}|d` }))
+      .resolves.toMatchObject({ status: "completed" });
+    await expect(calls.execute("m3", "tasks/list||a|d", send, { describe })).resolves.toMatchObject({ status: "interrupted", classification: { kind: "uncertain-write" } });
+    await expect(calls.execute("m4", "tools/list||a|d", send, { describe })).rejects.toThrow("stale restart request id");
+    await expect(calls.execute("m5", "tools/list||a|d", send, { describe, restartRequest: () => "tools/list||a|x" }))
+      .rejects.toThrow("conflicting intent identity");
+    expect(send).toHaveBeenCalledTimes(1);
   });
 
   it("[PICD-8] operator per-tool override beats read-only policy and acceptDuplicate", async () => {
