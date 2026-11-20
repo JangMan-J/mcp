@@ -67,7 +67,37 @@ Before any config is touched:
 2. Migrate **one server first**, then the rest, verifying tool registration and
    `/mcp` status after each.
 3. Keep the old `mcp.json` untouched. The adapter reads the same shape
-   read-only; the schema-compat table is produced in Wave 3 docs.
+   read-only (see schema-compatibility table below).
+
+## Schema compatibility (pinned source: `packages/mcp/src/config.ts` and `packages/coding-agent/src/core/mcp-servers.ts` @ `7d80b45f62f8a8b8cd0f91a71d78ba56f229b1ec`)
+
+Pinned from the Pi fork revision recorded in `docs/decisions/pi-target.md`. The validator is `validateMcpServerConfig` (`packages/mcp/src/config.ts`: name `^[A-Za-z0-9_-]+$`, top-level `mcpServers` map). Unknown fields are kept unchecked for the caller; only the fields below are validated. This table does not invent features the parser does not validate.
+
+| Field | Adapter reads | Legacy handling | Parser rule |
+|---|---|---|---|
+| `command` | yes | stdio transport | required when `url` absent; `type` absent or `stdio` |
+| `args` | yes | stdio | optional `string[]` |
+| `env` | yes | stdio | optional `Record<string,string>`; Pi resolves `${NAME}` / `!cmd` |
+| `cwd` | yes | stdio | optional `string`; Pi resolves relative to session cwd |
+| `url` | yes | http | required when `command` absent; `type` absent or `http`/`streamable-http`; must be `http:` or `https:` |
+| `headers` | yes | http | optional `Record<string,string>`; Pi resolves `${NAME}` / `!cmd` |
+| `type` | validated | legacy `sse` rejected | `sse` → invalid: "legacy SSE transport is not supported; use the streamable HTTP URL"; `streamable-http` accepted as `http` |
+| `enabled` | yes | both | optional `boolean`; default `true` |
+| `description` | yes | both | optional `string` |
+| `timeout` | yes | both | optional positive `number` seconds; progress resets it (Pi) |
+| `oauth.clientId` | yes | http | optional `string` |
+| `oauth.clientSecret` | yes | http | optional `string`; Pi resolves `${NAME}` / `!cmd` |
+| `oauth.callbackPort` | yes | http | optional integer `1..65535` |
+| `oauth.callbackUrl` | yes | http | optional loopback `http:` on `localhost`, `127.0.0.1`, `[::1]` without query/fragment; must agree with `callbackPort` |
+| `oauth.scope` | yes | http | optional `string` |
+| `oauth.clientName` | yes | http | optional non-empty `string` |
+| `oauth.clientRegistration` | yes | http | optional `"auto"`/`"dcr"`/`"cimd"`; `cimd` requires loopback `/callback` and a metadata-document callback |
+| `oauth.authServerMetadataUrl` | yes | http | optional `https:` or loopback `http:` URL |
+| `exposure` | yes (Pi layer) | both | optional `"codemode"`/`"deferred"`/`"direct"`/`"hidden"`; alias `codemode-deferred` → `codemode` |
+| `toolExposure` | yes (Pi layer) | both | optional `Record<string, exposure>`; pattern `*` allowed |
+| `auth.provider` | yes (Pi layer) | http only | optional `{provider: string}`; requires `https:` or loopback; not allowed in project `mcp.json` |
+| unknown fields | kept | preserved | validator keeps unknown fields unchecked; Pi checks `exposure`/`toolExposure`/`auth` after |
+| override entry (no `command`/`url`/`type`) | not a server | project overlay | `isMcpServerOverride` → overrides `enabled` etc. of a trusted entry |
 
 ## Rollback drill (described, not yet executed)
 
