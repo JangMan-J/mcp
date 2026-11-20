@@ -15,7 +15,7 @@ describe('PICD-7', () => {
     expect(applyIdempotencyPolicy({ ...call, args: { amount: 42 } }, policies)).toEqual(expected);
   });
 
-  it('requires an explicit opt-in for the exact server and tool', () => {
+  it('[PICD-7] requires an explicit opt-in for the exact server and tool', () => {
     expect(applyIdempotencyPolicy(call)).toEqual(call.args);
     expect(applyIdempotencyPolicy({ ...call, serverId: 'other' }, policies)).toEqual(call.args);
     expect(applyIdempotencyPolicy({ ...call, toolName: 'refund' }, policies)).toEqual(call.args);

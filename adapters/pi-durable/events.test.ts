@@ -19,7 +19,7 @@ it('does not rewind the subscription cursor on replay of an older event', () => 
   }
 });
 
-it('PICD-5: replays after a crash between conversation commit and cursor commit', () => {
+it('[PICD-5] replays after a crash between conversation commit and cursor commit', () => {
   const dir = mkdtempSync(join(tmpdir(), 'picd-events-'));
   const path = join(dir, 'conversation.db');
   let db = new DatabaseSync(path);
