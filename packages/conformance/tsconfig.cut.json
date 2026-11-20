@@ -1,0 +1,17 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "cut",
+    "outDir": "dist/cut",
+    "tsBuildInfoFile": "dist/cut/tsconfig.cut.tsbuildinfo",
+    "types": ["node"]
+  },
+  "references": [
+    { "path": "../auth" },
+    { "path": "../core" },
+    { "path": "../mrtr-cache" },
+    { "path": "../ops" },
+    { "path": "../transport-http" }
+  ],
+  "include": ["cut/**/*.ts"]
+}

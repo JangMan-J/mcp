@@ -32,9 +32,10 @@ export interface OfficialScenarioMapping extends Partial<EligibilityFlags> {
 /** Declared shape of one scenario's result JSON (from a documented contract only). */
 export interface ResultSchema {
   readonly source: string;
-  readonly idField: string;
-  readonly statusField: string;
-  readonly passValue: string | boolean;
+  readonly passedField: string;
+  readonly failedField: string;
+  readonly totalField: string;
+  readonly notScoredField: string;
 }
 
 export interface OfficialMap {
@@ -120,20 +121,20 @@ function inspectCheckout(dir: string, map: OfficialMap): Checkout {
   const head = git.status === 0 ? git.stdout.trim() : undefined;
   if (!head) problems.push(`checkout-head-unknown: git rev-parse HEAD failed in ${dir}`);
   else if (head !== map.runner.commit) problems.push(`checkout-pin-mismatch: HEAD ${head} != pin ${map.runner.commit} (${map.runner.tag})`);
+  if (!/^[0-9a-f]{40}$/.test(map.runner.commit)) problems.push("checkout-pin-invalid: expected full commit hash");
+  const dirty = spawnSync("git", ["-C", dir, "status", "--porcelain", "--untracked-files=no"], { encoding: "utf8" });
+  if (dirty.status !== 0 || dirty.stdout.trim()) problems.push("checkout-dirty: tracked checkout files modified or status unavailable");
   let bin: string | undefined;
   const manifestPath = join(dir, "package.json");
   if (!existsSync(manifestPath)) {
     problems.push(`checkout-manifest-missing: ${manifestPath}`);
   } else {
-    const m = JSON.parse(readFileSync(manifestPath, "utf8")) as { name?: string; version?: string; bin?: string | Record<string, string> };
+    let m: { name?: string; version?: string } = {};
+    try { m = JSON.parse(readFileSync(manifestPath, "utf8")); } catch { problems.push("checkout-manifest-invalid: invalid package.json"); }
     if (m.name !== map.runner.package) problems.push(`checkout-name-mismatch: ${String(m.name)} != ${map.runner.package}`);
     if (m.version !== map.runner.version) problems.push(`checkout-version-mismatch: ${String(m.version)} != ${map.runner.version}`);
-    const rel = typeof m.bin === "string" ? m.bin : m.bin && Object.values(m.bin).length === 1 ? Object.values(m.bin)[0] : undefined;
-    if (!rel) problems.push("checkout-bin-ambiguous: package.json must declare exactly one bin");
-    else {
-      bin = join(dir, rel);
-      if (!existsSync(bin)) problems.push(`checkout-bin-not-built: ${bin} absent`);
-    }
+    bin = join(dir, "dist/index.js");
+    if (!existsSync(bin)) problems.push(`checkout-bin-not-built: ${bin} absent`);
   }
   return { head, bin, problems };
 }
@@ -166,7 +167,7 @@ export async function runOfficial(root: string): Promise<OfficialResult> {
     else applicable.push(s);
   }
 
-  const checkoutDir = join(absRoot, map.runner.checkoutDir);
+  const checkoutDir = process.env.MCP_CONFORMANCE_CHECKOUT ? resolve(process.env.MCP_CONFORMANCE_CHECKOUT) : resolve(absRoot, map.runner.checkoutDir);
   const checkout = inspectCheckout(checkoutDir, map);
   const cutPath = map.cut.authorized && map.cut.path ? join(absRoot, map.cut.path) : undefined;
 
@@ -177,7 +178,7 @@ export async function runOfficial(root: string): Promise<OfficialResult> {
   }
   if (!cutPath) reasons.push(`cut-not-authorized: ${map.cut.reason}`);
   else if (!existsSync(cutPath)) reasons.push(`cut-missing: ${cutPath} absent`);
-  if (!map.resultSchema) reasons.push(`result-schema-unavailable: ${map.resultSchemaReason ?? "no documented result JSON schema"}`);
+  if (!map.resultSchema || map.resultSchema.passedField !== "passed" || map.resultSchema.failedField !== "failed" || map.resultSchema.totalField !== "total" || map.resultSchema.notScoredField !== "not_scored" || !map.resultSchema.source) reasons.push(`result-schema-unavailable: ${map.resultSchemaReason ?? "no documented result JSON schema"}`);
   reasons.push(...checkout.problems);
 
   const evidence: Record<string, unknown> = {
@@ -215,8 +216,7 @@ export async function runOfficial(root: string): Promise<OfficialResult> {
     const parsed = lastJsonObject(r.stdout ?? "");
     let error: string | undefined;
     if (!parsed) error = "no result JSON in stdout";
-    else if (parsed[schema.idField] !== s.id) error = `result ${schema.idField}=${String(parsed[schema.idField])} != ${s.id}`;
-    else if (parsed[schema.statusField] !== schema.passValue) error = `result ${schema.statusField}=${String(parsed[schema.statusField])}`;
+    else if (parsed[schema.passedField] !== 1 || parsed[schema.failedField] !== 0 || parsed[schema.totalField] !== 1 || parsed[schema.notScoredField] !== 0) error = "result is not exactly one passed scored scenario";
     else if (r.status !== 0) error = `exit ${String(r.status)} despite passing result`;
     return { id: s.id, requirements: s.requirements, ok: !error, exitCode: r.status, result: parsed ?? null, evidence: clip(out), ...(error ? { error } : {}) };
   });
