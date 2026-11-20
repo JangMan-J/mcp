@@ -207,9 +207,10 @@ export function installCodingAgentAdapter<C extends Client>(
 
   function registerResources() {
     if (!toolHost || !resourcesClient) return;
-    const targets = (alias?: string) => alias === undefined
-      ? Array.from(servers.values()).filter(s => s.enabled && s.active).map(s => s.descriptor.name)
-      : servers.get(alias)?.enabled ? [alias] : [];
+    const targets = (alias?: string) => Array.from(servers.values())
+      .filter(s => s.enabled && s.active && s.descriptor.exposure !== "hidden"
+        && (alias === undefined || s.descriptor.name === alias || s.descriptor.aliases?.includes(alias) === true))
+      .map(s => s.descriptor.name);
     const tools = createResourceTools(targets, (server, run, signal) =>
       withHandle(server, (c, s) => run(resourcesClient(c), s), signal));
     resourceRegistrations = tools.map(tool =>

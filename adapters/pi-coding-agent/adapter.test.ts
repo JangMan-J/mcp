@@ -154,7 +154,7 @@ it("aborts in-flight sign-in on shutdown even when the command supplies its own 
 
 it("[PICA-14] composes tools, native resource tools and lazy branch restore through the entrypoint", async () => {
   const configDir = await scratch();
-  await writeFile(join(configDir, "mcp.json"), '{"mcpServers":{"docs":{"command":"fake"}}}');
+  await writeFile(join(configDir, "mcp.json"), '{"mcpServers":{"docs":{"command":"fake","aliases":["d"]},"off":{"command":"fake","enabled":false,"aliases":["o"]}}}');
   const host = new FakeHost();
   const registered = new Map<string, any>();
   const toolHost = {
@@ -186,6 +186,10 @@ it("[PICA-14] composes tools, native resource tools and lazy branch restore thro
     expect(reconnect).toHaveBeenCalledWith("docs", expect.anything(), { cursor: "c1" }, expect.any(AbortSignal));
     await registered.get("read_mcp_resource").execute("id", { server: "docs", uri: "u" });
     expect(read).toHaveBeenCalledWith("u", expect.anything());
+    const aliased = await registered.get("read_mcp_resource").execute("id", { server: "d", uri: "u" });
+    expect(aliased.structuredContent.server).toBe("docs");
+    await expect(registered.get("read_mcp_resource").execute("id", { server: "o", uri: "u" }))
+      .rejects.toThrow(/Unknown MCP resource server/);
     await host.emit("session_shutdown");
     expect(registered.size).toBe(0);
     expect(close).toHaveBeenCalledOnce();
