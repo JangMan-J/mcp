@@ -45,3 +45,19 @@ it("warns against blind retries when the write may have run", async () => {
   expect(result.isError).toBe(true);
   expect(result.content[0]!.text).toMatch(/may or may not have run; do not retry blindly/i);
 });
+
+it("shows images and renders resource_link as text with server, keeping the raw result [PICA-6]", async () => {
+  const value = { content: [
+    { type: "text", text: "hi" },
+    { type: "image", data: "QUJD", mimeType: "image/png" },
+    { type: "resource_link", name: "doc", uri: "file:///a.md", mimeType: "text/markdown", description: "d" },
+  ] };
+  const outcome = { kind: "ok", value, meta } as const;
+  const r = await renderOutcome(outcome, { server: "srv" });
+  expect(r.content).toEqual([
+    { type: "text", text: "hi\n[resource_link from srv] doc file:///a.md (text/markdown) - d" },
+    { type: "image", data: "QUJD", mimeType: "image/png" },
+  ]);
+  expect(r.details.outcome).toBe(outcome);
+  expect((await renderOutcome(outcome)).content[0]).toMatchObject({ text: expect.stringContaining("[resource_link] doc") });
+});
