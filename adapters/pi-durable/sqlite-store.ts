@@ -51,40 +51,57 @@ export class SqliteDurableCallStore<Req = unknown, Res = unknown>
         key TEXT PRIMARY KEY,
         status TEXT NOT NULL CHECK (status IN ('intent', 'completed')),
         request_json TEXT,
-        result_json TEXT
+        result_json TEXT,
+        attempts INTEGER NOT NULL DEFAULT 1
       )`);
+    const cols = this.db.prepare("PRAGMA table_info(durable_calls)").all() as { name: string }[];
+    if (!cols.some((c) => c.name === "attempts"))
+      this.db.exec("ALTER TABLE durable_calls ADD COLUMN attempts INTEGER NOT NULL DEFAULT 1");
   }
 
   async get(key: string): Promise<CallRecord<Req, Res> | undefined> {
     const row = this.db.prepare(
-      "SELECT status, request_json, result_json FROM durable_calls WHERE key = ?",
-    ).get(key) as { status: string; request_json: string | null; result_json: string | null } | undefined;
+      "SELECT status, request_json, result_json, attempts FROM durable_calls WHERE key = ?",
+    ).get(key) as { status: string; request_json: string | null; result_json: string | null; attempts: number } | undefined;
     if (!row) return undefined;
     return {
       status: row.status as CallRecord<Req, Res>["status"],
       ...(row.request_json != null ? { request: JSON.parse(row.request_json) as Req } : {}),
       ...(row.result_json != null ? { result: JSON.parse(row.result_json) as Res } : {}),
+      meta: { attempts: row.attempts },
     };
   }
 
-  async commitIntent(key: string, request: Req): Promise<void> {
+  /**
+   * First call inserts the intent. An existing intent row is rewritten only
+   * when meta.attempts is higher than the stored count (an authorized retry
+   * decided by DurableCalls under the host's exclusive per-key mutex); the
+   * guard is in the single statement, so completed rows and stale or
+   * duplicate commits are never altered.
+   */
+  async commitIntent(key: string, request: Req, meta?: { attempts: number }): Promise<void> {
+    const attempts = meta?.attempts ?? 1;
+    if (!Number.isInteger(attempts) || attempts < 1)
+      throw new TypeError(`invalid attempts: ${String(attempts)}`);
     // Encode (and fail) before touching the DB.
     const json = encodeData(request, "request");
     this.db.prepare(
-      `INSERT INTO durable_calls (key, status, request_json) VALUES (?, 'intent', ?)
-       ON CONFLICT(key) DO NOTHING`,
-    ).run(key, json);
+      `INSERT INTO durable_calls (key, status, request_json, attempts) VALUES (?, 'intent', ?, ?)
+       ON CONFLICT(key) DO UPDATE SET request_json = excluded.request_json, attempts = excluded.attempts
+       WHERE durable_calls.status = 'intent' AND excluded.attempts > durable_calls.attempts`,
+    ).run(key, json, attempts);
   }
 
   async commitOutcome(key: string, result: Res): Promise<void> {
     // A nonpersistable outcome (e.g. an mrtr-interim resume function) throws
     // here and leaves the intent row untouched, never a lossy completed row.
     const json = encodeData(result, "result");
-    // Single-statement upsert: preserves request_json from the intent row.
-    this.db.prepare(
-      `INSERT INTO durable_calls (key, status, result_json) VALUES (?, 'completed', ?)
-       ON CONFLICT(key) DO UPDATE SET status = 'completed', result_json = excluded.result_json`,
-    ).run(key, json);
+    // UPDATE only: an outcome without a prior intent is rejected, and
+    // request_json/attempts are preserved.
+    const r = this.db.prepare(
+      `UPDATE durable_calls SET status = 'completed', result_json = ? WHERE key = ?`,
+    ).run(json, key);
+    if (Number(r.changes) === 0) throw new Error(`commitOutcome without intent: ${key}`);
   }
 
   close(): void {

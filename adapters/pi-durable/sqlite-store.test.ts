@@ -39,7 +39,7 @@ describe("SqliteDurableCallStore (real file)", () => {
 
     store = open();
     await expect(store.get("k-intent")).resolves.toEqual({
-      status: "intent", request: { tool: "write", args: { x: 1 } },
+      status: "intent", request: { tool: "write", args: { x: 1 } }, meta: { attempts: 1 },
     });
     const send = vi.fn(async () => ({ kind: "ok" }));
     const calls = new DurableCalls({ store, mutex: new Mutex() });
@@ -63,7 +63,7 @@ describe("SqliteDurableCallStore (real file)", () => {
     store.close();
 
     store = open();
-    await expect(store.get("k-err")).resolves.toEqual({ status: "completed", request, result: outcome });
+    await expect(store.get("k-err")).resolves.toEqual({ status: "completed", request, result: outcome, meta: { attempts: 1 } });
     calls = new DurableCalls({ store, mutex: new Mutex() });
     await expect(calls.execute("k-err", request, send)).resolves.toEqual({ status: "completed", result: outcome });
     expect(send).toHaveBeenCalledTimes(1);
@@ -84,7 +84,7 @@ describe("SqliteDurableCallStore (real file)", () => {
 
     store = open();
     await expect(store.get("k-unc")).resolves.toEqual({
-      status: "completed", request: { tool: "write" }, result: outcome,
+      status: "completed", request: { tool: "write" }, result: outcome, meta: { attempts: 1 },
     });
     const send = vi.fn(async () => ({ kind: "ok" }));
     const calls = new DurableCalls({ store, mutex: new Mutex() });
@@ -109,7 +109,7 @@ describe("SqliteDurableCallStore (real file)", () => {
     store.close();
 
     store = open();
-    await expect(store.get("k-bad")).resolves.toEqual({ status: "intent", request: { tool: "mrtr" } });
+    await expect(store.get("k-bad")).resolves.toEqual({ status: "intent", request: { tool: "mrtr" }, meta: { attempts: 1 } });
     await expect(store.get("k-fn")).resolves.toBeUndefined();
     store.close();
   });
@@ -123,5 +123,41 @@ describe("SqliteDurableCallStore (real file)", () => {
       expect(other.prepare("SELECT status, request_json FROM durable_calls WHERE key = ?").get("k-vis"))
         .toEqual({ status: "intent", request_json: JSON.stringify({ a: 1 }) });
     } finally { other.close(); store.close(); }
+  });
+
+  it("restart_limit survives reopen and crash; outcome without intent is rejected", async () => {
+    const { path, open } = fileStore();
+    const opts = { tool: "read", readOnlyTools: ["read"], restartLimit: 2 };
+    // Crash: send throws after the intent is committed; store closed without outcome.
+    const crash = async () => { throw new Error("crash"); };
+    let store = open();
+    await expect(new DurableCalls({ store, mutex: new Mutex() }).execute("k-r", { n: 0 }, crash, opts)).rejects.toThrow("crash");
+    store.close();
+    for (const attempt of [2, 3]) {
+      store = open();
+      const send = vi.fn(crash);
+      await expect(new DurableCalls({ store, mutex: new Mutex() }).execute("k-r", { n: 0 }, send, opts)).rejects.toThrow("crash");
+      expect(send).toHaveBeenCalledTimes(1);
+      store.close();
+      store = open();
+      await expect(store.get("k-r")).resolves.toMatchObject({ status: "intent", meta: { attempts: attempt } });
+      store.close();
+    }
+    // Limit exhausted: reopened store reports interrupted, never resends.
+    store = open();
+    const send = vi.fn(async () => "x");
+    await expect(new DurableCalls({ store, mutex: new Mutex() }).execute("k-r", { n: 0 }, send, opts))
+      .resolves.toEqual({ status: "interrupted" });
+    expect(send).not.toHaveBeenCalled();
+    // Unauthorized/stale intent commits do not alter the row; completed rows are immutable.
+    await store.commitIntent("k-r", { n: 99 });
+    await store.commitIntent("k-r", { n: 99 }, { attempts: 3 });
+    await expect(store.get("k-r")).resolves.toMatchObject({ request: { n: 0 }, meta: { attempts: 3 } });
+    await store.commitOutcome("k-r", "done");
+    await store.commitIntent("k-r", { n: 5 }, { attempts: 9 });
+    await expect(store.get("k-r")).resolves.toEqual({ status: "completed", request: { n: 0 }, result: "done", meta: { attempts: 3 } });
+    await expect(store.commitOutcome("k-none", "x")).rejects.toThrow(/without intent/);
+    await expect(store.get("k-none")).resolves.toBeUndefined();
+    store.close();
   });
 });
