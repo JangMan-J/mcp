@@ -2,7 +2,7 @@ import { expect, it, vi } from "vitest";
 import { decodeBranch, encodeBranch } from "./branch.js";
 import { startSession } from "./session.js";
 
-it("allocates once per distinct enabled server and closes only this session", async () => {
+it("allocates once per distinct enabled server and closes only this session [PICA-1] [PICA-8]", async () => {
   const make = vi.fn((name: string) => ({ name, close: vi.fn() }));
   const first = await startSession(["a", "a", "b"], make);
   const second = await startSession(["a"], make);
@@ -16,7 +16,7 @@ it("allocates once per distinct enabled server and closes only this session", as
   await second.shutdown();
 });
 
-it.each(["shutdown", "request"])("drops a late result after %s aborts", async cause => {
+it.each(["shutdown", "request"])("drops a late result after %s aborts [PICA-1] [PICA-8]", async cause => {
   const session = await startSession(["server"], () => ({ close() {} }));
   const request = new AbortController();
   let finish!: () => void;
@@ -33,7 +33,7 @@ it.each(["shutdown", "request"])("drops a late result after %s aborts", async ca
   await session.shutdown();
 });
 
-it("closes earlier clients if startup fails", async () => {
+it("closes earlier clients if startup fails [PICA-1] [PICA-8]", async () => {
   const close = vi.fn();
   await expect(startSession(["a", "b"], name => {
     if (name === "b") throw new Error("unavailable");
@@ -48,7 +48,7 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-it("restores a branch lazily, sharing readiness and subscription setup across calls", async () => {
+it("restores a branch lazily, sharing readiness and subscription setup across calls [PICA-1] [PICA-8]", async () => {
   const waitingForReady = deferred<void>();
   const ready = deferred<void>();
   const restoreStarted = deferred<void>();
@@ -81,7 +81,7 @@ it("restores a branch lazily, sharing readiness and subscription setup across ca
   await session.shutdown();
 });
 
-it("disables an active client without delivering its late result and re-enables with a new client", async () => {
+it("disables an active client without delivering its late result and re-enables with a new client [PICA-1] [PICA-8]", async () => {
   const closed: number[] = [];
   let next = 0;
   const session = await startSession(["a"], () => {
@@ -103,7 +103,7 @@ it("disables an active client without delivering its late result and re-enables 
   expect(closed).toEqual([1, 2]);
 });
 
-it("closes a client that arrives after disable without running or restoring it", async () => {
+it("closes a client that arrives after disable without running or restoring it [PICA-1] [PICA-8]", async () => {
   const make = deferred<{ close(): void }>();
   const connecting = deferred<void>();
   const close = vi.fn();

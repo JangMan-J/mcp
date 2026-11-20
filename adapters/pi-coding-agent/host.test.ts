@@ -66,7 +66,7 @@ function ctx() {
 }
 
 describe("installHost", () => {
-  it("registers /mcp, replaces builtin:mcp, and list dispatch delegates to the server port", async () => {
+  it("registers /mcp, replaces builtin:mcp, and list dispatch delegates to the server port [PICA-2] [PICA-10]", async () => {
     const host = new FakeHost();
     const { port } = fakeServers();
     const installed = installHost({ host, servers: port });
@@ -80,7 +80,7 @@ describe("installHost", () => {
     installed.dispose();
   });
 
-  it("dispatches status/enable/disable/sign-in with no protocol logic of its own", async () => {
+  it("dispatches status/enable/disable/sign-in with no protocol logic of its own [PICA-2] [PICA-10]", async () => {
     const host = new FakeHost();
     const { port } = fakeServers();
     installHost({ host, servers: port });
@@ -109,7 +109,7 @@ describe("installHost", () => {
     expect(e.messages[0]?.kind).toBe("error");
   });
 
-  it("session start/shutdown drive the server port and abort the session signal", async () => {
+  it("session start/shutdown drive the server port and abort the session signal [PICA-2] [PICA-10]", async () => {
     const host = new FakeHost();
     const { port } = fakeServers();
     let startSignal: AbortSignal | undefined;
@@ -129,7 +129,7 @@ describe("installHost", () => {
     expect(port.shutdown).toHaveBeenCalledTimes(1);
   });
 
-  it("disposer unregisters, restores builtin:mcp, aborts the session, and is idempotent", async () => {
+  it("disposer unregisters, restores builtin:mcp, aborts the session, and is idempotent [PICA-2] [PICA-10]", async () => {
     const host = new FakeHost();
     const { port } = fakeServers();
     let startSignal: AbortSignal | undefined;
@@ -150,7 +150,7 @@ describe("installHost", () => {
     expect(port.shutdown).toHaveBeenCalledTimes(1);
   });
 
-  it("aborts an in-flight sign-in on session_shutdown, even with a per-command signal", async () => {
+  it("aborts an in-flight sign-in on session_shutdown, even with a per-command signal [PICA-2] [PICA-10]", async () => {
     const host = new FakeHost();
     // A real typed McpServerPort whose sign-in only settles via its signal.
     let signInSignal: AbortSignal | undefined;
@@ -189,7 +189,7 @@ describe("installHost", () => {
     expect(port.shutdown).toHaveBeenCalledTimes(1);
   });
 
-  it("shutdown queued during an in-flight start runs after it, exactly once", async () => {
+  it("shutdown queued during an in-flight start runs after it, exactly once [PICA-2] [PICA-10]", async () => {
     const host = new FakeHost();
     const { port } = fakeServers();
     const events: string[] = [];
@@ -213,7 +213,7 @@ describe("installHost", () => {
     expect(events).toEqual(["start", "shutdown"]);
   });
 
-  it("dispose during an in-flight start aborts it and shuts down once it settles", async () => {
+  it("dispose during an in-flight start aborts it and shuts down once it settles [PICA-2] [PICA-10]", async () => {
     const host = new FakeHost();
     const { port } = fakeServers();
     let startSignal: AbortSignal | undefined;
