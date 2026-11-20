@@ -46,17 +46,43 @@ export function installCodingTools(host: CodingToolsHost, sources: readonly Tool
     return { alias: o?.alias ?? t.name, exposure: o?.exposure ?? s.exposure ?? "direct" };
   };
 
-  const define = (e: Entry) => {
-    disposables.push(host.registerTool({
-      name: e.name, description: e.tool.description, exposure: e.exposure,
-      execute: async (_id, args, signal) => renderOutcome(await e.source.client.call(e.remote, args, signal)),
-    }));
-    if (e.exposure === "codemode") {
-      disposables.push(host.sandbox.bind(e.name, async (args, ctx) => {
-        const call = { parentToolCallId: ctx.parentToolCallId, name: e.name, arguments: args };
-        return (await runNestedTool(host.pipeline, call, ctx.signal)).details.outcome; // raw, not model text
-      }));
+  const abort = new AbortController();
+  const live = () => {
+    if (abort.signal.aborted) throw new Error("MCP tools adapter disposed; tool invocation blocked");
+  };
+
+  /** Raw CallToolResult for codemode; every other outcome is a thrown, non-retried error. */
+  const rawResult = (name: string, outcome: Outcome<unknown>): unknown => {
+    switch (outcome.kind) {
+      case "ok": return outcome.value;
+      case "tool-isError": return outcome.result;
+      case "uncertain-write":
+        throw new Error(`${name}: uncertain write; it may or may not have run. Not retried; check its effects before retrying.`);
+      case "jsonrpc-error": throw new Error(`${name}: JSON-RPC error ${outcome.code}: ${outcome.message}`);
+      case "transport-failure": throw new Error(`${name}: transport failure (${outcome.failure.kind}): ${outcome.failure.message}`);
+      default: throw new Error(`${name}: MCP outcome ${outcome.kind}`);
     }
+  };
+
+  const define = (e: Entry) => {
+    if (abort.signal.aborted) return;
+    disposables.push(host.registerTool({
+      name: e.name, exposure: e.exposure,
+      ...(e.tool.description !== undefined ? { description: e.tool.description } : {}),
+      execute: async (_id, args, signal) => {
+        live();
+        return renderOutcome(await e.source.client.call(e.remote, args, signal), { server: e.source.server });
+      },
+    }));
+    // Every tool is callable from codemode, whatever its model-facing exposure.
+    disposables.push(host.sandbox.bind(e.name, async (args, ctx) => {
+      live();
+      const call = { parentToolCallId: ctx.parentToolCallId, name: e.name, arguments: args };
+      const signal = ctx.signal ? AbortSignal.any([ctx.signal, abort.signal]) : abort.signal;
+      const result = await runNestedTool(host.pipeline, call, signal);
+      live();
+      return rawResult(e.name, result.details.outcome);
+    }));
   };
 
   const entryFor = (source: ToolSourceDescriptor, tool: RemoteTool): Entry => {
@@ -75,7 +101,8 @@ export function installCodingTools(host: CodingToolsHost, sources: readonly Tool
       },
     })),
     ({ server, tool }) => {
-      const source = sources.find(s => s.server === server)!;
+      const source = sources.find(s => s.server === server);
+      if (!source) return;
       define({ name: toolName(server, tool.name), remote: tool.remote, source, tool, exposure: "deferred" });
     },
   );
@@ -85,6 +112,7 @@ export function installCodingTools(host: CodingToolsHost, sources: readonly Tool
     name: "tool_search", description: "Search deferred MCP tools by name or description.", exposure: "builtin",
     reachesTools: async (args, signal) => (await registry.search(query(args), signal)).map(d => d.name),
     execute: async (_id, args, signal) => {
+      live();
       const found = await registry.search(query(args), signal);
       const text = found.map(d => `${d.name}${d.tool.description ? `: ${d.tool.description}` : ""}`).join("\n");
       return renderOutcome({ kind: "ok", value: text || "No matching tools.", meta: { requestId: 0, method: "tool_search", binding: "local", attempts: 0 } } as Outcome<string>);
@@ -92,14 +120,13 @@ export function installCodingTools(host: CodingToolsHost, sources: readonly Tool
   }));
 
   // Direct/codemode tools are registered once their client is ready.
-  const abort = new AbortController();
   disposables.push({ dispose: () => abort.abort() });
   for (const source of sources) {
     void (async () => {
       await source.client.ready(abort.signal);
       for (const tool of await source.client.list(abort.signal)) {
         const e = entryFor(source, tool);
-        if (e.exposure !== "deferred" && !abort.signal.aborted) define(e);
+        if (e.exposure !== "deferred") define(e);
       }
     })().catch(() => {});
   }

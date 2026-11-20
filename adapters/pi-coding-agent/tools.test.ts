@@ -38,8 +38,8 @@ it("maps aliases and exposure; end to end through the host pipeline", async () =
 
   const raw: any = await f.bindings.get("mcp__s__run")!({ x: 1 }, { parentToolCallId: "p" });
   expect(f.permissions).toEqual(["mcp__s__run"]);
-  expect(raw.kind).toBe("ok");
-  expect(raw.value.structuredContent).toEqual({ n: 1 });
+  expect(raw.kind).toBeUndefined();
+  expect(raw.structuredContent).toEqual({ n: 1 });
 });
 
 it("tool_search declares deferred tools and reachesTools names them before execution", async () => {
@@ -58,4 +58,23 @@ it("dispose unregisters", async () => {
   const f = fakeHost();
   installCodingTools(f.host, [{ server: "s", client: client([]) }]).dispose();
   expect(f.tools.size).toBe(0);
+});
+
+it("codemode gets raw CallToolResult; failures throw; direct and deferred are bound; late calls blocked", async () => {
+  const f = fakeHost(); let next: any;
+  const c: ToolClient = { ...client([]), call: async () => next };
+  const d = installCodingTools(f.host, [{ server: "s", client: c, tools: { find: { exposure: "deferred" } } }]);
+  await flush();
+  await f.tools.get("tool_search")!.reachesTools!({ query: "find" }, new AbortController().signal);
+  expect([...f.bindings.keys()].sort()).toEqual(["mcp__s__find", "mcp__s__read", "mcp__s__run"]);
+  const result = { content: [{ type: "text", text: "bad" }], isError: true };
+  next = { kind: "tool-isError", result, meta };
+  expect(await f.bindings.get("mcp__s__read")!({}, { parentToolCallId: "p" })).toBe(result);
+  next = { kind: "uncertain-write", uncertain: {}, meta };
+  await expect(f.bindings.get("mcp__s__read")!({}, { parentToolCallId: "p" })).rejects.toThrow(/uncertain write.*Not retried/);
+  const exec = f.tools.get("mcp__s__read")!.execute;
+  const bound = f.bindings.get("mcp__s__read")!;
+  d.dispose();
+  await expect(exec("1", {}, new AbortController().signal)).rejects.toThrow(/disposed/);
+  await expect(bound({}, { parentToolCallId: "p" })).rejects.toThrow(/disposed/);
 });
