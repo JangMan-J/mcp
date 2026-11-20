@@ -5,6 +5,12 @@ import { createCredentialStore } from "./credentials.js";
 import { installHost, type Disposable, type HostPorts, type McpServerPort,
   type McpServerSummary, type PiHostPort, type ServerStatus } from "./host.js";
 import { startSession } from "./session.js";
+import { createBranchHost, type BranchSessionPort } from "./branch-host.js";
+import type { BranchState } from "./branch.js";
+import { installCodingTools, type CodingToolsHost, type HostToolDefinition, type ToolClient,
+  type ToolSourceDescriptor } from "./tools.js";
+import { createResourceTools } from "./resources.js";
+import type { ResourcesApi } from "@mcp-client/ops";
 
 type Client = { close(): void | Promise<void> };
 type AuthPorts = Pick<HostPorts, "browser" | "consent" | "redirect">;
@@ -22,6 +28,16 @@ export interface CodingAgentAdapterOptions<C extends Client> extends AuthPorts {
   /** Ignored (not read) unless the host has explicitly trusted the project. */
   readonly project?: { readonly configPath: string; readonly trusted: boolean };
   readonly createClient: (context: ClientContext) => C | Promise<C>;
+  /** Optional typed tool host; needs `toolClient` to adapt session clients. */
+  readonly toolHost?: CodingToolsHost;
+  /** Adapt a session client to list/call; readiness comes from the session. */
+  readonly toolClient?: (client: C) => Pick<ToolClient, "list" | "call">;
+  /** Adapt a session client to resources ops; registers native resource tools on `toolHost`. */
+  readonly resourcesClient?: (client: C) => ResourcesApi;
+  /** Optional branch store; a restored snapshot makes connections lazy. */
+  readonly branchStore?: BranchSessionPort;
+  /** Called when a lazily restored session first connects a client. */
+  readonly reconnect?: (server: string, client: C, branch: BranchState, signal: AbortSignal) => void | Promise<void>;
   readonly signIn?: (context: ClientContext & AuthPorts & { readonly client: C }) => void | Promise<void>;
 }
 
@@ -53,7 +69,8 @@ export function installCodingAgentAdapter<C extends Client>(
   host: PiHostPort,
   options: CodingAgentAdapterOptions<C>,
 ): Disposable {
-  const { configDir, project, createClient, signIn, browser, consent, redirect } = options;
+  const { configDir, project, createClient, signIn, browser, consent, redirect,
+    toolHost, toolClient, resourcesClient, branchStore, reconnect } = options;
   // Read before taking over /mcp, so an invalid config does not hide the built-in.
   const descriptors = readConfig(resolve(configDir, "mcp.json"), "global");
   if (project?.trusted === true) descriptors.push(...readConfig(project.configPath, "project"));
@@ -64,6 +81,9 @@ export function installCodingAgentAdapter<C extends Client>(
     servers.set(descriptor.name, { descriptor, enabled: descriptor.enabled, status: "disconnected" });
   }
   let sessionSignal: AbortSignal | undefined;
+  let branch: BranchState | undefined;
+  let toolsInstall: Disposable | undefined;
+  let resourceRegistrations: Disposable[] = [];
 
   const context = (descriptor: LegacyServerConfig, signal: AbortSignal): ClientContext =>
     ({ descriptor, signal, trust: descriptor.trusted, credentialStore });
@@ -92,7 +112,7 @@ export function installCodingAgentAdapter<C extends Client>(
         const combined = AbortSignal.any([signal, internalSignal]);
         combined.throwIfAborted();
         return createClient(context(descriptor, combined));
-      });
+      }, { ...(branch && { branch }), ...(branch && reconnect && { reestablish: reconnect }) });
     });
     const active = { abort, ready };
     server.active = active;
@@ -119,8 +139,55 @@ export function installCodingAgentAdapter<C extends Client>(
     return server.closing = closing;
   }
 
+  const withHandle = async <T>(id: string, run: (c: C, signal: AbortSignal) => Promise<T>, signal?: AbortSignal) => {
+    const active = servers.get(id)?.active;
+    if (!active) throw new Error(`No session client for server: ${id}`);
+    const handle = await active.ready;
+    return handle.run(id, run, signal);
+  };
+
+  function installTools() {
+    toolsInstall?.dispose();
+    toolsInstall = undefined;
+    if (!toolHost || !toolClient || !sessionSignal || sessionSignal.aborted) return;
+    const sources: ToolSourceDescriptor[] = Array.from(servers.values())
+      .filter(server => server.enabled && server.active)
+      .map(({ descriptor }) => ({
+        server: descriptor.name,
+        client: {
+          async ready(signal) {
+            const active = servers.get(descriptor.name)?.active;
+            if (!active) throw new Error(`No session client for server: ${descriptor.name}`);
+            await active.ready;
+            signal?.throwIfAborted();
+          },
+          list: (signal) => withHandle(descriptor.name, (c, s) => toolClient(c).list(s), signal),
+          call: (tool, args, signal) => withHandle(descriptor.name, (c, s) => toolClient(c).call(tool, args, s), signal),
+        },
+      }));
+    toolsInstall = installCodingTools(toolHost, sources);
+  }
+
+  function registerResources() {
+    if (!toolHost || !resourcesClient) return;
+    const targets = (alias?: string) => alias === undefined
+      ? Array.from(servers.values()).filter(s => s.enabled && s.active).map(s => s.descriptor.name)
+      : servers.get(alias)?.enabled ? [alias] : [];
+    const tools = createResourceTools(targets, (server, run, signal) =>
+      withHandle(server, (c, s) => run(resourcesClient(c), s), signal));
+    resourceRegistrations = tools.map(tool =>
+      toolHost.registerTool({ ...tool, exposure: "builtin" } as unknown as HostToolDefinition));
+  }
+
+  function disposeRegistrations() {
+    toolsInstall?.dispose();
+    toolsInstall = undefined;
+    for (const d of resourceRegistrations.splice(0)) d.dispose();
+  }
+
   async function shutdown() {
     sessionSignal = undefined;
+    disposeRegistrations();
     const results = await Promise.allSettled(Array.from(servers.values(), disconnect));
     const failures = results.flatMap(result => result.status === "rejected" ? [result.reason] : []);
     if (failures.length) throw new AggregateError(failures, "Adapter session close failed");
@@ -137,6 +204,7 @@ export function installCodingAgentAdapter<C extends Client>(
       server.enabled = enabled;
       if (!enabled) await disconnect(server);
       else if (sessionSignal && !sessionSignal.aborted) await connect(server, sessionSignal);
+      installTools();
     },
     async signIn(id, request) {
       const server = requireServer(id);
@@ -155,7 +223,11 @@ export function installCodingAgentAdapter<C extends Client>(
       if (sessionSignal) await shutdown();
       if (signal.aborted) return;
       sessionSignal = signal;
+      branch = branchStore && createBranchHost(branchStore).restoreBranch();
       await Promise.all(Array.from(servers.values(), server => server.enabled ? connect(server, signal) : undefined));
+      if (signal.aborted) return;
+      registerResources();
+      installTools();
     },
     shutdown,
   };

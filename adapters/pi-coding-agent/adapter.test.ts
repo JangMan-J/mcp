@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { installCodingAgentAdapter } from "./adapter.js";
+import { BRANCH_CUSTOM_TYPE } from "./branch.js";
 import { BUILTIN_MCP, type Disposable, type McpCommandDefinition, type PiHostPort,
   type PiSessionEvent, type PiSessionHandler } from "./host.js";
 
@@ -148,5 +149,45 @@ it("aborts in-flight sign-in on shutdown even when the command supplies its own 
     const rejected = expect(result).rejects.toBe(signal.reason);
     finish();
     await rejected;
+  } finally { installed.dispose(); }
+});
+
+it("composes tools, native resource tools and lazy branch restore through the entrypoint", async () => {
+  const configDir = await scratch();
+  await writeFile(join(configDir, "mcp.json"), '{"mcpServers":{"docs":{"command":"fake"}}}');
+  const host = new FakeHost();
+  const registered = new Map<string, any>();
+  const toolHost = {
+    registerTool: (def: any) => { registered.set(def.name, def); return { dispose: () => void registered.delete(def.name) }; },
+    sandbox: { bind: () => ({ dispose() {} }) },
+    pipeline: {} as never,
+  };
+  const meta = { requestId: 1, method: "m", binding: "local", attempts: 1 } as const;
+  const close = vi.fn();
+  const reconnect = vi.fn();
+  const createClient = vi.fn(() => ({ close }));
+  const call = vi.fn(async () => ({ kind: "ok", value: "pong", meta }) as never);
+  const read = vi.fn(async () => ({ kind: "ok", value: { raw: { contents: ["x"] } }, meta }));
+  const entry = { type: "custom", customType: BRANCH_CUSTOM_TYPE, data: { cursor: "c1" } };
+  const installed = installCodingAgentAdapter(host, {
+    configDir, createClient, toolHost, reconnect,
+    toolClient: () => ({ list: async () => [{ name: "ping" }], call }),
+    resourcesClient: () => ({ read }) as never,
+    branchStore: { appendEntry() {}, getBranch: () => [entry] },
+  });
+  try {
+    await host.emit("session_start");
+    await vi.waitFor(() => expect(registered.has("docs_ping") || [...registered.keys()].some(n => n.includes("ping"))).toBe(true));
+    expect([...registered.keys()]).toEqual(expect.arrayContaining(
+      ["tool_search", "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"]));
+    const ping = [...registered.values()].find(d => d.name.includes("ping"));
+    await ping.execute("id", {}, new AbortController().signal);
+    expect(call).toHaveBeenCalledWith("ping", {}, expect.any(AbortSignal));
+    expect(reconnect).toHaveBeenCalledWith("docs", expect.anything(), { cursor: "c1" }, expect.any(AbortSignal));
+    await registered.get("read_mcp_resource").execute("id", { server: "docs", uri: "u" });
+    expect(read).toHaveBeenCalledWith("u", expect.anything());
+    await host.emit("session_shutdown");
+    expect(registered.size).toBe(0);
+    expect(close).toHaveBeenCalledOnce();
   } finally { installed.dispose(); }
 });
