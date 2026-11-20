@@ -6,7 +6,7 @@ import { installHost, type Disposable, type HostPorts, type McpServerPort,
   type McpServerSummary, type PiHostPort, type ServerStatus } from "./host.js";
 import { startSession } from "./session.js";
 import { createBranchHost, type BranchSessionPort } from "./branch-host.js";
-import type { BranchState } from "./branch.js";
+import type { BranchCustomEntry, BranchState } from "./branch.js";
 import { installCodingTools, type CodingToolsHost, type HostToolDefinition, type ToolClient,
   type ToolSourceDescriptor } from "./tools.js";
 import { createResourceTools } from "./resources.js";
@@ -68,7 +68,7 @@ function readConfig(path: string, source: LegacySource): LegacyServerConfig[] {
 export function installCodingAgentAdapter<C extends Client>(
   host: PiHostPort,
   options: CodingAgentAdapterOptions<C>,
-): Disposable {
+): Disposable & { saveBranch(state: BranchState): BranchCustomEntry } {
   const { configDir, project, createClient, signIn, browser, consent, redirect,
     toolHost, toolClient, resourcesClient, branchStore, reconnect } = options;
   // Read before taking over /mcp, so an invalid config does not hide the built-in.
@@ -82,6 +82,18 @@ export function installCodingAgentAdapter<C extends Client>(
   }
   let sessionSignal: AbortSignal | undefined;
   let branch: BranchState | undefined;
+  // On a restored branch, servers without direct tools stay unopened until demanded.
+  const demand = new Map<string, { open(): void; opened: Promise<void> }>();
+  const gate = (id: string) => {
+    let entry = demand.get(id);
+    if (!entry) {
+      let open!: () => void;
+      entry = { open, opened: new Promise<void>(resolve => { open = resolve; }) };
+      entry.open = open;
+      demand.set(id, entry);
+    }
+    return entry;
+  };
   let toolsInstall: Disposable | undefined;
   let resourceRegistrations: Disposable[] = [];
 
@@ -142,6 +154,7 @@ export function installCodingAgentAdapter<C extends Client>(
   const withHandle = async <T>(id: string, run: (c: C, signal: AbortSignal) => Promise<T>, signal?: AbortSignal) => {
     const active = servers.get(id)?.active;
     if (!active) throw new Error(`No session client for server: ${id}`);
+    demand.get(id)?.open();
     const handle = await active.ready;
     return handle.run(id, run, signal);
   };
@@ -150,12 +163,29 @@ export function installCodingAgentAdapter<C extends Client>(
     toolsInstall?.dispose();
     toolsInstall = undefined;
     if (!toolHost || !toolClient || !sessionSignal || sessionSignal.aborted) return;
+    const lazyIds: string[] = [];
     const sources: ToolSourceDescriptor[] = Array.from(servers.values())
-      .filter(server => server.enabled && server.active)
-      .map(({ descriptor }) => ({
+      .filter(server => server.enabled && server.active && server.descriptor.exposure !== "hidden")
+      .map(({ descriptor }) => {
+        const lazy = branch !== undefined && descriptor.exposure !== "direct"
+          && !Object.values(descriptor.toolExposure ?? {}).includes("direct");
+        if (lazy) lazyIds.push(descriptor.name);
+        const overrides = Object.entries(descriptor.toolExposure ?? {}).filter(([, v]) => v !== "hidden")
+          .map(([k, v]) => [k, { exposure: v as "direct" | "codemode" | "deferred" }] as const);
+        return {
         server: descriptor.name,
+        exposure: descriptor.exposure as "direct" | "codemode" | "deferred",
+        ...(overrides.length && { tools: Object.fromEntries(overrides) }),
         client: {
           async ready(signal) {
+            if (lazy) {
+              const opened = gate(descriptor.name);
+              await new Promise<void>((resolve, reject) => {
+                signal?.throwIfAborted();
+                signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+                void opened.opened.then(resolve);
+              });
+            }
             const active = servers.get(descriptor.name)?.active;
             if (!active) throw new Error(`No session client for server: ${descriptor.name}`);
             await active.ready;
@@ -164,8 +194,15 @@ export function installCodingAgentAdapter<C extends Client>(
           list: (signal) => withHandle(descriptor.name, (c, s) => toolClient(c).list(s), signal),
           call: (tool, args, signal) => withHandle(descriptor.name, (c, s) => toolClient(c).call(tool, args, s), signal),
         },
-      }));
-    toolsInstall = installCodingTools(toolHost, sources);
+        }; });
+    // tool_search is the explicit demand signal for lazily restored servers.
+    const demandAll = () => lazyIds.forEach(id => gate(id).open());
+    const gated: CodingToolsHost = { sandbox: toolHost.sandbox, pipeline: toolHost.pipeline, registerTool: def => toolHost.registerTool(def.name !== "tool_search" ? def : {
+      ...def,
+      ...(def.reachesTools && { reachesTools: (a: unknown, s: AbortSignal) => { demandAll(); return def.reachesTools!(a, s); } }),
+      execute: (id, a, s) => { demandAll(); return def.execute(id, a, s); },
+    }) };
+    toolsInstall = installCodingTools(gated, sources);
   }
 
   function registerResources() {
@@ -213,6 +250,7 @@ export function installCodingAgentAdapter<C extends Client>(
       if (!active || !sessionSignal) throw new Error(`No session client for server: ${id}`);
       const signal = AbortSignal.any([request, active.abort.signal, sessionSignal]);
       signal.throwIfAborted();
+      demand.get(id)?.open();
       const handle = await active.ready;
       await handle.run(id, (client, operationSignal) => signIn({
         ...context(server.descriptor, operationSignal), client,
@@ -223,6 +261,7 @@ export function installCodingAgentAdapter<C extends Client>(
       if (sessionSignal) await shutdown();
       if (signal.aborted) return;
       sessionSignal = signal;
+      demand.clear();
       branch = branchStore && createBranchHost(branchStore).restoreBranch();
       await Promise.all(Array.from(servers.values(), server => server.enabled ? connect(server, signal) : undefined));
       if (signal.aborted) return;
@@ -231,5 +270,11 @@ export function installCodingAgentAdapter<C extends Client>(
     },
     shutdown,
   };
-  return installHost({ host, servers: port });
+  const branchHost = branchStore && createBranchHost(branchStore);
+  /** Append an allowlisted, namespaced branch snapshot via the branch store. */
+  const saveBranch = (state: BranchState): BranchCustomEntry => {
+    if (!branchHost) throw new Error("No branch store configured");
+    return branchHost.appendEntry(state);
+  };
+  return Object.assign(installHost({ host, servers: port }), { saveBranch });
 }

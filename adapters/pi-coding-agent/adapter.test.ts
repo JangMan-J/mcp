@@ -152,7 +152,7 @@ it("aborts in-flight sign-in on shutdown even when the command supplies its own 
   } finally { installed.dispose(); }
 });
 
-it("composes tools, native resource tools and lazy branch restore through the entrypoint", async () => {
+it("[PICA-14] composes tools, native resource tools and lazy branch restore through the entrypoint", async () => {
   const configDir = await scratch();
   await writeFile(join(configDir, "mcp.json"), '{"mcpServers":{"docs":{"command":"fake"}}}');
   const host = new FakeHost();
@@ -189,5 +189,38 @@ it("composes tools, native resource tools and lazy branch restore through the en
     await host.emit("session_shutdown");
     expect(registered.size).toBe(0);
     expect(close).toHaveBeenCalledOnce();
+    expect(installed.saveBranch({ cursor: "c2", token: "secret" } as never))
+      .toEqual(expect.objectContaining({ customType: BRANCH_CUSTOM_TYPE, data: { cursor: "c2" } }));
+  } finally { installed.dispose(); }
+});
+
+it("[PICA-14] keeps deferred-only servers unopened on a restored branch until tool_search", async () => {
+  const configDir = await scratch();
+  await writeFile(join(configDir, "mcp.json"), '{"mcpServers":{"docs":{"command":"fake","exposure":"deferred"}}}');
+  const host = new FakeHost();
+  const registered = new Map<string, any>();
+  const toolHost = {
+    registerTool: (def: any) => { registered.set(def.name, def); return { dispose: () => void registered.delete(def.name) }; },
+    sandbox: { bind: () => ({ dispose() {} }) }, pipeline: {} as never,
+  };
+  const createClient = vi.fn(() => ({ close() {} }));
+  const list = vi.fn(async () => [{ name: "ping", description: "ping" }]);
+  const appended: unknown[] = [];
+  const installed = installCodingAgentAdapter(host, {
+    configDir, createClient, toolHost, toolClient: () => ({ list, call: vi.fn() as never }),
+    branchStore: { appendEntry: (_t, d) => { appended.push(d); return "e1"; },
+      getBranch: () => [{ type: "custom", customType: BRANCH_CUSTOM_TYPE, data: { cursor: "c1" } }] },
+  });
+  try {
+    await host.emit("session_start");
+    await vi.waitFor(() => expect(registered.has("tool_search")).toBe(true));
+    await new Promise(r => setTimeout(r, 20));
+    expect(createClient).not.toHaveBeenCalled();
+    expect(list).not.toHaveBeenCalled();
+    await registered.get("tool_search").execute("id", { query: "ping" }, new AbortController().signal);
+    expect(createClient).toHaveBeenCalledOnce();
+    expect(installed.saveBranch({ cursor: "c3" })).toEqual(expect.objectContaining({ id: "e1" }));
+    expect(appended).toEqual([{ cursor: "c3" }]);
+    await host.emit("session_shutdown");
   } finally { installed.dispose(); }
 });
