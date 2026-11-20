@@ -9,9 +9,9 @@ class FakeStore implements DurableCallStore<string, { id: number }> {
     private crashOnOutcome = false,
   ) {}
   async get(key: string) { return this.backing.get(key); }
-  async commitIntent(key: string, request: string) {
+  async commitIntent(key: string, request: string, meta?: { attempts: number }) {
     this.events.push("intent");
-    this.backing.set(key, { status: "intent", request });
+    this.backing.set(key, { status: "intent", request, meta });
   }
   async commitOutcome(key: string, result: { id: number }) {
     if (this.crashOnOutcome) throw new Error("crash after send");
@@ -63,6 +63,20 @@ describe("DurableCalls", () => {
     const [a, b] = await Promise.all([calls.execute("k3", "r", send), calls.execute("k3", "r", send)]);
     expect(a).toEqual({ status: "completed", result: { id: 3 } });
     expect(b).toEqual(a);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("[PICD-3/6/8] acceptDuplicate restarts interrupted call, persists attempts, honors restartLimit", async () => {
+    const backing = new Map<string, Rec>();
+    backing.set("k4", { status: "intent", request: "req" });
+    const send = vi.fn(async (_req: string) => ({ id: 9 }));
+    const calls = setup(backing, []);
+    await expect(calls.execute("k4", "req", send, { acceptDuplicate: true })).resolves.toEqual({ status: "completed", result: { id: 9 } });
+    expect(send).toHaveBeenCalledWith("req");
+    backing.set("k5", { status: "intent", request: "req", meta: { attempts: 2 } });
+    await expect(calls.execute("k5", "req", send, { acceptDuplicate: true })).resolves.toEqual({ status: "interrupted" });
+    backing.set("k6", { status: "intent", request: "req" });
+    await expect(calls.execute("k6", "req", send)).resolves.toEqual({ status: "interrupted" });
     expect(send).toHaveBeenCalledTimes(1);
   });
 });
