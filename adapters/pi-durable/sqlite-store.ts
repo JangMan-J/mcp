@@ -44,8 +44,13 @@ export class SqliteDurableCallStore<Req = unknown, Res = unknown>
   private readonly owned: boolean;
 
   constructor(dbOrPath: DatabaseSync | string) {
-    this.owned = typeof dbOrPath === "string";
-    this.db = this.owned ? new DatabaseSync(dbOrPath) : dbOrPath;
+    if (typeof dbOrPath === "string") {
+      this.owned = true;
+      this.db = new DatabaseSync(dbOrPath);
+    } else {
+      this.owned = false;
+      this.db = dbOrPath;
+    }
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS durable_calls (
         key TEXT PRIMARY KEY,

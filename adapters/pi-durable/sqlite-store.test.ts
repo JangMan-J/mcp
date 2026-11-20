@@ -30,7 +30,7 @@ function fileStore() {
 const meta = { requestId: "r1", method: "tools/call", binding: "b", attempts: 1 };
 
 describe("SqliteDurableCallStore (real file)", () => {
-  it("intent survives close/reopen; DurableCalls reports interrupted without resending", async () => {
+  it("[PICD-2] intent survives close/reopen; DurableCalls reports interrupted without resending", async () => {
     const { open } = fileStore();
     let store = open();
     await store.commitIntent("k-intent", { tool: "write", args: { x: 1 } });
@@ -48,7 +48,7 @@ describe("SqliteDurableCallStore (real file)", () => {
     store.close();
   });
 
-  it("preserves tool-isError outcome and intent metadata in the completed row after reopen, no resend", async () => {
+  it("[PICD-2] preserves tool-isError outcome and intent metadata in the completed row after reopen, no resend", async () => {
     const { open } = fileStore();
     const request = { tool: "failing", args: { n: 1 } };
     const outcome = {
@@ -70,7 +70,7 @@ describe("SqliteDurableCallStore (real file)", () => {
     store.close();
   });
 
-  it("preserves uncertain-write outcome after reopen, no resend", async () => {
+  it("[PICD-2] preserves uncertain-write outcome after reopen, no resend", async () => {
     const { open } = fileStore();
     const outcome = {
       kind: "uncertain-write",
@@ -114,7 +114,7 @@ describe("SqliteDurableCallStore (real file)", () => {
     store.close();
   });
 
-  it("commits are visible to a second connection before close (atomic autocommit)", async () => {
+  it("[PICD-1] commits are visible to a second connection before close (atomic autocommit)", async () => {
     const { path, open } = fileStore();
     const store = open();
     await store.commitIntent("k-vis", { a: 1 });
