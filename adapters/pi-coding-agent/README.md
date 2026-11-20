@@ -1,7 +1,25 @@
-# Pi Coding Agent adapter (planned)
-Status: not built. No entrypoint, package, script, or runnable run exists
-yet in this directory; this records how a future manual scratch test must
-be set up once one is provided and separately approved.
+# Pi Coding Agent adapter
+Status: typed entrypoint implemented; live fork trial pending.
+
+## Entrypoint
+`installCodingAgentAdapter` in `adapter.ts` is the typed entrypoint. It
+wires the host ports (`host.ts` `installHost`), branch persistence,
+config, credentials, tools and results modules, and returns a disposer.
+
+## CI commands (fake host, no Pi, no live config)
+- `npm run build`
+- `npx vitest run adapters/pi-coding-agent` (add
+  `--reporter=json --outputFile="$SCRATCH/r.json"` for a JSON report
+  written to scratch, never into the repo)
+- `npm run check:deps` (no Pi imports in `packages/`)
+
+These run against fake host ports and a scratch config/store only. They
+prove adapter contracts; they do not prove behavior inside real Pi.
+
+## Live fork trial (pending, separately approved)
+Not run. Everything below describes the manual trial against the pinned
+fork. No entrypoint script launches it.
+
 ## Scratch test prerequisites
 - Pinned fork only: installed build `next-7d80b45f62f8` (`pi --version`
   prints `1.5.2`, `@earendil-works/pi-coding-agent` `1.5.2`), checkout
