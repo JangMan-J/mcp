@@ -5,6 +5,20 @@ import { DatabaseSync } from 'node:sqlite';
 import { expect, it } from 'vitest';
 import { ConversationEvents } from './events.js';
 
+it('does not rewind the subscription cursor on replay of an older event', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    const events = new ConversationEvents(db);
+    const first = { eventId: 'x', cursor: 'z', name: 'changed', data: 1, timestamp: '2026-01-01T00:00:00Z' };
+    events.deliver('a', first);
+    events.deliver('a', { ...first, eventId: 'y', cursor: 'b' });
+    events.deliver('a', first);
+    expect(events.cursor('a')).toBe('b');
+  } finally {
+    db.close();
+  }
+});
+
 it('PICD-5: replays after a crash between conversation commit and cursor commit', () => {
   const dir = mkdtempSync(join(tmpdir(), 'picd-events-'));
   const path = join(dir, 'conversation.db');

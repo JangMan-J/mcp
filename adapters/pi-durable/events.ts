@@ -1,5 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
-import type { Occurrence } from '../../packages/ext-events/src/model.js';
+import type { Occurrence } from '@mcp-client/ext-events';
 
 /** PICD-5. Use for an enabled Events stream, delivering in order per subscription. */
 export class ConversationEvents {
@@ -9,6 +9,7 @@ export class ConversationEvents {
         subscription TEXT NOT NULL, event_id TEXT NOT NULL, occurrence TEXT NOT NULL,
         PRIMARY KEY (subscription, event_id)
       );
+      CREATE INDEX IF NOT EXISTS events_by_subscription ON conversation_events (subscription);
       CREATE TABLE IF NOT EXISTS subscription_cursors (
         subscription TEXT PRIMARY KEY NOT NULL, cursor TEXT NOT NULL
       );
@@ -26,8 +27,13 @@ export class ConversationEvents {
     this.db.prepare(`INSERT INTO conversation_events VALUES (?, ?, ?)
       ON CONFLICT (subscription, event_id) DO NOTHING`).run(subscription, event.eventId, JSON.stringify(event));
     if (event.cursor !== null) {
-      this.db.prepare(`INSERT INTO subscription_cursors VALUES (?, ?)
-        ON CONFLICT (subscription) DO UPDATE SET cursor = excluded.cursor`).run(subscription, event.cursor);
+      // A duplicate can finish an interrupted checkpoint only while it is the latest
+      // conversation insert for this subscription. Cursor strings themselves are opaque.
+      this.db.prepare(`INSERT INTO subscription_cursors (subscription, cursor)
+        SELECT ?, ? WHERE ? = (SELECT event_id FROM conversation_events
+          WHERE subscription = ? ORDER BY rowid DESC LIMIT 1)
+        ON CONFLICT (subscription) DO UPDATE SET cursor = excluded.cursor`)
+        .run(subscription, event.cursor, event.eventId, subscription);
     }
   }
 }
