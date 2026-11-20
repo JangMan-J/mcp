@@ -1,9 +1,23 @@
+import { createHash } from 'node:crypto';
 import { DurableCalls, type CallOutcome, type DurableCallStore, type ExecuteOptions, type PerKeyMutex, type RequestIntent } from './calls.js';
 import { nestedCallKey } from './nested-key.js';
 import { applyIdempotencyPolicy, type IdempotencyPolicy } from './policies.js';
 
 /** What the store persists for a tool call: identity only, never arguments. */
-export interface ToolIntent { method: 'tools/call'; server: string; name: string }
+export interface ToolIntent {
+  method: 'tools/call'; server: string; name: string;
+  /** Durable logical call id (the nested key), stable across restarts. */
+  durableId: string;
+  /** sha256 of canonical effective args; the args themselves are never stored. */
+  digest: string;
+}
+const canonical = (v: unknown): unknown =>
+  Array.isArray(v) ? v.map(canonical)
+    : v && typeof v === 'object'
+      ? Object.fromEntries(Object.keys(v).sort().map(k => [k, canonical((v as Record<string, unknown>)[k])]))
+      : v;
+export const argsDigest = (args: unknown): string =>
+  createHash('sha256').update(JSON.stringify(canonical(args))).digest('hex');
 export interface ToolCallInput {
   serverId: string;
   toolName: string;
@@ -24,7 +38,7 @@ export interface DurableToolAdapterDeps<Res> {
   onWake?: (key: string, outcome: CallOutcome<Res>) => void | Promise<void>;
 }
 
-const describe = (r: ToolIntent): RequestIntent => ({ method: r.method, server: r.server, name: r.name });
+const describe = (r: ToolIntent): RequestIntent => ({ method: r.method, server: r.server, name: r.name, digest: r.digest });
 
 export class DurableToolAdapter<Res> {
   private readonly calls: DurableCalls<ToolIntent, Res>;
@@ -34,7 +48,7 @@ export class DurableToolAdapter<Res> {
   async callTool(parent: string, child: Child, call: ToolCallInput): Promise<CallOutcome<Res>> {
     const key = nestedCallKey(parent, child);
     const args = applyIdempotencyPolicy({ ...call, logicalKey: key }, this.deps.policies);
-    const intent: ToolIntent = { method: 'tools/call', server: call.serverId, name: call.toolName };
+    const intent: ToolIntent = { method: 'tools/call', server: call.serverId, name: call.toolName, durableId: key, digest: argsDigest(args) };
     const outcome = await this.calls.execute(
       key,
       intent,
