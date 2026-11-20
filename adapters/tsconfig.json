@@ -10,7 +10,8 @@
   "references": [
     { "path": "../packages/auth" },
     { "path": "../packages/core" },
-    { "path": "../packages/ext-events" }
+    { "path": "../packages/ext-events" },
+    { "path": "../packages/ops" }
   ],
   "include": ["pi-coding-agent/**/*.ts", "pi-durable/**/*.ts"],
   "exclude": ["dist", "node_modules"]
