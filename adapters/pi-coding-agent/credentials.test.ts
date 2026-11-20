@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { expect, it } from 'vitest';
 import { createCredentialStore } from './credentials.js';
 
-it('persists adapter credentials without reading or changing legacy credentials', async () => {
+it('persists adapter credentials without reading or changing legacy credentials [PICA-12]', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'pi-credentials-'));
   try {
     const legacy = join(dir, 'mcp-auth.json');

@@ -5,13 +5,13 @@ const stdio = { mcpServers: { fs: { command: "srv", args: ["-x"], env: { A: "1" 
 const http = { mcpServers: { web: { url: "https://example.test/mcp", headers: { H: "v" }, type: "streamable-http" } } };
 
 describe("readLegacyConfig", () => {
-  it("PICA-3: returns [] for untrusted project before inspecting input", () => {
+  it("returns [] for untrusted project before inspecting input [PICA-3]", () => {
     const trap = new Proxy({}, { get: () => { throw new Error("inspected"); } });
     expect(readLegacyConfig(trap, { source: "project" })).toEqual([]);
     expect(readLegacyConfig(trap, { source: "project", trusted: false })).toEqual([]);
     expect(readLegacyConfig(stdio, { source: "project" })).toEqual([]);
   });
-  it("PICA-3: trusted project parses but is marked trusted/source", () => {
+  it("trusted project parses but is marked trusted/source [PICA-3]", () => {
     const [s] = readLegacyConfig(stdio, { source: "project", trusted: true });
     expect(s).toMatchObject({ name: "fs", source: "project", trusted: true, transport: "stdio", enabled: true });
   });
@@ -37,7 +37,7 @@ describe("readLegacyConfig", () => {
     expect(() => readLegacyConfig({ mcpServers: { a: { command: "c", type: "ws" } } })).toThrow(/type/);
     expect(() => readLegacyConfig(null)).toThrow(/mcpServers/);
   });
-  it("PICA-11: read-only — input unchanged, so rollback is removing the adapter entry", () => {
+  it("read-only — input unchanged, so rollback is removing the adapter entry [PICA-11]", () => {
     const raw = structuredClone(stdio);
     readLegacyConfig(raw, { source: "project", trusted: true });
     expect(raw).toEqual(stdio);
