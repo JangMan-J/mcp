@@ -2,7 +2,8 @@
 export type TaskHandle = { kind: "task"; taskId: string; expiresAt?: number };
 export type MrtrHandle = {
   kind: "mrtr"; id: string; method: string; requestState: unknown;
-  inputRequests: Readonly<Record<string, unknown>>;
+  inputRequests: Readonly<Record<string, unknown>>; // local prompt data, never sent
+  inputResponses?: Readonly<Record<string, unknown>>; // wire retry payload
 };
 export type SubscriptionHandle = {
   kind: "subscription"; subscriptions: readonly unknown[];
@@ -24,7 +25,8 @@ export function parseHandle(data: unknown): DurableHandle | null {
     return { kind: "task", taskId: data.taskId, ...(data.expiresAt !== undefined ? { expiresAt: data.expiresAt } : {}) };
   if (data.kind === "mrtr" && typeof data.id === "string" && typeof data.method === "string" &&
     "requestState" in data && isObj(data.inputRequests))
-    return { kind: "mrtr", id: data.id, method: data.method, requestState: data.requestState, inputRequests: { ...data.inputRequests } };
+    return { kind: "mrtr", id: data.id, method: data.method, requestState: data.requestState, inputRequests: { ...data.inputRequests },
+      ...(isObj(data.inputResponses) ? { inputResponses: { ...data.inputResponses } } : {}) };
   if (data.kind === "subscription" && Array.isArray(data.subscriptions))
     return { kind: "subscription", subscriptions: [...data.subscriptions] };
   return null;
@@ -52,7 +54,10 @@ export class DurableHandles {
         // Retry is a new request: fresh distinct id, never the stored one.
         return this.host.send({
           id: this.newId(), method: handle.method,
-          params: { requestState: handle.requestState, inputRequests: { ...handle.inputRequests } },
+          params: {
+            requestState: handle.requestState,
+            ...(handle.inputResponses ? { inputResponses: { ...handle.inputResponses } } : {}),
+          },
         });
       case "subscription":
         // Fresh listen descriptor each time; deliberately no `resume` field.

@@ -23,23 +23,25 @@ describe("durable handles", () => {
       .rejects.toThrow(/expired/);
     expect(sent).toEqual([]);
   });
-  it("retries MRTR with a new distinct id carrying requestState/inputRequests", async () => {
+  it("retries MRTR with a new distinct id carrying requestState/inputResponses", async () => {
     const { host, sent } = harness();
-    const h: DurableHandle = { kind: "mrtr", id: "orig", method: "tools/call", requestState: "rs", inputRequests: { a: { x: 1 } } };
+    const h: DurableHandle = { kind: "mrtr", id: "orig", method: "tools/call", requestState: "rs", inputRequests: { a: { x: 1 } }, inputResponses: { a: { ok: true } } };
     const d = new DurableHandles(host);
     await d.dispatch(h); await d.dispatch(h);
     expect(sent.map(r => r.id)).toEqual(["req-1", "req-2"]);
-    expect(sent[0]).toMatchObject({ method: "tools/call", params: { requestState: "rs", inputRequests: { a: { x: 1 } } } });
+    expect(sent[0]).toMatchObject({ method: "tools/call", params: { requestState: "rs", inputResponses: { a: { ok: true } } } });
+    expect(JSON.stringify(sent)).not.toContain("inputRequests");
   });
   it("sends a fresh listen descriptor without resume for subscriptions", async () => {
     const { host, sent } = harness();
     const h = { kind: "subscription", subscriptions: [{ uri: "x" }], resume: "stale" } as unknown as DurableHandle;
     const d = new DurableHandles(host);
     await d.dispatch(h); await d.dispatch(h);
-    expect(sent[0].method).toBe("subscriptions/listen");
-    expect(sent[0].params).toEqual({ subscriptions: [{ uri: "x" }] });
+    const [a, b] = sent;
+    expect(a?.method).toBe("subscriptions/listen");
+    expect(a?.params).toEqual({ subscriptions: [{ uri: "x" }] });
     expect(JSON.stringify(sent)).not.toContain("resume");
-    expect(sent[0].params).not.toBe(sent[1].params);
+    expect(a?.params).not.toBe(b?.params);
     expect(sent.map(r => r.id)).toEqual(["req-1", "req-2"]);
   });
   it("round-trips snapshot data through host storage and restores it", async () => {
