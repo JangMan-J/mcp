@@ -2,7 +2,7 @@ import { expect, it, vi } from 'vitest';
 import { DurableCalls, type CallRecord } from './calls.js';
 import { executeNestedCall, type NestedToolRequest } from './nested.js';
 
-it('replays the same nested invocation without sending it again', async () => {
+it('[PICD-9] replays the same nested invocation without sending it again', async () => {
   const records = new Map<string, CallRecord<NestedToolRequest, number>>();
   const open = () => new DurableCalls<NestedToolRequest, number>({
     store: {

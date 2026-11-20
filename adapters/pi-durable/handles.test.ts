@@ -12,18 +12,18 @@ function harness(snapshot: unknown = null, now = 1_000) {
 }
 
 describe("durable handles", () => {
-  it("dispatches tasks/get with taskId before expiry", async () => {
+  it("[PICD-4] dispatches tasks/get with taskId before expiry", async () => {
     const { host, sent } = harness();
     await new DurableHandles(host).dispatch({ kind: "task", taskId: "t1", expiresAt: 2_000 });
     expect(sent).toEqual([{ id: "req-1", method: "tasks/get", params: { taskId: "t1" } }]);
   });
-  it("refuses expired task handles without sending", async () => {
+  it("[PICD-4] refuses expired task handles without sending", async () => {
     const { host, sent } = harness(null, 2_000);
     await expect(new DurableHandles(host).dispatch({ kind: "task", taskId: "t1", expiresAt: 2_000 }))
       .rejects.toThrow(/expired/);
     expect(sent).toEqual([]);
   });
-  it("retries MRTR with a new distinct id carrying requestState/inputResponses", async () => {
+  it("[PICD-4] retries MRTR with a new distinct id carrying requestState/inputResponses", async () => {
     const { host, sent } = harness();
     const h: DurableHandle = { kind: "mrtr", id: "orig", method: "tools/call", requestState: "rs", inputRequests: { a: { x: 1 } }, inputResponses: { a: { ok: true } } };
     const d = new DurableHandles(host);
@@ -32,7 +32,7 @@ describe("durable handles", () => {
     expect(sent[0]).toMatchObject({ method: "tools/call", params: { requestState: "rs", inputResponses: { a: { ok: true } } } });
     expect(JSON.stringify(sent)).not.toContain("inputRequests");
   });
-  it("sends a fresh listen descriptor without resume for subscriptions", async () => {
+  it("[PICD-4] sends a fresh listen descriptor without resume for subscriptions", async () => {
     const { host, sent } = harness();
     const h = { kind: "subscription", subscriptions: [{ uri: "x" }], resume: "stale" } as unknown as DurableHandle;
     const d = new DurableHandles(host);
