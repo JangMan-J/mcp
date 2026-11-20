@@ -3,20 +3,19 @@
 // Nested tool-call pipeline is a separate adapter concern and is not
 // registered by this module.
 
-import type { AuthorizationConsent, RedirectPort } from "../../packages/auth/src/provider.ts";
+import type { AuthorizationConsent, RedirectPort } from "@mcp-client/auth";
+import type { BrowserPort, Disposable } from "@mcp-client/core";
+
+export type { Disposable } from "@mcp-client/core";
 
 /** Identifier of the built-in MCP extension this adapter replaces. */
 export const BUILTIN_MCP = "builtin:mcp" as const;
 export type BuiltinMcpId = typeof BUILTIN_MCP;
 
-/** Auth ports the host may supply to the server port. Type-only re-exports
- *  from packages/auth so this adapter never needs a package build step. */
+/** Auth ports the host may supply to the server port, re-exported under
+ *  adapter-local names from the built public @mcp-client/auth surface. */
 export type AuthConsentPort = AuthorizationConsent;
 export type AuthRedirectPort = RedirectPort;
-
-export interface Disposable {
-  dispose(): void;
-}
 
 export type ServerStatus =
   | "connected"
@@ -75,7 +74,7 @@ export interface HostPorts {
   readonly servers: McpServerPort;
   readonly consent?: AuthConsentPort;
   readonly redirect?: AuthRedirectPort;
-  readonly browser?: { open(url: string, signal: AbortSignal): Promise<void> };
+  readonly browser?: BrowserPort;
 }
 
 export type McpSubcommand = "list" | "status" | "enable" | "disable" | "sign-in";
@@ -97,18 +96,64 @@ export function parseMcpArgs(args: string): { sub: McpSubcommand; id?: string } 
  * The returned disposer unregisters everything, shuts an active session
  * down, and restores builtin:mcp. It is idempotent.
  */
+interface SessionState {
+  readonly controller: AbortController;
+  /** servers.start has been invoked (and may still be in flight). */
+  started: boolean;
+  shutdownRequested: boolean;
+  shutdownCalled: boolean;
+}
+
 export function installHost(ports: HostPorts): Disposable {
   const { host, servers } = ports;
   let disposed = false;
-  let session: AbortController | undefined;
-  let sessionActive = false;
+  let current: SessionState | undefined;
 
   const disposables: Disposable[] = [];
   // Replace the built-in first so /mcp ownership is unambiguous.
   disposables.push(host.disableBuiltin(BUILTIN_MCP));
 
-  const sessionSignal = (ctx: McpCommandContext): AbortSignal =>
-    ctx.signal ?? session?.signal ?? new AbortController().signal;
+  // Lifecycle operations (servers.start / servers.shutdown) are serialized
+  // through this tail so overlapping session_start/session_shutdown/dispose
+  // can never run them concurrently or shut down before an in-flight start
+  // has settled (which would leave a started session nobody shuts down).
+  let tail: Promise<void> | undefined;
+  const enqueue = (op: () => Promise<void>): Promise<void> => {
+    const run = tail ? tail.then(op) : op();
+    const settled = run.then(
+      () => { if (tail === settled) tail = undefined; },
+      () => { if (tail === settled) tail = undefined; },
+    );
+    tail = settled;
+    return run;
+  };
+
+  const newSession = (): SessionState => ({
+    controller: new AbortController(),
+    started: false,
+    shutdownRequested: false,
+    shutdownCalled: false,
+  });
+
+  // Queued behind any in-flight start, so shutdown only ever runs after
+  // that start settled; a session aborted before its start ran is skipped.
+  const shutdownSession = (state: SessionState): Promise<void> =>
+    enqueue(async () => {
+      if (!state.started || state.shutdownCalled) return;
+      state.shutdownCalled = true;
+      await servers.shutdown();
+    });
+
+  // Sign-in is bound to the session signal (combined with any per-command
+  // signal) so session_shutdown/dispose always abort it, even when the
+  // command context carries its own signal. A controller is retained even
+  // before session_start so a later shutdown can still abort the sign-in.
+  const sessionSignal = (ctx: McpCommandContext): AbortSignal => {
+    current ??= newSession();
+    return ctx.signal
+      ? AbortSignal.any([ctx.signal, current.controller.signal])
+      : current.controller.signal;
+  };
 
   const dispatch = async (args: string, ctx: McpCommandContext): Promise<void> => {
     const parsed = parseMcpArgs(args);
@@ -154,35 +199,45 @@ export function installHost(ports: HostPorts): Disposable {
   }));
 
   disposables.push(host.on("session_start", async () => {
-    session?.abort();
-    session = new AbortController();
-    sessionActive = true;
-    await servers.start(session.signal);
+    if (disposed) return;
+    current?.controller.abort();
+    const state = newSession();
+    current = state;
+    await enqueue(async () => {
+      // Superseded/aborted before this start got its turn: never start it;
+      // the queued shutdown for it then has nothing to shut down.
+      if (state.shutdownRequested || state.controller.signal.aborted) return;
+      state.started = true;
+      await servers.start(state.controller.signal);
+    });
   }));
 
   disposables.push(host.on("session_shutdown", async () => {
-    session?.abort();
-    session = undefined;
-    if (sessionActive) {
-      sessionActive = false;
-      await servers.shutdown();
-    }
+    const state = current;
+    if (!state) return;
+    current = undefined;
+    // Abort synchronously (kills any in-flight sign-in/start) but run the
+    // shutdown itself through the lifecycle queue, exactly once.
+    state.controller.abort();
+    state.shutdownRequested = true;
+    await shutdownSession(state);
   }));
 
   return {
     dispose(): void {
       if (disposed) return;
       disposed = true;
-      session?.abort();
-      session = undefined;
+      const state = current;
+      current = undefined;
+      state?.controller.abort();
+      if (state) state.shutdownRequested = true;
       // Unregister handlers/command first, then restore builtin:mcp last
       // (reverse of install) so /mcp is never owned by both at once.
       for (const d of [...disposables].reverse()) d.dispose();
-      if (sessionActive) {
-        sessionActive = false;
-        // Session already aborted above; shutdown is best-effort here
-        // because dispose() is synchronous.
-        void Promise.resolve(servers.shutdown()).catch(() => undefined);
+      if (state?.started) {
+        // Runs immediately when no start is in flight; otherwise queued
+        // behind it. Best-effort because dispose() is synchronous.
+        void shutdownSession(state).catch(() => undefined);
       }
     },
   };
