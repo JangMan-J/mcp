@@ -3,7 +3,11 @@
 Wave 3 slice S3.0 record, per IMPLEMENTATION_PLAN.md §15.4–15.5. This is a
 plan document with one executed part. On 2026-11-21 the side-by-side trial and
 the rollback drill ran in a disposable scratch directory at the pinned Pi
-revision (record below). The cutover, a rollback in the active config, and the
+revision (record below).
+
+Pre-condition 1 (gate report for SHA X) is met: `npm run gate` at 0a6460559d8278f8cf3a4ad6447d598a67cfec57 exited 0, release eligible, 12/12 gate items, official 32/32 (see docs/conformance/GATE-STATUS.md).
+
+The cutover, a rollback in the active config, and the
 observation window have not been executed. Nothing changes the Pi fork source,
 the active Pi config, or `pi-mcp-ext` (§15.5 item 6). Each remaining step
 becomes executable only when its pre-conditions are met and the director
@@ -66,8 +70,8 @@ Before any config is touched:
 
 This section records what ran. It is a scratch-only record: no cutover in the
 active config, no rollback in the active config, and no observation window
-happened. Pre-condition 1 (gate report for SHA X) is not yet met; see
-`docs/conformance/GATE-STATUS.md`.
+happened. At the time of the scratch trial, pre-condition 1 was still open;
+the later release gate met it (see [Gate status](conformance/GATE-STATUS.md)).
 
 Setup:
 

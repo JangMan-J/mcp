@@ -1,5 +1,100 @@
 # Gate status
 
+## Release gate at 0a6460559d8278f8cf3a4ad6447d598a67cfec57 (release eligible)
+
+Ring 1 ran `npm run gate` (`bash scripts/gate.sh`) in the transaction worktree at `0a6460559d8278f8cf3a4ad6447d598a67cfec57`. It exited 0. The report, `reports/gate-0a6460559d8278f8cf3a4ad6447d598a67cfec57.json`, was generated at `2026-11-21T07:12:07.516Z` (`generatedAt`) and is not committed. This documentation commit follows the gate SHA and changes only docs.
+
+- Environment: Node `v26.13.1`, Linux `6.18.60-2-cachyos-lts` x64.
+- Lockfile SHA-256: `86ec5d55e5e5ffc05a4f2b3e8c4a7d1fa14179c7c6e56c28d2de03360c72ba95`.
+- Pins SHA-256: `6a12f8b4ffaf222a37918d5200d4bdb4e94e6ce556b7393a63330885e958e867`.
+
+Claim (verbatim): "Release eligible: 545/610 requirement rows pass (439/439 required/deprecated/excluded; 0 fail, 65 missing); gate items 12/12 pass. Claims are limited to the passing rows."
+
+### Gate items
+
+| Item | Status | Evidence |
+|---|---|---|
+| G1 | pass | Baseline and mutation suites; `stdio/concurrent-out-of-order` 1; `sub/two-listeners-demux*` 3. Omitted (no fixture): `edge/EDGE-1`, `arch/close-settles-all`, `stdio/legacy-peer-diagnostic`, `consent/*`. |
+| G2 | pass | `wire/cancel*` 3; `http/abort-closes-stream` 1; `stdio/shutdown-escalation` 1; `stdio/cancel-inflight` 1. |
+| G3 | pass | `elic/*` 5. |
+| G4 | pass | `auth/*` 64. |
+| G5 | pass | `cache/*` 16. |
+| G6 | pass | `sub/*` 17. |
+| G7 | pass | `stdio/crash-*` 1; `http/stream-break-*` 2; `http/5xx-write-uncertain` 1. |
+| G8 | pass | `ops/*` 38; `wire/*` 14. |
+| G9 | pass | `ver/*` 8; `http/400-modern-error-vs-legacy` 1. |
+| G10 | pass | Removal suite; `ext/*` 39. |
+| G11 | pass | Suites: no-pi, wire-scan, network-scan, secret-scan. |
+| G12 | pass | Suites: official, evidence. |
+
+### Suites
+
+| Suite | Result |
+|---|---|
+| no-pi | Pass (exit 0). |
+| baseline | 265/265 passed. |
+| mutation | 342/342 killed. |
+| coverage | OK. |
+| wire-scan | Clean: 261 transcripts, 629 client frames. DCR detection relies on `endpoint:'registration'` metadata. |
+| network-scan | Clean: 261 transcripts, loopback only. |
+| secret-scan | Clean: 261 transcripts, 0 logs. |
+| official | OK: 32/32 passed. |
+| removal | 8 extensions removable: `ext-apps`, `ext-client-credentials`, `ext-enterprise-auth`, `ext-events`, `ext-events-webhook`, `ext-server-cards`, `ext-skills`, `ext-tasks`. |
+| unit | 1180 tests, 0 failed, 252 tagged. |
+| validate | `check:deps-doc`, `check:forbidden`, and `check:deps` exited 0. |
+| evidence | Lock `86ec5d55e5e5`; pins `6a12f8b4ffaf`. |
+
+Blockers: none.
+
+### Requirement rows
+
+| Disposition | Pass | Fail | Missing |
+|---|---:|---:|---:|
+| required | 416 | 0 | 0 |
+| deprecated | 6 | 0 | 0 |
+| excluded | 17 | 0 | 0 |
+| conditional | 48 | 0 | 7 |
+| active-optional | 57 | 0 | 11 |
+| out-of-scope | 1 | 0 | 18 |
+| unresolved | 0 | 0 | 29 |
+| Total (610) | 545 | 0 | 65 |
+
+### Official client suite
+
+The gate staged `@modelcontextprotocol/conformance` `0.2.0-alpha.12` at `96a6f9478b7f2e125cf0360a213383cf57533893` locally. It ran the suite as a black box without reading upstream source (`IMPLEMENTATION_PLAN.md` §N3). All 32 required `2026-07-28` client scenarios passed:
+
+- `tools_call`, `request-metadata`
+- `auth/metadata-default`, `auth/metadata-var1`, `auth/metadata-var2`, `auth/metadata-var3`, `auth/basic-cimd`
+- `auth/scope-from-www-authenticate`, `auth/scope-from-scopes-supported`, `auth/scope-omitted-when-undefined`, `auth/scope-step-up`, `auth/scope-retry-limit`
+- `auth/token-endpoint-auth-basic`, `auth/token-endpoint-auth-post`, `auth/token-endpoint-auth-none`, `auth/pre-registration`, `auth/resource-mismatch`, `auth/offline-access-scope`, `auth/offline-access-not-supported`, `auth/authorization-server-migration`
+- `auth/iss-supported`, `auth/iss-not-advertised`, `auth/iss-supported-missing`, `auth/iss-wrong-issuer`, `auth/iss-unexpected`, `auth/iss-normalized`, `auth/metadata-issuer-mismatch`
+- `sep-2322-client-request-state`, `http-standard-headers`, `http-custom-headers`, `http-invalid-tool-headers`, `json-schema-ref-no-deref`
+
+Changes that took G12 from blocked to passing:
+
+- The wrapper uses the documented `client -o <dir>` and scores `checks.json` instead of using `--output json`.
+- The external runner is exempt from the `assert-no-pi` preload; the client under test (CUT) still runs under it.
+- CUT fixes cover tool arguments from `inputSchema`, request metadata, HTTP header scenarios, SEP-2322 concurrency, SEP-837 `application_type`, a reusable loopback redirect, the second call in AS migration, and same-origin ancestor PRM `resource`.
+- Director-approved library changes: D6 allows a loopback HTTP `authorization_endpoint` only under `allowInsecureDev`; the library sends the validated PRM `resource`; Dynamic Client Registration is opt-in under D12 (off by default, `DEP-DCR-1`/`AUTH-DCR-1` default behavior unchanged, and `AUTH-DCR-1`/`AUTH-DCR-2` now conditional); SafeFetch honors an `application/json` POST content type.
+- The CUT host sets `stepUpLimit` to 2 because the runner counts total authorization attempts. The library default for `AUTH-STEP-3` is unchanged.
+- The req-wire `[DEP-DCR-1]` test imports `src` instead of `dist` because it raced with `remove-ext` rebuilding `dist`.
+
+### Pi scratch trial
+
+All §15.2 acceptance items and the one-edit rollback drill passed at pinned Pi `7d80b45f` in a scratch directory. See [Cutover and rollback plan](../cutover.md). No active-config cutover took place.
+
+### Non-claims
+
+- No claim for the 29 unresolved rows or the 18 missing out-of-scope rows (`AUTH-SRV-1` through `AUTH-SRV-7`, `HTTP-SRV-*`).
+- Non-required rows without passing evidence: `WIRE-TO-3`, `HTTP-PARAM-3`, `OPS-TOOLS-17`, `OPS-COMP-3`, `OPS-SCHEMA-5`, `ELIC-URL-8`, `ELIC-SEC-1`, `CACHE-POLL-1`, `AUTH-REG-6`, `AUTH-SSRF-7`, `CONSENT-8`, `EXT-events-28`, `SEC-ICON-1` through `SEC-ICON-5`, `SEC-ARGS-1`.
+- The report's `nonClaims` still contains the stale static string `Wave 3 rows (post-gate, PLAN §15; not built before the gate): PICA-1..14, PICD-1..9, CUT-PI-MCP-1, CUT-ROLLBACK-1`. All 416 required rows, including those Wave 3 rows, passed in this run.
+- No Pi runtime integration claim beyond the scratch trial, no interoperability claim beyond the official suite, and no performance, load, or security-audit claims.
+
+### Next steps (not done)
+
+- Tag `v1.0-full-conformance` at the gated commit or its documentation successor.
+- Perform the live Pi cutover per [the cutover plan](../cutover.md) §15.5 item 3 only after director authorization and a backup of the active config.
+
 ## Wave 3 verification at `b6c1f214db735b86f152c5413f144ef407a7d1d2`
 
 Observed in an integrated worktree at this commit. This is not a release gate result: `npm run gate` was not run, so no release-eligibility claim is made.
@@ -10,6 +105,8 @@ Observed in an integrated worktree at this commit. This is not a release gate re
 - No live Pi trial or run took place, and no official external runner checkout was present or used; the official suite was not run.
 
 ## Milestone 5: G12 restoration and verification status
+
+Superseded by the release gate result above.
 
 **Not release eligible.** The isolated `npm run gate` at `374d595ff51643ba60b57f0f4343b2e45bf2bf5d` exited 1 (`BLOCKED`). The official runner checkout was absent from the isolated runtime. The `official` suite reported `checkout-missing` with `ok: false`, `total: 0`, and an empty `scenarios` array. No official scenario ran; G12 remains blocked on a missing prerequisite.
 

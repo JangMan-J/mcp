@@ -123,7 +123,7 @@ describe("avoid claims of live drill", () => {
   it("states cutover, active-config rollback and observation window are not done", () => {
     contains(/cutover, a rollback in the active config, and the\s+observation window have not been executed/i);
     contains(/Not done: cutover in the active config, rollback in the active config, and the\s+observation window/i);
-    contains(/Pre-condition 1 \(gate report for SHA X\) is not yet met/i);
+    contains(/Pre-condition 1 \(gate report for SHA X\) is met/i); contains(/0a6460559d8278f8cf3a4ad6447d598a67cfec57/); notContains(/is not yet met/i);
   });
   it("does not claim a live or active-config cutover, rollback, or observation window", () => {
     notContains(/cutover was performed/i);
