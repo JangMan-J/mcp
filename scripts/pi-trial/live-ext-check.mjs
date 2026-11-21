@@ -175,7 +175,11 @@ async function liveSession(sdk, resourceLoader, settingsManager, cwd, agentDir, 
       contains(await op('skills', 'load', {skillUri:SKILL}), '"approved":true');
       contains(await op('skills', 'read_file', {skillUri:SKILL, fileUri:SKILL_FILE}), 'Fixture skill instructions');
     });
-  } finally { await session.dispose(); }
+  } finally {
+    // SDK dispose() does not emit session_shutdown (Pi runtime does); mirror emitSessionShutdownEvent so extension streams close.
+    try { await session.extensionRunner?.emit({type:'session_shutdown', reason:'quit'}); }
+    finally { session.dispose(); }
+  }
   return steps;
 }
 
