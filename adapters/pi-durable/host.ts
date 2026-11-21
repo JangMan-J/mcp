@@ -26,6 +26,7 @@ import {
   type McpToolDescriptor,
 } from './extension.js';
 import { registerOperation, type HostToolRegistration, type HostToolResult } from './host-tools.js';
+import { nestedCallKey } from './nested-key.js';
 import type { IdempotencyPolicy } from './policies.js';
 import {
   loadServers,
@@ -221,46 +222,15 @@ function resolveToolExposure(
   return descriptor.exposure ?? 'direct';
 }
 
-function isNormalizedDescriptor(raw: ServerDescriptor | DurableServerInput): raw is ServerDescriptor {
-  return (
-    typeof raw.source === 'string' &&
-    typeof raw.trusted === 'boolean' &&
-    (raw.transport === 'stdio' || raw.transport === 'http') &&
-    typeof raw.enabled === 'boolean' &&
-    typeof raw.exposure === 'string'
-  );
-}
-
 function normalizeEntry(raw: ServerDescriptor | DurableServerInput): NormalizedEntry {
-  const descriptor = isNormalizedDescriptor(raw) ? raw : normalizeServer(raw.name, raw);
-  const rec = raw as DurableServerInput;
-  const d = descriptor as DurableServerInput;
-  const instructions = typeof rec.instructions === 'string'
-    ? rec.instructions
-    : typeof d.instructions === 'string'
-      ? d.instructions
-      : undefined;
-  const readOnlyTools = Array.isArray(rec.readOnlyTools)
-    ? [...rec.readOnlyTools]
-    : Array.isArray(d.readOnlyTools)
-      ? [...d.readOnlyTools]
-      : undefined;
-  const toolOverrides = isRecord(rec.toolOverrides)
-    ? (rec.toolOverrides as Readonly<Record<string, 'replay' | 'interrupt'>>)
-    : isRecord(d.toolOverrides)
-      ? (d.toolOverrides as Readonly<Record<string, 'replay' | 'interrupt'>>)
-      : undefined;
-  const acceptDuplicate = typeof rec.acceptDuplicate === 'boolean'
-    ? rec.acceptDuplicate
-    : typeof d.acceptDuplicate === 'boolean'
-      ? d.acceptDuplicate
-      : undefined;
+  // normalizeServer also preserves the durable replay fields on raw and normalized inputs.
+  const descriptor = normalizeServer(raw.name, raw);
   return {
     descriptor,
-    ...(instructions !== undefined ? { instructions } : {}),
-    ...(readOnlyTools !== undefined ? { readOnlyTools } : {}),
-    ...(toolOverrides !== undefined ? { toolOverrides } : {}),
-    ...(acceptDuplicate !== undefined ? { acceptDuplicate } : {}),
+    ...(descriptor.instructions !== undefined ? { instructions: descriptor.instructions } : {}),
+    ...(descriptor.readOnlyTools !== undefined ? { readOnlyTools: descriptor.readOnlyTools } : {}),
+    ...(descriptor.toolOverrides !== undefined ? { toolOverrides: descriptor.toolOverrides } : {}),
+    ...(descriptor.acceptDuplicate !== undefined ? { acceptDuplicate: descriptor.acceptDuplicate } : {}),
   };
 }
 
@@ -332,6 +302,7 @@ export async function startDurableMcpHost(options: DurableHostOptions = {}): Pro
   const servers = new Map<string, Server>();
   const featureRoutes = new Map<string, Server[]>();
   const featureOperations = new Map<string, HostToolRegistration>();
+  const cancelledTasks = new Set<string>();
   let extensions: HostExtension[] = [];
   let closed = false;
   let closing: Promise<void> | undefined;
@@ -393,8 +364,15 @@ export async function startDurableMcpHost(options: DurableHostOptions = {}): Pro
       if (closed || lifetimeSignal.aborted) {
         return Promise.reject(new Error('Durable MCP host is closed'));
       }
-      const sig = context.signal ? AbortSignal.any([lifetimeSignal, context.signal]) : lifetimeSignal;
-      const p = reg.execute(args, api, { ...context, signal: sig });
+      // Chord exposes abortSignal (possibly as a non-enumerable getter); older peers expose signal.
+      const abortSignal = (context as typeof context & { readonly abortSignal?: AbortSignal }).abortSignal;
+      const sig = AbortSignal.any([
+        lifetimeSignal,
+        ...(abortSignal ? [abortSignal] : []),
+        ...(context.signal ? [context.signal] : []),
+      ]);
+      const combinedContext = { ...context, abortSignal: sig, signal: sig };
+      const p = reg.execute(args, api, combinedContext);
       activeExecutions.add(p);
       return p.finally(() => { activeExecutions.delete(p); });
     },
@@ -455,11 +433,19 @@ export async function startDurableMcpHost(options: DurableHostOptions = {}): Pro
         exposure,
         readOnly: readOnlyTools.includes(tool.name),
         ...(override !== undefined ? { override } : {}),
-        invoke: (args, signal, requestId) =>
-          s.runtime.callTool(
+        invoke: async (args, signal, requestId) => {
+          const active = signal ?? lifetimeSignal;
+          const result = await s.runtime.callTool(
             { requestId, serverId: s.id, toolName: tool.name, args },
-            signal ?? lifetimeSignal,
-          ),
+            active,
+          );
+          if (options.appRenderer) {
+            // Rendering follows the wire call: a UI/resource failure must not reject the
+            // durable attempt and leave its already-sent tools/call eligible for resend.
+            await s.runtime.renderToolApp(tool, active).catch(() => undefined);
+          }
+          return result;
+        },
       }, operationDeps(s.acceptDuplicate)));
       s.operations.set(name, reg);
       return reg;
@@ -500,7 +486,7 @@ export async function startDurableMcpHost(options: DurableHostOptions = {}): Pro
         description: `MCP ${name.replace(/^mcp_/, '')} across servers: ${owners.map(o => o.id).join(', ')}. Pass "server" and "action".`,
         inputSchema: featureSchema(name),
         exposure: 'direct',
-        readOnly: globalReadOnly.includes(name),
+        readOnly: name === 'mcp_prompts' || globalReadOnly.includes(name),
         invoke: async (args, signal) => {
           const action = args['action'];
           if (typeof args['server'] !== 'string' && owners.length > 1 && name === 'mcp_events' && action === 'servers') {
@@ -517,10 +503,36 @@ export async function startDurableMcpHost(options: DurableHostOptions = {}): Pro
           }
           const mod = owner.features.find(f => f.names.includes(name));
           if (!mod) throw new Error(`Server ${owner.id} does not support ${name}`);
+          const taskTool = args['tool'];
+          if (name === 'mcp_tasks' && action === 'call' && typeof taskTool === 'string' &&
+            (!(options.admitTool?.(taskTool, owner.id) ?? true) || resolveToolExposure(owner.descriptor, taskTool) === 'hidden')) {
+            throw new Error(`MCP tool ${taskTool} on ${owner.id} is not admitted`);
+          }
           const raw = await mod.run(name, { ...args }, signal ?? lifetimeSignal);
-          return rawToMcpResult(raw);
+          const result = rawToMcpResult(raw);
+          if (name === 'mcp_tasks' && isRecord(result.structuredContent)) {
+            return { ...result, structuredContent: { ...result.structuredContent, server: owner.id } };
+          }
+          return result;
         },
-      }, operationDeps()));
+      }, {
+        ...operationDeps(),
+        ...(name === 'mcp_tasks' ? {
+          onCancel: async ({ callId }: { callId: string }) => {
+            const record = await store.get(nestedCallKey(callId, { key: 'mcp' }));
+            const data = record?.status === 'completed' ? record.result?.structuredContent : undefined;
+            if (!isRecord(data) || typeof data['taskId'] !== 'string' || typeof data['server'] !== 'string') return;
+            const taskId = data['taskId'];
+            const owner = servers.get(data['server']);
+            const mod = owner?.features.find(f => f.names.includes('mcp_tasks'));
+            if (!owner || !mod) return;
+            const key = `${owner.id}\0${taskId}`;
+            if (cancelledTasks.has(key)) return;
+            cancelledTasks.add(key);
+            await mod.run('mcp_tasks', { action: 'cancel', taskId }, lifetimeSignal);
+          },
+        } : {}),
+      }));
       featureOperations.set(name, reg);
       return reg;
     });
@@ -703,8 +715,6 @@ export async function startDurableMcpHost(options: DurableHostOptions = {}): Pro
       if (!s.runtime.signIn) throw new Error(`Server ${id} has no sign-in`);
       const sig = signal ? AbortSignal.any([lifetimeSignal, signal]) : lifetimeSignal;
       const result = await s.runtime.signIn(sig);
-      const disc = await s.runtime.rediscover(sig);
-      if (disc.kind !== 'ok') throw new McpOutcomeError(disc);
       s.unsubToolsChanged?.();
       await Promise.allSettled(s.features.map(f => f.close()));
       s.features = [];
