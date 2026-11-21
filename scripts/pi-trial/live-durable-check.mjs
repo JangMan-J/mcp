@@ -1,4 +1,5 @@
 // Run after npm run build:pi-durable; the durable runtime is loaded from disk, never installed here.
+// --type-check checks SDK assignment only; --self-test probes the SDK without a built adapter.
 import assert from 'node:assert/strict';
 import {spawnSync} from 'node:child_process';
 import {existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync} from 'node:fs';
@@ -136,16 +137,39 @@ async function run(runtime, probe) {
   } finally { try { await host?.close(); } finally { await fx.close(); } }
 }
 
+function checkTypes(runtime, scratch, env) {
+  const sdk = join(runtime, 'dist'), adapter = resolve(import.meta.dirname, '../../adapters/pi-durable/dist');
+  assert(existsSync(join(sdk, 'index.d.ts')), `Missing SDK declarations: ${sdk}`);
+  assert(existsSync(join(adapter, 'index.d.ts')), 'Missing adapter declarations; run npm run build:pi-durable');
+  // NodeNext resolves these absolute .js specifiers to the adjacent .d.ts files.
+  const source = join(scratch, 'sdk-assignment.mts');
+  writeFileSync(source, `import { createRegistry } from ${JSON.stringify(join(sdk, 'index.js'))};
+import type { DurableMcpHost } from ${JSON.stringify(join(adapter, 'index.js'))};
+declare const host: DurableMcpHost;
+for (const ext of host.extensions) createRegistry().install(ext);
+`);
+  const tsc = resolve(import.meta.dirname, '../../node_modules/typescript/bin/tsc');
+  const result = spawnSync(process.execPath, [tsc, '--noEmit', '--skipLibCheck', '--strict', '--module', 'nodenext', source],
+    {stdio:'inherit', cwd:scratch, env, timeout:30000, killSignal:'SIGKILL'});
+  if (result.error) throw result.error;
+  if (result.status === 0) console.log('SDK extension assignment: pass');
+  return result.status ?? 1;
+}
+
 if (process.argv[2] === '--child') {
   await run(process.argv[3],process.argv[4] === '--self-test');
 } else {
   const root = discover(), scratch = realpathSync(mkdtempSync(join(tmpdir(),'pi-durable-trial-')));
+  const env = {PATH:dirname(process.execPath),HOME:scratch,TMPDIR:scratch,
+    XDG_CONFIG_HOME:scratch,XDG_CACHE_HOME:scratch,XDG_DATA_HOME:scratch,PI_CODING_AGENT_DIR:join(scratch,'agent')};
   console.log(`Using ${pkg}@1.6.0: ${root}`);
   try {
-    const r = spawnSync(process.execPath,['--experimental-import-meta-resolve',import.meta.filename,'--child',root,...process.argv.slice(2)],
-      {stdio:'inherit', cwd:scratch, timeout:60000, killSignal:'SIGKILL', env:{PATH:dirname(process.execPath),HOME:scratch,TMPDIR:scratch,
-        XDG_CONFIG_HOME:scratch,XDG_CACHE_HOME:scratch,XDG_DATA_HOME:scratch,PI_CODING_AGENT_DIR:join(scratch,'agent')}});
-    if (r.error) throw r.error;
-    process.exitCode = r.status ?? 1;
+    if (process.argv[2] === '--type-check') process.exitCode = checkTypes(root, scratch, env);
+    else {
+      const r = spawnSync(process.execPath,['--experimental-import-meta-resolve',import.meta.filename,'--child',root,...process.argv.slice(2)],
+        {stdio:'inherit', cwd:scratch, timeout:60000, killSignal:'SIGKILL', env});
+      if (r.error) throw r.error;
+      process.exitCode = r.status ?? 1;
+    }
   } finally { rmSync(scratch,{recursive:true,force:true}); }
 }
