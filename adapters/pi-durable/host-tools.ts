@@ -1,0 +1,170 @@
+import { argsDigest, type ToolIntent } from './adapter.js';
+import { DurableCalls, type CallOutcome, type DurableCallStore, type PerKeyMutex, type RequestIntent } from './calls.js';
+import type { McpCallToolResult, McpContent } from './extension.js';
+import { nestedCallKey } from './nested-key.js';
+import { applyIdempotencyPolicy, type IdempotencyPolicy } from './policies.js';
+
+// Unified durable registration/call engine. Shapes structurally match pi-durable@1.6.0
+// `ToolRegistration` (harness/types.d.ts); nothing here imports Pi.
+
+export type JsonValue = null | boolean | number | string | JsonValue[] | { [k: string]: JsonValue };
+
+/** pi-durable@1.6.0 ToolResultMessage content block. */
+export type ContentBlock =
+  | { readonly type: 'text'; readonly text: string }
+  | { readonly type: 'image'; readonly data: string; readonly mimeType: string };
+
+export interface HostToolContext { readonly signal?: AbortSignal }
+/** The subset of pi-durable's ToolExecutionApi the engine reads. */
+export interface HostToolApi { readonly callId: string; readonly checkpoint?: unknown; readonly wake?: unknown }
+
+export interface HostToolResult {
+  readonly output: ContentBlock[];
+  readonly isError?: boolean;
+  readonly details?: JsonValue;
+  readonly structuredOutput?: JsonValue;
+}
+
+export type Exposure = 'direct' | 'codemode' | 'deferred';
+
+export interface HostToolRegistration {
+  readonly name: string;
+  readonly description: string;
+  readonly parameters: Record<string, unknown>;
+  readonly replay: 'safe' | 'unsafe';
+  readonly structuredOutputSchema: Record<string, unknown>;
+  readonly callers?: readonly ('model' | 'tools')[];
+  readonly deferred?: true;
+  execute(args: Readonly<Record<string, unknown>>, api: HostToolApi, context: HostToolContext): Promise<HostToolResult>;
+  cancel(args: Readonly<Record<string, unknown>>, api: HostToolApi, context: HostToolContext): Promise<void>;
+}
+
+export interface OperationSpec {
+  /** Registered (model-facing) tool name. */
+  readonly name: string;
+  readonly serverId: string;
+  /** Name sent on the wire / recorded in the intent. */
+  readonly wireName: string;
+  readonly description?: string;
+  readonly inputSchema: Record<string, unknown>;
+  readonly exposure?: Exposure;
+  /** Read-only operations may re-run after a host restart. */
+  readonly readOnly?: boolean;
+  /** Operator override; wins over readOnly and acceptDuplicate. */
+  readonly override?: 'replay' | 'interrupt';
+  /** Performs the operation. Only called after the intent has been committed; `requestId` is the committed wire id. */
+  invoke(args: Readonly<Record<string, unknown>>, signal: AbortSignal | undefined, requestId: string): Promise<McpCallToolResult>;
+}
+
+export interface OperationDeps {
+  readonly store: DurableCallStore<ToolIntent, McpCallToolResult>;
+  readonly mutex: PerKeyMutex;
+  /** Operator opt-in to resend an interrupted write after restart (may duplicate the side effect). */
+  readonly acceptDuplicate?: boolean;
+  readonly restartLimit?: number;
+  readonly policies?: readonly IdempotencyPolicy[];
+  readonly newRequestId?: () => string;
+  readonly onCancel?: (info: { callId: string; name: string; checkpoint?: unknown }) => void | Promise<void>;
+}
+
+export const INTERRUPTED_OUTPUT =
+  'Uncertain write: the call was interrupted across a host restart and may or may not have run; do not retry blindly.';
+
+export const CALL_TOOL_RESULT_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  properties: {
+    content: { type: 'array', items: { type: 'object', properties: { type: { type: 'string' } }, required: ['type'] } },
+    structuredContent: {},
+    isError: { type: 'boolean' },
+  },
+  required: ['content'],
+};
+
+const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+
+/** JSON round-trip: drops undefined/functions, so the value is a real JsonValue. */
+export const toJson = (v: unknown): JsonValue => (v === undefined ? null : JSON.parse(JSON.stringify(v)) as JsonValue);
+
+export function toContentBlocks(content: readonly McpContent[] | undefined): ContentBlock[] {
+  return (content ?? []).map((c): ContentBlock =>
+    c.type === 'text' && typeof c.text === 'string' ? { type: 'text', text: c.text }
+      : c.type === 'image' && typeof c['data'] === 'string' && typeof c['mimeType'] === 'string'
+        ? { type: 'image', data: c['data'], mimeType: c['mimeType'] }
+        : { type: 'text', text: JSON.stringify(c) });
+}
+
+export function outcomeToResult(outcome: CallOutcome<McpCallToolResult>): HostToolResult {
+  if (outcome.status === 'interrupted') {
+    return {
+      output: [{ type: 'text', text: INTERRUPTED_OUTPUT }],
+      isError: true,
+      details: toJson({ status: 'interrupted', ...(outcome.classification ? { classification: outcome.classification } : {}) }),
+    };
+  }
+  const result: McpCallToolResult = isRecord(outcome.result) ? outcome.result : { content: [] };
+  const { _meta: _ignored, ...rest } = result;
+  const output = toContentBlocks(result.content);
+  if (output.length === 0 && result.structuredContent !== undefined)
+    output.push({ type: 'text', text: JSON.stringify(result.structuredContent) });
+  return {
+    output,
+    ...(result.isError === true ? { isError: true } : {}),
+    structuredOutput: toJson({ content: [], ...rest }),
+  };
+}
+
+const describe = (r: ToolIntent): RequestIntent => ({ method: r.method, server: r.server, name: r.name, digest: r.digest, requestId: r.requestId });
+
+/**
+ * Builds the single registration used by both feature actions and direct host calls.
+ * Intent (identity + args digest, never args) is committed before invoke; the outcome before
+ * returning. Completed calls replay from the store; a different digest for the same call id
+ * throws; an unfinished write after restart surfaces as an interrupted result unless replay is allowed.
+ */
+export function registerOperation(spec: OperationSpec, deps: OperationDeps): HostToolRegistration {
+  const calls = new DurableCalls<ToolIntent, McpCallToolResult>({ store: deps.store, mutex: deps.mutex });
+  const newId = (): string => deps.newRequestId?.() ?? crypto.randomUUID();
+  const replay = spec.override ? spec.override === 'replay' : spec.readOnly === true;
+  const cancelled = new Set<string>();
+  const exposure = spec.exposure ?? 'direct';
+  return {
+    name: spec.name,
+    description: spec.description ?? `${spec.wireName} on ${spec.serverId}`,
+    parameters: spec.inputSchema,
+    replay: replay ? 'safe' : 'unsafe',
+    structuredOutputSchema: CALL_TOOL_RESULT_SCHEMA,
+    ...(exposure === 'codemode' ? { callers: ['tools'] as const } : {}),
+    ...(exposure === 'direct' ? { callers: ['model', 'tools'] as const } : {}),
+    ...(exposure === 'deferred' ? { deferred: true as const } : {}),
+    async execute(args, api, context) {
+      const key = nestedCallKey(api.callId, { key: 'mcp' });
+      const effective = applyIdempotencyPolicy(
+        { serverId: spec.serverId, toolName: spec.wireName, inputSchema: spec.inputSchema, args, logicalKey: key },
+        deps.policies,
+      );
+      const digest = argsDigest(effective);
+      // DurableCalls returns completed records without an identity check; reject mismatches here.
+      const prior = await deps.store.get(key);
+      const p = prior?.request;
+      if (p && (p.digest !== digest || p.name !== spec.wireName || p.server !== spec.serverId))
+        throw new Error(`conflicting intent identity for ${key}`);
+      const intent: ToolIntent = { method: 'tools/call', server: spec.serverId, name: spec.wireName, durableId: key, digest, requestId: newId() };
+      const outcome = await calls.execute(key, intent, (sent) => spec.invoke(effective, context.signal, sent.requestId), {
+        tool: spec.wireName,
+        describe,
+        restartRequest: (r) => ({ ...r, requestId: newId() }),
+        ...(deps.acceptDuplicate !== undefined ? { acceptDuplicate: deps.acceptDuplicate } : {}),
+        ...(deps.restartLimit !== undefined ? { restartLimit: deps.restartLimit } : {}),
+        ...(spec.readOnly ? { readOnlyTools: [spec.wireName] } : {}),
+        ...(spec.override ? { toolOverrides: { [spec.wireName]: spec.override } } : {}),
+      });
+      return outcomeToResult(outcome);
+    },
+    async cancel(_args, api) {
+      // Idempotent; never invokes or nests.
+      if (cancelled.has(api.callId)) return;
+      cancelled.add(api.callId);
+      await deps.onCancel?.({ callId: api.callId, name: spec.name, ...(api.checkpoint !== undefined ? { checkpoint: api.checkpoint } : {}) });
+    },
+  };
+}
