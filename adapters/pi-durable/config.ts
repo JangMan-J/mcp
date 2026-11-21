@@ -19,6 +19,9 @@ export interface LegacyServerConfig {
   readonly auth?: LegacyAuthConfig;
   readonly clientCredentials?: Readonly<Record<string, unknown>>;
   readonly enterpriseAuth?: Readonly<Record<string, unknown>>;
+  // Durable replay config consumed by host.ts buildExtension.
+  readonly instructions?: string; readonly readOnlyTools?: readonly string[];
+  readonly toolOverrides?: Readonly<Record<string, "replay" | "interrupt">>; readonly acceptDuplicate?: boolean;
 }
 export interface LegacySubscriptionConfig {
   readonly name: string;
@@ -142,7 +145,7 @@ function parseServer(name: string, raw: unknown, source: LegacySource, trusted: 
     if (raw.args !== undefined && (!Array.isArray(raw.args) || raw.args.some((a) => typeof a !== "string")))
       bad(`server "${name}": args must be string[]`);
     if (raw.enabled !== undefined && typeof raw.enabled !== "boolean") bad(`server "${name}": enabled must be boolean`);
-    if (raw.timeout !== undefined && (typeof raw.timeout !== "number" || !(raw.timeout > 0))) bad(`server "${name}": timeout must be positive`);
+    const timeout = positiveMs(raw.timeout, `server "${name}" timeout`);
     const timeoutMs = positiveMs(raw.timeoutMs, `server "${name}" timeoutMs`);
     if (raw.allowLegacyInitialize !== undefined && typeof raw.allowLegacyInitialize !== "boolean") bad("allowLegacyInitialize must be boolean");
     if (raw.inheritEnv !== undefined && typeof raw.inheritEnv !== "boolean" && (!Array.isArray(raw.inheritEnv) || raw.inheritEnv.some(k => typeof k !== "string"))) bad("inheritEnv must be boolean or string[]");
@@ -163,6 +166,12 @@ function parseServer(name: string, raw: unknown, source: LegacySource, trusted: 
     const toolExposure = raw.toolExposure === undefined ? undefined : Object.fromEntries(
       Object.entries(strMap(raw.toolExposure, `server "${name}" toolExposure`) ?? {}).map(([k, v]) => [k, exposure(v, "toolExposure")]));
     const env = strMap(raw.env, "env"); const headers = strMap(raw.headers, "headers");
+    if (raw.readOnlyTools !== undefined && (!Array.isArray(raw.readOnlyTools) || raw.readOnlyTools.some((t) => typeof t !== "string")))
+      bad(`server "${name}": readOnlyTools must be string[]`);
+    const toolOverrides = strMap(raw.toolOverrides, `server "${name}" toolOverrides`);
+    if (toolOverrides && Object.values(toolOverrides).some((v) => v !== "replay" && v !== "interrupt"))
+      bad(`server "${name}": toolOverrides values must be replay or interrupt`);
+    if (raw.acceptDuplicate !== undefined && typeof raw.acceptDuplicate !== "boolean") bad(`server "${name}": acceptDuplicate must be boolean`);
     return {
       name, source, trusted, transport: http ? "http" as const : "stdio" as const,
       enabled: raw.enabled ?? true, exposure: exposure(raw.exposure),
@@ -173,12 +182,16 @@ function parseServer(name: string, raw: unknown, source: LegacySource, trusted: 
       ...(optStr(raw.cwd, "cwd") ? { cwd: raw.cwd as string } : {}),
       ...(env ? { env } : {}), ...(headers ? { headers } : {}),
       ...(optStr(raw.description, "description") ? { description: raw.description as string } : {}),
-      ...(raw.timeout !== undefined ? { timeout: raw.timeout as number } : {}),
+      ...(timeout !== undefined ? { timeout } : {}),
       ...(timeoutMs !== undefined ? { timeoutMs } : {}), ...(subscribe ? { subscribe } : {}),
       ...(clientCredentials ? { clientCredentials } : {}), ...(enterpriseAuth ? { enterpriseAuth } : {}),
       ...(raw.aliases ? { aliases: [...raw.aliases as string[]] } : {}),
       ...(toolExposure ? { toolExposure } : {}),
       ...(oauth ? { oauth } : {}), ...(auth ? { auth } : {}),
+      ...(optStr(raw.instructions, "instructions") ? { instructions: raw.instructions as string } : {}),
+      ...(raw.readOnlyTools ? { readOnlyTools: [...raw.readOnlyTools as string[]] } : {}),
+      ...(toolOverrides ? { toolOverrides: toolOverrides as Record<string, "replay" | "interrupt"> } : {}),
+      ...(raw.acceptDuplicate !== undefined ? { acceptDuplicate: raw.acceptDuplicate } : {}),
     };
 }
 export function readLegacyConfig(input: unknown, opts: ReadOptions = {}): LegacyServerConfig[] {
@@ -225,8 +238,15 @@ export function resolveServerVariables(config: LegacyServerConfig, ctx: Variable
 
 export type ServerDescriptor = LegacyServerConfig;
 
+/** Direct (operator-supplied) descriptor: honors explicit `source`/`trusted`, defaulting to trusted global. */
 export function normalizeServer(name: string, raw: unknown): ServerDescriptor {
-  return resolveServerVariables(parseServer(name, raw, "global", true), { env: process.env, disallowShellSubstitution: true });
+  const r: Rec = isRec(raw) ? raw : {};
+  const source = r.source ?? "global";
+  if (source !== "project" && source !== "global" && source !== "dynamic") bad(`server "${name}": source is invalid`);
+  if (r.trusted !== undefined && typeof r.trusted !== "boolean") bad(`server "${name}": trusted must be boolean`);
+  const trusted = r.trusted ?? source !== "project";
+  if (source === "project" && !trusted) bad(`server "${name}": untrusted project server cannot be enabled`); // PICA-3
+  return resolveServerVariables(parseServer(name, raw, source, trusted), { env: process.env, disallowShellSubstitution: true });
 }
 
 /** Only operator-selected config files are read. Never execute shell substitutions. */
