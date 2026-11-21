@@ -11,7 +11,7 @@ import type { Clock, ProgressEvent } from "./ports.js";
 
 export type ProgressToken = string | number;
 
-export type ProgressDropReason = "inactive" | "after-complete" | "non-monotonic" | "invalid" | "foreign";
+export type ProgressDropReason = "inactive" | "non-monotonic" | "invalid" | "foreign";
 
 export type ProgressDecision =
   | { readonly accept: true; readonly event: ProgressEvent }
@@ -21,16 +21,10 @@ export interface ProgressStats {
   readonly active: number;
   readonly delivered: number;
   readonly inactive: number;
-  readonly afterComplete: number;
   readonly nonMonotonic: number;
   readonly invalid: number;
   readonly foreign: number;
   readonly collisions: number;
-}
-
-export interface ProgressRegistryOptions {
-  /** How many released tokens are remembered to classify late notifications as after-complete. */
-  readonly recentLimit?: number;
 }
 
 export function isProgressToken(v: unknown): v is ProgressToken {
@@ -68,22 +62,14 @@ interface ActiveToken {
 
 export class ProgressRegistry {
   private readonly active = new Map<string, ActiveToken>();
-  private readonly recent: string[] = [];
-  private readonly recentSet = new Set<string>();
-  private readonly recentLimit: number;
   private readonly counters = {
     delivered: 0,
     inactive: 0,
-    afterComplete: 0,
     nonMonotonic: 0,
     invalid: 0,
     foreign: 0,
     collisions: 0,
   };
-
-  constructor(opts: ProgressRegistryOptions = {}) {
-    this.recentLimit = Math.max(0, opts.recentLimit ?? 256);
-  }
 
   /** Registers a token for an in-flight request. Returns false when the token is already active (PROG-1). */
   register(token: ProgressToken): boolean {
@@ -91,11 +77,6 @@ export class ProgressRegistry {
     if (this.active.has(key)) {
       this.counters.collisions += 1;
       return false;
-    }
-    if (this.recentSet.has(key)) {
-      this.recentSet.delete(key);
-      const i = this.recent.indexOf(key);
-      if (i >= 0) this.recent.splice(i, 1);
     }
     this.active.set(key, { last: undefined });
     return true;
@@ -122,10 +103,6 @@ export class ProgressRegistry {
     const key = progressTokenKey(ev.progressToken);
     const entry = this.active.get(key);
     if (!entry) {
-      if (this.recentSet.has(key)) {
-        this.counters.afterComplete += 1;
-        return { accept: false, reason: "after-complete" };
-      }
       this.counters.inactive += 1;
       return { accept: false, reason: "inactive" };
     }
@@ -142,17 +119,9 @@ export class ProgressRegistry {
     return { accept: true, event: ev };
   }
 
-  /** Releases a token when its request settles; later notifications count as after-complete (PROG-4). */
+  /** Releases a token when its request settles (PROG-4). */
   release(token: ProgressToken): void {
-    const key = progressTokenKey(token);
-    if (!this.active.delete(key)) return;
-    if (this.recentLimit === 0) return;
-    this.recent.push(key);
-    this.recentSet.add(key);
-    while (this.recent.length > this.recentLimit) {
-      const old = this.recent.shift();
-      if (old !== undefined) this.recentSet.delete(old);
-    }
+    this.active.delete(progressTokenKey(token));
   }
 
   stats(): ProgressStats {
@@ -161,12 +130,12 @@ export class ProgressRegistry {
 }
 
 /**
- * Single-consumer async push queue. `close()` ends iteration after buffered items drain;
+ * Async push queue. `close()` ends iteration after buffered items drain;
  * pushes after close are ignored and reported by the return value.
  */
 export class NotificationQueue<T> implements AsyncIterable<T> {
   private readonly buf: T[] = [];
-  private waiter: ((r: IteratorResult<T>) => void) | undefined;
+  private readonly waiters: Array<(r: IteratorResult<T>) => void> = [];
   private closedFlag = false;
 
   get closed(): boolean {
@@ -175,9 +144,8 @@ export class NotificationQueue<T> implements AsyncIterable<T> {
 
   push(item: T): boolean {
     if (this.closedFlag) return false;
-    const w = this.waiter;
+    const w = this.waiters.shift();
     if (w) {
-      this.waiter = undefined;
       w({ value: item, done: false });
     } else {
       this.buf.push(item);
@@ -188,10 +156,8 @@ export class NotificationQueue<T> implements AsyncIterable<T> {
   close(): void {
     if (this.closedFlag) return;
     this.closedFlag = true;
-    const w = this.waiter;
-    if (w) {
-      this.waiter = undefined;
-      w({ value: undefined, done: true });
+    while (this.waiters.length > 0) {
+      this.waiters.shift()!({ value: undefined, done: true });
     }
   }
 
@@ -205,7 +171,7 @@ export class NotificationQueue<T> implements AsyncIterable<T> {
           return Promise.resolve({ value: undefined, done: true });
         }
         return new Promise<IteratorResult<T>>((resolve) => {
-          this.waiter = resolve;
+          this.waiters.push(resolve);
         });
       },
       return: () => {

@@ -29,7 +29,7 @@ function makeScriptedTransport(
 }
 
 describe("edge cases part 2 (core)", () => {
-  it("[EDGE-24] echoes requestState verbatim, including newlines and quotes", async () => {
+  it("[EDGE-24] echoes requestState verbatim via pure serializable mrtr-interim", async () => {
     const state = 'line1\nline2\r\n"quoted" \'single\' \\back é 🌍 {"x":1}';
     const { transport, sent } = makeScriptedTransport((req) => {
       const p = req.params as Record<string, unknown>;
@@ -43,8 +43,15 @@ describe("edge cases part 2 (core)", () => {
     const first = await client.request("tools/call", { name: "x", arguments: {} });
     expect(first.kind).toBe("mrtr-interim");
     if (first.kind !== "mrtr-interim") return;
+    expect("resume" in first).toBe(false);
     expect(first.requestState).toBe(state);
-    const second = await first.resume({ a: { action: "accept", content: {} } });
+    expect(JSON.parse(JSON.stringify(first))).toEqual(first);
+    const second = await client.request("tools/call", {
+      name: "x",
+      arguments: {},
+      requestState: first.requestState,
+      inputResponses: { a: { action: "accept", content: {} } },
+    });
     expect(second.kind).toBe("ok");
     expect(sent).toHaveLength(2);
     const echoed = (sent[1]!.params as Record<string, unknown>)["requestState"];

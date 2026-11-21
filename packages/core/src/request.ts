@@ -1,3 +1,5 @@
+import { argsDigest, createReadOnlyPredicate, guardExchangeDone } from "./cancel.js";
+import { ExtensionRegistry } from "./extension.js";
 import {
   assertOutboundRequest,
   createMonotonicIdGenerator,
@@ -8,7 +10,14 @@ import {
   type JsonRpcRequest,
   type RequestId,
 } from "./jsonrpc.js";
-import { ExtensionRegistry } from "./extension.js";
+import {
+  defaultLifecycleHooks,
+  LIBRARY_CLIENT_INFO,
+  META_LOG_LEVEL,
+  type LifecycleContext,
+  type LifecycleHooks,
+  type LifecyclePolicyOptions,
+} from "./lifecycle.js";
 import {
   refineJsonRpcCode,
   type Outcome,
@@ -23,7 +32,14 @@ import {
   type ProgressEvent,
   type Transport,
 } from "./ports.js";
-import { ProgressThrottle } from "./progress.js";
+import {
+  isProgressToken,
+  NotificationQueue,
+  parseProgressParams,
+  ProgressRegistry,
+  ProgressThrottle,
+  type ProgressToken,
+} from "./progress.js";
 import { noopTelemetry, validateTraceContext } from "./telemetry.js";
 
 export const META_PROTOCOL_VERSION = "io.modelcontextprotocol/protocolVersion" as const;
@@ -62,6 +78,16 @@ export interface RequestOptions {
   };
 }
 
+export interface NotifyOptions {
+  readonly signal?: AbortSignal;
+  readonly timeoutMs?: number;
+  readonly meta?: Record<string, unknown>;
+  readonly headersHint?: {
+    readonly name?: string;
+    readonly params?: Readonly<Record<string, string | number | boolean>>;
+  };
+}
+
 export interface ClientRequest<T = unknown> extends PromiseLike<Outcome<T>> {
   readonly id: RequestId;
   readonly progress: AsyncIterable<ProgressEvent>;
@@ -87,6 +113,17 @@ export function validateMetaEntries(meta: Record<string, unknown>): void {
   }
 }
 
+/**
+ * Validates caller-supplied _meta: reserved keys and key syntax (WIRE-META-4/5) plus the
+ * deprecated logLevel key (WIRE-LOG-1). Throws before anything is sent.
+ */
+export function validateCallerMeta(meta: Record<string, unknown>): void {
+  if (Object.prototype.hasOwnProperty.call(meta, META_LOG_LEVEL)) {
+    throw new Error(`Caller _meta cannot set '${META_LOG_LEVEL}': logging is deprecated (WIRE-LOG-1)`);
+  }
+  validateMetaEntries(meta);
+}
+
 export interface RequestManagerConfig {
   readonly transport: Transport;
   readonly serverLabel?: string;
@@ -97,6 +134,7 @@ export interface RequestManagerConfig {
   readonly limits?: Partial<Limits>;
   readonly supportedVersions?: readonly string[];
   readonly protocolVersion?: string;
+  readonly lifecycle?: LifecyclePolicyOptions;
 }
 
 export class RequestManager {
@@ -111,6 +149,11 @@ export class RequestManager {
   private readonly clientInfo?: { readonly name: string; readonly version: string; readonly title?: string } | false;
   private readonly supportedVersions: readonly string[];
   private activeProtocolVersion: string;
+  private readonly hooks: LifecycleHooks;
+  private readonly settleOnAbort: boolean;
+  private readonly isReadOnly: (method: string) => boolean;
+  private readonly progress: ProgressRegistry;
+  private readonly ctx: LifecycleContext;
   private readonly inFlight = new Set<AbortController>();
   // LIM-CONC-1: over-cap requests wait here in FIFO order; nothing is sent while queued.
   private readonly admissionQueue: Array<{ readonly ac: AbortController; readonly admit: () => void }> = [];
@@ -132,6 +175,16 @@ export class RequestManager {
     }
     this.supportedVersions = cfg.supportedVersions ?? [SUPPORTED_PROTOCOL_VERSION];
     this.activeProtocolVersion = cfg.protocolVersion ?? SUPPORTED_PROTOCOL_VERSION;
+    const lc = cfg.lifecycle ?? {};
+    this.hooks = { ...defaultLifecycleHooks, ...lc.hooks };
+    this.settleOnAbort = lc.settleOnAbort ?? true;
+    this.isReadOnly = createReadOnlyPredicate(lc.readOnlyMethods);
+    this.progress = lc.progressRegistry ?? new ProgressRegistry();
+    this.ctx = {
+      binding: cfg.transport.binding,
+      endpointOrCommand: cfg.serverLabel ?? cfg.transport.binding,
+      supportedVersions: this.supportedVersions,
+    };
   }
 
   get inFlightCount(): number {
@@ -144,46 +197,103 @@ export class RequestManager {
     opts: RequestOptions = {},
   ): ClientRequest<T> {
     if (opts.meta) {
-      validateMetaEntries(opts.meta);
+      validateCallerMeta(opts.meta);
     }
     const id = this.nextId();
     const ac = new AbortController();
     const cancel = (reason?: string) => ac.abort(reason);
 
+    let onOuterAbort: (() => void) | undefined;
     if (opts.signal) {
       if (opts.signal.aborted) {
         ac.abort(opts.signal.reason);
       } else {
-        opts.signal.addEventListener("abort", () => ac.abort(opts.signal?.reason), { once: true });
+        onOuterAbort = () => ac.abort(opts.signal?.reason);
+        opts.signal.addEventListener("abort", onOuterAbort, { once: true });
       }
     }
 
-    const notificationsBuf: JsonRpcNotification[] = [];
-    const progressBuf: ProgressEvent[] = [];
+    const notificationsQueue = new NotificationQueue<JsonRpcNotification>();
+    const progressQueue = new NotificationQueue<ProgressEvent>();
 
-    const promise = this.execute<T>(id, method, params, opts, ac, notificationsBuf, progressBuf);
-
-    const makeAsyncIter = <E>(arr: E[]): AsyncIterable<E> => ({
-      async *[Symbol.asyncIterator]() {
-        await promise;
-        for (const item of arr) yield item;
-      },
-    });
+    const promise = this.execute<T>(
+      id,
+      method,
+      params,
+      opts,
+      ac,
+      notificationsQueue,
+      progressQueue,
+      onOuterAbort,
+    );
 
     return {
       id,
       signal: ac.signal,
       cancel,
-      progress: makeAsyncIter(progressBuf),
-      notifications: makeAsyncIter(notificationsBuf),
+      progress: progressQueue,
+      notifications: notificationsQueue,
       then: promise.then.bind(promise),
     };
   }
 
+  async notify(
+    method: string,
+    params: Record<string, unknown> = {},
+    opts: NotifyOptions = {},
+  ): Promise<void> {
+    if (typeof method !== "string" || method.length === 0) {
+      throw new TypeError("Outbound notification method must be a non-empty string");
+    }
+    if (opts.meta) {
+      validateCallerMeta(opts.meta);
+    }
+    if (this.closed) {
+      throw new Error("McpClient is closed");
+    }
+    const ac = new AbortController();
+    let onOuterAbort: (() => void) | undefined;
+    if (opts.signal) {
+      if (opts.signal.aborted) {
+        ac.abort(opts.signal.reason);
+      } else {
+        onOuterAbort = () => ac.abort(opts.signal?.reason);
+        opts.signal.addEventListener("abort", onOuterAbort, { once: true });
+      }
+    }
+    const timeoutMs = Math.min(opts.timeoutMs ?? this.limits.defaultTimeoutMs, this.limits.hardMaxTimeoutMs);
+    let cancelTimer: (() => void) | undefined;
+    if (!ac.signal.aborted && timeoutMs > 0) {
+      cancelTimer = this.clock.setTimeout(() => ac.abort("timeout"), timeoutMs);
+    }
+    try {
+      const meta = this.buildMeta(undefined, this.activeProtocolVersion, opts);
+      const msg: JsonRpcNotification = {
+        jsonrpc: JSONRPC_VERSION,
+        method,
+        params: { ...params, _meta: meta },
+      };
+      await this.transport.notify(msg, {
+        signal: ac.signal,
+        idempotent: this.isReadOnly(method),
+        ...(opts.headersHint ? { headersHint: opts.headersHint } : {}),
+        timeoutMs,
+        ...(this.ports.consent ? { consent: this.ports.consent } : {}),
+        ...(this.serverLabel !== undefined ? { serverLabel: this.serverLabel } : {}),
+      });
+    } finally {
+      cancelTimer?.();
+      if (onOuterAbort && opts.signal) {
+        opts.signal.removeEventListener("abort", onOuterAbort);
+      }
+    }
+  }
+
   private buildMeta(
-    id: RequestId,
+    id: RequestId | undefined,
     protocolVersion: string,
-    opts: RequestOptions,
+    opts: RequestOptions | NotifyOptions,
+    includeProgressToken = false,
   ): Record<string, unknown> {
     const caps: Record<string, unknown> = { ...this.extensions.capabilities() };
     if (this.ports.consent) {
@@ -198,12 +308,9 @@ export class RequestManager {
       [META_CLIENT_CAPABILITIES]: caps,
     };
     if (this.clientInfo !== false) {
-      const info = this.clientInfo ?? this.ports.identity?.clientInfo();
-      if (info) {
-        base[META_CLIENT_INFO] = info;
-      }
+      base[META_CLIENT_INFO] = this.clientInfo ?? this.ports.identity?.clientInfo() ?? LIBRARY_CLIENT_INFO;
     }
-    if (opts.onProgress) {
+    if (id !== undefined && includeProgressToken) {
       base[META_PROGRESS_TOKEN] = id;
     }
     const telemetry = this.ports.telemetry ?? noopTelemetry;
@@ -230,8 +337,38 @@ export class RequestManager {
     rawParams: Record<string, unknown>,
     opts: RequestOptions,
     ac: AbortController,
-    notificationsBuf: JsonRpcNotification[],
-    progressBuf: ProgressEvent[],
+    notificationsQueue: NotificationQueue<JsonRpcNotification>,
+    progressQueue: NotificationQueue<ProgressEvent>,
+    onOuterAbort?: () => void,
+  ): Promise<Outcome<T>> {
+    try {
+      const raw = await this.executeCore<T>(
+        firstId,
+        method,
+        rawParams,
+        opts,
+        ac,
+        notificationsQueue,
+        progressQueue,
+      );
+      return this.hooks.mapOutcome(raw, this.ctx);
+    } finally {
+      if (onOuterAbort && opts.signal) {
+        opts.signal.removeEventListener("abort", onOuterAbort);
+      }
+      notificationsQueue.close();
+      progressQueue.close();
+    }
+  }
+
+  private async executeCore<T>(
+    firstId: RequestId,
+    method: string,
+    rawParams: Record<string, unknown>,
+    opts: RequestOptions,
+    ac: AbortController,
+    notificationsQueue: NotificationQueue<JsonRpcNotification>,
+    progressQueue: NotificationQueue<ProgressEvent>,
   ): Promise<Outcome<T>> {
     const baseMeta = (reqId: RequestId, attempts: number): OutcomeMeta => ({
       requestId: reqId,
@@ -298,7 +435,7 @@ export class RequestManager {
     }
 
     const timeoutMs = Math.min(opts.timeoutMs ?? this.limits.defaultTimeoutMs, this.limits.hardMaxTimeoutMs);
-    const idempotent = opts.idempotent ?? false;
+    const idempotent = opts.idempotent ?? this.isReadOnly(method);
 
     let attempts = 0;
     let currentId = firstId;
@@ -310,7 +447,7 @@ export class RequestManager {
 
     while (true) {
       attempts += 1;
-      const meta = this.buildMeta(currentId, currentVersion, opts);
+      const meta = this.buildMeta(currentId, currentVersion, opts, opts.onProgress !== undefined);
       const req: JsonRpcRequest = {
         jsonrpc: JSONRPC_VERSION,
         id: currentId,
@@ -318,6 +455,19 @@ export class RequestManager {
         params: { ...rawParams, _meta: meta },
       };
       assertOutboundRequest(req);
+
+      const rawToken = meta[META_PROGRESS_TOKEN];
+      let token: ProgressToken | undefined;
+      if (isProgressToken(rawToken) && this.progress.register(rawToken)) {
+        token = rawToken;
+      }
+      let tokenReleased = false;
+      const releaseToken = () => {
+        if (!tokenReleased && token !== undefined) {
+          tokenReleased = true;
+          this.progress.release(token);
+        }
+      };
 
       this.inFlight.add(ac);
       let cancelTimer: (() => void) | undefined;
@@ -334,22 +484,82 @@ export class RequestManager {
           ...(this.serverLabel !== undefined ? { serverLabel: this.serverLabel } : {}),
         });
 
-        const pump = (async () => {
-          for await (const n of exchange.notifications) {
-            notificationsBuf.push(n);
-            const np = n.params as Record<string, unknown> | undefined;
-            if (np && typeof np["taskId"] === "string") observedTask = np;
-            if (n.method === "notifications/progress" && opts.onProgress && n.params) {
-              const p = n.params as Record<string, unknown>;
-              const ev: ProgressEvent = {
-                progressToken: (p["progressToken"] as string | number) ?? currentId,
-                progress: Number(p["progress"] ?? 0),
-                ...(typeof p["total"] === "number" ? { total: p["total"] } : {}),
-                ...(typeof p["message"] === "string" ? { message: p["message"] } : {}),
-              };
-              progressBuf.push(ev);
-              throttle?.push(ev);
+        let settled = false;
+        let resolveSettle!: (v: "settled") => void;
+        const settleSignal = new Promise<"settled">((resolve) => {
+          resolveSettle = resolve;
+        });
+        const markSettled = () => {
+          if (!settled) {
+            settled = true;
+            resolveSettle("settled");
+          }
+        };
+
+        const guarded = guardExchangeDone(
+          exchange,
+          ac.signal,
+          { settleOnAbort: this.settleOnAbort },
+          { onSettle: markSettled },
+        );
+
+        const handleNotification = (n: JsonRpcNotification): void => {
+          const verdict = this.hooks.filterNotification(n, req);
+          if (verdict === "progress") {
+            if (token === undefined) return;
+            const decision = this.progress.accept(n.params, token);
+            if (decision.accept) {
+              notificationsQueue.push(n);
+              progressQueue.push(decision.event);
+              throttle?.push(decision.event);
             }
+            return;
+          }
+          if (verdict !== "deliver") {
+            return;
+          }
+          const np = n.params as Record<string, unknown> | undefined;
+          if (np && typeof np["taskId"] === "string") observedTask = np;
+          if (n.method === "notifications/progress" && n.params) {
+            const ev = parseProgressParams(n.params) ?? {
+              progressToken: currentId,
+              progress: Number((n.params as Record<string, unknown>)["progress"] ?? 0),
+              ...(typeof (n.params as Record<string, unknown>)["total"] === "number"
+                ? { total: (n.params as Record<string, unknown>)["total"] as number }
+                : {}),
+              ...(typeof (n.params as Record<string, unknown>)["message"] === "string"
+                ? { message: (n.params as Record<string, unknown>)["message"] as string }
+                : {}),
+            };
+            progressQueue.push(ev);
+            throttle?.push(ev);
+          }
+          this.extensions.dispatchNotification(n, (err) => {
+            this.logger?.warn("extension notification handler failed", {
+              method: n.method,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          });
+          notificationsQueue.push(n);
+        };
+
+        const pump = (async () => {
+          const it = exchange.notifications[Symbol.asyncIterator]();
+          try {
+            for (;;) {
+              const next = it.next();
+              const step = settled
+                ? await Promise.race([next, Promise.resolve("settled" as const)])
+                : await Promise.race([next, settleSignal]);
+              if (step === "settled") {
+                void it.return?.().catch(() => {});
+                break;
+              }
+              if (step.done) break;
+              handleNotification(step.value);
+            }
+          } catch {
+            // Transport notification stream failures settle via guarded.done.
           }
         })();
 
@@ -361,24 +571,31 @@ export class RequestManager {
           }, timeoutMs);
         });
 
-        const race = await Promise.race([exchange.done, timeoutPromise]);
+        const race = await Promise.race([guarded.done, timeoutPromise]);
         cancelTimer?.();
-        await pump.catch(() => {});
+        markSettled();
+        await pump;
+        releaseToken();
+
+        const uncertainOutcome = (evidence: UncertainWrite["evidence"]): Outcome<T> => ({
+          kind: "uncertain-write",
+          uncertain: {
+            requestId: currentId,
+            method,
+            ...(typeof rawParams["name"] === "string" ? { name: rawParams["name"] } : {}),
+            argsDigest: argsDigest(rawParams),
+            sentAt: this.clock.now(),
+            binding: this.transport.binding,
+            evidence,
+            ...(observedTask ? { taskHandle: observedTask } : {}),
+          },
+          meta: baseMeta(currentId, attempts),
+        });
 
         if (race === "timeout" || (race.kind === "failure" && (timedOut || race.failure.kind === "timeout"))) {
           const delivery = race === "timeout" ? exchange.abortDelivery?.() : race.delivery;
           if (!idempotent && delivery !== "not-sent") {
-            const uncertain: UncertainWrite = {
-              requestId: currentId,
-              method,
-              ...(typeof rawParams["name"] === "string" ? { name: rawParams["name"] } : {}),
-              argsDigest: simpleDigest(rawParams),
-              sentAt: this.clock.now(),
-              binding: this.transport.binding,
-              evidence: "timeout",
-              ...(observedTask ? { taskHandle: observedTask } : {}),
-            };
-            return { kind: "uncertain-write", uncertain, meta: baseMeta(currentId, attempts) };
+            return uncertainOutcome("timeout");
           }
           return {
             kind: "transport-failure",
@@ -391,17 +608,7 @@ export class RequestManager {
         if (race.kind === "failure") {
           if (ac.signal.aborted && !timedOut) {
             if (!idempotent && race.delivery !== "not-sent") {
-              const uncertain: UncertainWrite = {
-                requestId: currentId,
-                method,
-                ...(typeof rawParams["name"] === "string" ? { name: rawParams["name"] } : {}),
-                argsDigest: simpleDigest(rawParams),
-                sentAt: this.clock.now(),
-                binding: this.transport.binding,
-                evidence: "cancelled",
-                ...(observedTask ? { taskHandle: observedTask } : {}),
-              };
-              return { kind: "uncertain-write", uncertain, meta: baseMeta(currentId, attempts) };
+              return uncertainOutcome("cancelled");
             }
             return {
               kind: "cancelled",
@@ -418,17 +625,7 @@ export class RequestManager {
             };
           }
           if (!idempotent && race.delivery !== "not-sent") {
-            const uncertain: UncertainWrite = {
-              requestId: currentId,
-              method,
-              ...(typeof rawParams["name"] === "string" ? { name: rawParams["name"] } : {}),
-              argsDigest: simpleDigest(rawParams),
-              sentAt: this.clock.now(),
-              binding: this.transport.binding,
-              evidence: race.failure.kind === "process-exit" ? "process-exit" : "stream-broken",
-              ...(observedTask ? { taskHandle: observedTask } : {}),
-            };
-            return { kind: "uncertain-write", uncertain, meta: baseMeta(currentId, attempts) };
+            return uncertainOutcome(race.failure.kind === "process-exit" ? "process-exit" : "stream-broken");
           }
           return {
             kind: "transport-failure",
@@ -493,16 +690,6 @@ export class RequestManager {
             kind: "mrtr-interim",
             ...(inputReq ? { inputRequests: inputReq } : {}),
             ...(reqState !== undefined ? { requestState: reqState } : {}),
-            resume: (responses) =>
-              this.request<T>(
-                method,
-                {
-                  ...rawParams,
-                  ...(reqState !== undefined ? { requestState: reqState } : {}),
-                  ...(responses !== undefined ? { inputResponses: responses } : {}),
-                },
-                opts,
-              ),
             meta: baseMeta(currentId, attempts),
           };
         }
@@ -518,6 +705,7 @@ export class RequestManager {
         };
       } finally {
         cancelTimer?.();
+        releaseToken();
         throttle?.flush();
         this.inFlight.delete(ac);
         this.admitQueued();
@@ -545,14 +733,4 @@ export class RequestManager {
     this.extensions.closeAllReverse();
     await this.transport.close(opts);
   }
-}
-
-function simpleDigest(obj: unknown): string {
-  const s = JSON.stringify(obj) ?? "";
-  let h = 2166136261;
-  for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return `fnv1a-${(h >>> 0).toString(16).padStart(8, "0")}`;
 }

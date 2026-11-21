@@ -1,26 +1,14 @@
-import { createReadOnlyPredicate, guardExchangeDone } from "./cancel.js";
-import { ExtensionRegistry, type Disposable, type Extension } from "./extension.js";
 import {
   SUPPORTED_PROTOCOL_VERSION,
-  type IdGenerator,
   type JsonRpcNotification,
   type JsonRpcRequest,
 } from "./jsonrpc.js";
 import { refineJsonRpcCode, type JsonRpcRefinement, type Outcome } from "./outcome.js";
-import type { Exchange, PortRegistry, Transport, TransportCall, TransportDiagnostic } from "./ports.js";
-import { isProgressToken, NotificationQueue, ProgressRegistry, type ProgressStats, type ProgressToken } from "./progress.js";
-import {
-  META_PROGRESS_TOKEN,
-  RequestManager,
-  validateMetaEntries,
-  type ClientRequest,
-  type Limits,
-  type RequestOptions,
-} from "./request.js";
+import type { ProgressRegistry } from "./progress.js";
 import type { DiscoverResult } from "./schema/index.js";
 
 /**
- * Wire lifecycle (S1.1, IMPLEMENTATION_PLAN.md §5; WIRE-*, VER-*).
+ * Wire lifecycle helpers (WIRE-*, VER-*).
  * Runtime-neutral: no node:* imports, no third-party dependencies.
  */
 
@@ -33,25 +21,14 @@ export const LIBRARY_CLIENT_INFO: { readonly name: string; readonly version: str
 /** Deprecated logging key; never sent (WIRE-LOG-1). */
 export const META_LOG_LEVEL = "io.modelcontextprotocol/logLevel" as const;
 
-/** Default timeout for the server/discover era probe (§5.5; local policy). */
+/** Default timeout for the server/discover era probe. */
 export const DISCOVER_PROBE_TIMEOUT_MS = 10_000;
 
-/** Max bytes of offending error text carried in a diagnostic (§5.5). */
+/** Max bytes of offending error text carried in a diagnostic. */
 export const DIAGNOSTIC_EVIDENCE_MAX = 2048;
 
-/**
- * Validates caller-supplied _meta: reserved keys and key syntax (WIRE-META-4/5) plus the
- * deprecated logLevel key (WIRE-LOG-1). Throws before anything is sent.
- */
-export function validateCallerMeta(meta: Record<string, unknown>): void {
-  if (Object.prototype.hasOwnProperty.call(meta, META_LOG_LEVEL)) {
-    throw new Error(`Caller _meta cannot set '${META_LOG_LEVEL}': logging is deprecated (WIRE-LOG-1)`);
-  }
-  validateMetaEntries(meta);
-}
-
 // ---------------------------------------------------------------------------------------------
-// Error-code mapping (§5.2, §11.1; WIRE-ERR-3/4, VER-7, EDGE-32/34)
+// Error-code mapping (WIRE-ERR-3/4, VER-7, EDGE-32/34)
 // ---------------------------------------------------------------------------------------------
 
 export type JsonRpcErrorCategory =
@@ -143,7 +120,7 @@ export function selectProtocolVersion(
 }
 
 // ---------------------------------------------------------------------------------------------
-// Unsupported-version / legacy diagnostics (§5.5; VER-3, VER-DIAG-1)
+// Unsupported-version / legacy diagnostics (VER-3, VER-DIAG-1)
 // ---------------------------------------------------------------------------------------------
 
 export interface UnsupportedVersionDiagnostic {
@@ -189,9 +166,9 @@ export function buildUnsupportedVersionDiagnostic(
 }
 
 /**
- * Default outcome mapping applied by McpClient to every settled request:
+ * Default outcome mapping applied to every settled request:
  * a -32022 that was not (or no longer) retryable becomes `unsupported-version` with a diagnostic
- * (VER-3, VER-4). mrtr-interim resumes are mapped the same way. Everything else passes through.
+ * (VER-3, VER-4). Everything else passes through.
  */
 export function mapLifecycleOutcome<T>(outcome: Outcome<T>, ctx: LifecycleContext): Outcome<T> {
   if (outcome.kind === "jsonrpc-error" && outcome.code === -32022) {
@@ -207,18 +184,11 @@ export function mapLifecycleOutcome<T>(outcome: Outcome<T>, ctx: LifecycleContex
       meta: outcome.meta,
     };
   }
-  if (outcome.kind === "mrtr-interim") {
-    const resume = outcome.resume;
-    return {
-      ...outcome,
-      resume: (responses) => Promise.resolve(resume(responses)).then((o) => mapLifecycleOutcome(o, ctx)),
-    };
-  }
   return outcome;
 }
 
 // ---------------------------------------------------------------------------------------------
-// server/discover and era cache (§5.3, §5.5; VER-5, VER-6, VER-CACHE-1)
+// server/discover and era cache (VER-5, VER-6, VER-CACHE-1)
 // ---------------------------------------------------------------------------------------------
 
 export type EraState =
@@ -371,7 +341,7 @@ export class EraCache {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Inbound notification policy and the lifecycle transport layer
+// Inbound notification policy and lifecycle hooks
 // ---------------------------------------------------------------------------------------------
 
 export type NotificationVerdict =
@@ -384,7 +354,7 @@ export type NotificationVerdict =
 /**
  * Default per-request notification policy:
  * - notifications/progress goes to the progress registry (PROG-*)
- * - notifications/message is dropped and counted: logging is deprecated (WIRE-LOG-1, EDGE-33)
+ * - notifications/message is dropped: logging is deprecated (WIRE-LOG-1, EDGE-33)
  * - notifications/cancelled is accepted only for our subscriptions/listen request (WIRE-CANCEL-4)
  * - anything else is delivered on the request's notification stream
  */
@@ -411,143 +381,11 @@ export const defaultLifecycleHooks: LifecycleHooks = {
   filterNotification: defaultNotificationFilter,
 };
 
-export interface WireStats {
-  readonly progress: ProgressStats;
-  /** Responses/failures the transport delivered after the request had settled locally (WIRE-CANCEL-3). */
-  readonly lateResponses: number;
-  /** Non-progress notifications that arrived after the request settled. */
-  readonly lateNotifications: number;
-  readonly droppedLogMessages: number;
-  readonly droppedCancelled: number;
-  readonly droppedOther: number;
-  /** Requests settled locally by abort/timeout because the transport did not settle them. */
-  readonly localAbortSettles: number;
-}
-
-export interface LifecycleTransportOptions {
-  readonly progress?: ProgressRegistry;
-  readonly filterNotification?: LifecycleHooks["filterNotification"];
-  /** Settle a request locally when it is aborted and the transport does not settle it. Default true. */
-  readonly settleOnAbort?: boolean;
-}
-
-/**
- * Transport decorator that applies the core per-request lifecycle on top of any binding:
- * progress registry, inbound notification policy, first-settle-wins, abort settles locally,
- * late responses ignored and counted. It does not write notifications/cancelled; bindings do.
- */
-export class LifecycleTransport implements Transport {
-  readonly binding: Transport["binding"];
-  readonly progress: ProgressRegistry;
-  private readonly inner: Transport;
-  private readonly filter: LifecycleHooks["filterNotification"];
-  private readonly settleOnAbort: boolean;
-  private readonly counters = {
-    lateResponses: 0,
-    lateNotifications: 0,
-    droppedLogMessages: 0,
-    droppedCancelled: 0,
-    droppedOther: 0,
-    localAbortSettles: 0,
-  };
-
-  constructor(inner: Transport, opts: LifecycleTransportOptions = {}) {
-    this.inner = inner;
-    this.binding = inner.binding;
-    this.progress = opts.progress ?? new ProgressRegistry();
-    this.filter = opts.filterNotification ?? defaultNotificationFilter;
-    this.settleOnAbort = opts.settleOnAbort ?? true;
-  }
-
-  get diagnostics(): AsyncIterable<TransportDiagnostic> {
-    return this.inner.diagnostics;
-  }
-
-  stats(): WireStats {
-    return { progress: this.progress.stats(), ...this.counters };
-  }
-
-  start(msg: JsonRpcRequest, ctx: TransportCall): Exchange {
-    const meta = msg.params?.["_meta"];
-    const rawToken =
-      typeof meta === "object" && meta !== null ? (meta as Record<string, unknown>)[META_PROGRESS_TOKEN] : undefined;
-    let token: ProgressToken | undefined;
-    if (isProgressToken(rawToken) && this.progress.register(rawToken)) {
-      token = rawToken;
-    }
-
-    const inner = this.inner.start(msg, ctx);
-    const out = new NotificationQueue<JsonRpcNotification>();
-
-    const guarded = guardExchangeDone(
-      inner,
-      ctx.signal,
-      { settleOnAbort: this.settleOnAbort },
-      {
-        onSettle: (_end, source) => {
-          if (source === "abort") this.counters.localAbortSettles += 1;
-          if (token !== undefined) this.progress.release(token);
-          out.close();
-        },
-        onLate: () => {
-          this.counters.lateResponses += 1;
-        },
-      },
-    );
-
-    const handle = (n: JsonRpcNotification): void => {
-      const verdict = this.filter(n, msg);
-      if (verdict === "progress") {
-        const decision = this.progress.accept(n.params, token);
-        if (decision.accept && !guarded.settled()) out.push(n);
-        return;
-      }
-      if (verdict === "drop-log") {
-        this.counters.droppedLogMessages += 1;
-        return;
-      }
-      if (verdict === "drop-cancelled") {
-        this.counters.droppedCancelled += 1;
-        return;
-      }
-      if (verdict === "drop-other") {
-        this.counters.droppedOther += 1;
-        return;
-      }
-      if (guarded.settled() || !out.push(n)) {
-        this.counters.lateNotifications += 1;
-      }
-    };
-
-    void (async () => {
-      for await (const n of inner.notifications) handle(n);
-    })().catch(() => {});
-
-    return {
-      notifications: out,
-      done: guarded.done,
-      ...(inner.abortDelivery ? { abortDelivery: () => inner.abortDelivery!() } : {}),
-    };
-  }
-
-  notify(msg: JsonRpcNotification, ctx: TransportCall): Promise<void> {
-    return this.inner.notify(msg, ctx);
-  }
-
-  close(opts?: { readonly graceMs?: number }): Promise<void> {
-    return this.inner.close(opts);
-  }
-}
-
 /** Helper for hosts: missing capabilities from a -32021 outcome (VER-7), else undefined. */
 export function missingClientCapabilities(outcome: Outcome<unknown>): unknown {
   if (outcome.kind !== "jsonrpc-error" || outcome.code !== -32021) return undefined;
   return classifyJsonRpcError(outcome.code, outcome.data).requiredCapabilities;
 }
-
-// ---------------------------------------------------------------------------------------------
-// LifecycleClient: composition over the frozen RequestManager (McpClient stays unchanged)
-// ---------------------------------------------------------------------------------------------
 
 export interface LifecyclePolicyOptions {
   /** Replace individual lifecycle policies (outcome mapping, discover classification, notification filter). */
@@ -562,146 +400,7 @@ export interface LifecyclePolicyOptions {
   readonly eraCache?: EraCache;
 }
 
-/** Same fields as McpClientOptions, plus `lifecycle` policy. */
-export interface LifecycleClientOptions {
-  readonly transport: Transport;
-  readonly server: { readonly key: string; readonly label?: string };
-  readonly clientInfo?: { readonly name: string; readonly version: string; readonly title?: string } | false;
-  readonly ports?: Partial<PortRegistry>;
-  readonly extensions?: readonly Extension[];
-  readonly idGenerator?: IdGenerator;
-  readonly supportedVersions?: readonly string[];
-  readonly defaults?: {
-    readonly timeoutMs?: number;
-    readonly limits?: Partial<Limits>;
-  };
-  readonly lifecycle?: LifecyclePolicyOptions;
-}
-
 export interface ProbeOptions {
   readonly timeoutMs?: number;
   readonly signal?: AbortSignal;
-}
-
-/**
- * Client with the full S1.1 wire lifecycle: LifecycleTransport (progress registry, notification
- * policy, local abort settle, late responses counted), default clientInfo (WIRE-META-3), caller
- * _meta checks incl. logLevel (WIRE-LOG-1), idempotent defaults from the read-only list (N14),
- * outcome mapping (-32022 -> unsupported-version), and server/discover era probing with an
- * in-memory cache. Same request/discover/use/close surface as McpClient.
- */
-export class LifecycleClient {
-  readonly server: { readonly key: string; readonly label?: string };
-  private readonly extensions = new ExtensionRegistry();
-  private readonly manager: RequestManager;
-  private readonly wire: LifecycleTransport;
-  private readonly hooks: LifecycleHooks;
-  private readonly isReadOnly: (method: string) => boolean;
-  private readonly eraCache: EraCache;
-  private readonly ctx: LifecycleContext;
-
-  constructor(opts: LifecycleClientOptions) {
-    this.server = opts.server;
-    const lc = opts.lifecycle ?? {};
-    this.hooks = { ...defaultLifecycleHooks, ...lc.hooks };
-    this.isReadOnly = createReadOnlyPredicate(lc.readOnlyMethods);
-    this.eraCache = lc.eraCache ?? new EraCache();
-    this.wire = new LifecycleTransport(opts.transport, {
-      ...(lc.progressRegistry ? { progress: lc.progressRegistry } : {}),
-      filterNotification: this.hooks.filterNotification,
-      ...(lc.settleOnAbort !== undefined ? { settleOnAbort: lc.settleOnAbort } : {}),
-    });
-    this.ctx = {
-      binding: opts.transport.binding,
-      endpointOrCommand: opts.server.label ?? opts.server.key,
-      supportedVersions: opts.supportedVersions ?? [SUPPORTED_PROTOCOL_VERSION],
-    };
-    // WIRE-META-3: sent by default; `false` disables it; an IdentityPort wins over the library default.
-    const clientInfo =
-      opts.clientInfo !== undefined ? opts.clientInfo : opts.ports?.identity ? undefined : LIBRARY_CLIENT_INFO;
-    for (const ext of opts.extensions ?? []) {
-      this.extensions.register(ext);
-    }
-    const limits =
-      opts.defaults?.limits || opts.defaults?.timeoutMs !== undefined
-        ? {
-            ...opts.defaults?.limits,
-            ...(opts.defaults?.timeoutMs !== undefined ? { defaultTimeoutMs: opts.defaults.timeoutMs } : {}),
-          }
-        : undefined;
-    this.manager = new RequestManager({
-      transport: this.wire,
-      serverLabel: opts.server.label ?? opts.server.key,
-      ...(opts.ports ? { ports: opts.ports } : {}),
-      ...(clientInfo !== undefined ? { clientInfo } : {}),
-      extensions: this.extensions,
-      ...(opts.idGenerator ? { idGenerator: opts.idGenerator } : {}),
-      ...(opts.supportedVersions ? { supportedVersions: opts.supportedVersions } : {}),
-      ...(limits ? { limits } : {}),
-    });
-  }
-
-  request<T = Record<string, unknown>>(
-    method: string,
-    params: Record<string, unknown> = {},
-    opts?: RequestOptions,
-  ): ClientRequest<T> {
-    if (opts?.meta) {
-      validateCallerMeta(opts.meta);
-    }
-    const handle = this.manager.request<T>(method, params, {
-      ...opts,
-      idempotent: opts?.idempotent ?? this.isReadOnly(method),
-    });
-    const mapped = Promise.resolve(handle).then((o) => this.hooks.mapOutcome(o, this.ctx));
-    return {
-      id: handle.id,
-      signal: handle.signal,
-      cancel: (reason?: string) => handle.cancel(reason),
-      progress: handle.progress,
-      notifications: handle.notifications,
-      then: mapped.then.bind(mapped),
-    };
-  }
-
-  discover(opts?: RequestOptions): ClientRequest<DiscoverResult> {
-    return this.request<DiscoverResult>("server/discover", {}, { ...opts, idempotent: true });
-  }
-
-  /**
-   * Probes the server era with server/discover once per server key and caches the verdict in
-   * memory (VER-5, VER-CACHE-1, VER-DIAG-1). Never sends initialize. Local cancels and transport
-   * faults yield `unknown` and are not cached.
-   */
-  probe(opts: ProbeOptions = {}): Promise<EraState> {
-    return this.eraCache.resolve(this.server.key, async () => {
-      const outcome = await this.discover({
-        timeoutMs: opts.timeoutMs ?? DISCOVER_PROBE_TIMEOUT_MS,
-        ...(opts.signal ? { signal: opts.signal } : {}),
-      });
-      return this.hooks.classifyDiscover(outcome, this.ctx);
-    });
-  }
-
-  /** Cached era verdict for this server, if any. */
-  era(): EraState | undefined {
-    return this.eraCache.get(this.server.key);
-  }
-
-  /** Lifecycle counters: progress drops, late responses, dropped notifications. */
-  wireStats(): WireStats {
-    return this.wire.stats();
-  }
-
-  use(ext: Extension): Disposable {
-    return this.extensions.register(ext);
-  }
-
-  async close(opts?: { readonly graceMs?: number }): Promise<void> {
-    await this.manager.close(opts);
-  }
-}
-
-export function createLifecycleClient(opts: LifecycleClientOptions): LifecycleClient {
-  return new LifecycleClient(opts);
 }

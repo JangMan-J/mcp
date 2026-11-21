@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   assertOutboundRequest,
   createMonotonicIdGenerator,
+  DEFAULT_MAX_DIAGNOSTICS,
+  DiagnosticChannel,
   McpClient,
   McpOutcomeError,
   META_CLIENT_CAPABILITIES,
@@ -150,5 +152,16 @@ describe("@mcp-client/core S1.0 contracts", () => {
       expect(typeof num.message.id).toBe("number");
       expect(typeof str.message.id).toBe("string");
     }
+  });
+
+  it("bounds DiagnosticChannel snapshot and live stream to DEFAULT_MAX_DIAGNOSTICS", async () => {
+    expect(DEFAULT_MAX_DIAGNOSTICS).toBe(1000);
+    const ch = new DiagnosticChannel(3);
+    for (let i = 0; i < 5; i++) ch.emit({ kind: "noise", message: `m${i}`, atMs: i });
+    ch.close();
+    expect(ch.snapshot().map((d) => d.message)).toEqual(["m2", "m3", "m4"]);
+    const streamed: string[] = [];
+    for await (const d of ch) streamed.push(d.message);
+    expect(streamed).toEqual(["m2", "m3", "m4"]);
   });
 });
