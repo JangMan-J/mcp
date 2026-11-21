@@ -7,3 +7,4 @@ export * from './nested-key.js';
 export * from './nested.js';
 export * from './policies.js';
 export * from './sqlite-store.js';
+export * from './host.js';
