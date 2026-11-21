@@ -37,8 +37,11 @@ const start = async (input: { name: string; [k: string]: unknown }, opts: Runtim
   return rt;
 };
 const probe = async (rt: DurableRuntime) => {
-  const r = await rt.callTool({ serverId: 'legacy', toolName: 'probe', args: {}, requestId: 'r1' } as never);
-  return JSON.parse((r.content[0] as { text: string }).text) as { secret: string | null; init: { capabilities: Record<string, unknown> }; initialized: boolean };
+  const r = await rt.callTool({ serverId: 'legacy', toolName: 'probe', args: {}, requestId: 'r1' });
+  const text = r.content?.[0]?.text;
+  expect(typeof text).toBe('string');
+  if (typeof text !== 'string') throw new Error('expected text content from probe tool');
+  return JSON.parse(text) as { secret: string | null; init: { capabilities: Record<string, unknown> }; initialized: boolean };
 };
 
 beforeEach(async () => { stateDir = await mkdtemp(join(tmpdir(), 'pid-runtime-')); process.env.PID_SECRET = 'leak'; });

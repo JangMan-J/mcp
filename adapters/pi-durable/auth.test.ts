@@ -33,7 +33,8 @@ describe('pi-durable isolated credentials', () => {
 describe('createLiveAuth', () => {
   it('matches live-auth selection with an isolated store', async () => {
     const stateDir = await mkdtemp(join(tmpdir(), 'pid-auth-'));
-    expect(await createLiveAuth(http({ transport: 'stdio', url: undefined }), { stateDir })).toEqual({});
+    const stdio: LegacyServerConfig = { name: 's', source: 'global', trusted: true, transport: 'stdio' };
+    expect(await createLiveAuth(stdio, { stateDir })).toEqual({});
     const oauth = await createLiveAuth(http(), { stateDir });
     expect(oauth.provider?.contextId()).toBe('anonymous');
     expect(typeof oauth.signIn).toBe('function');
@@ -52,7 +53,11 @@ describe('inspectServerCard', () => {
   it('fetches the canonical card url without credentials', async () => {
     const seen: [string, RequestInit][] = [];
     const fetch = { fetch: async (url: string, init: RequestInit) => { seen.push([url, init]); return Response.json(card); } };
-    const parsed = await inspectServerCard(http({ headers: { Authorization: 'x' } }), undefined, { fetch, headers: { authorization: 'Bearer t' } });
+    const withHeaders: LegacyServerConfig & { readonly headers: Readonly<Record<string, string>> } = {
+      ...http(),
+      headers: { Authorization: 'x' },
+    };
+    const parsed = await inspectServerCard(withHeaders, undefined, { fetch, headers: { authorization: 'Bearer t' } });
     expect(parsed?.card.name).toBe('x/y');
     expect(parsed?.inferredCapabilities).toEqual({});
     expect(seen[0]![0]).toBe('https://mcp.example.test/mcp/server-card');
