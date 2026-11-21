@@ -12,7 +12,8 @@ const RUNNER = [
   'const mode = process.env.FAKE_MODE || "pass";',
   'const d = path.join(o, sc.replace(/\\//g, "-") + "-1");',
   'fs.mkdirSync(d, { recursive: true });',
-  'const checks = mode === "fail" ? [{ id: "a", status: "SUCCESS" }, { id: "b", status: "FAILURE" }] : mode === "empty" ? [] : [{ id: "a", status: "SUCCESS" }];',
+  'const guarded = mode !== "guard" || (!/assert-no-pi\\.mjs/.test(process.env.NODE_OPTIONS || "") && /--import(?:=| )[^ ]*assert-no-pi\\.mjs/.test(a[a.indexOf("--command") + 1]));',
+  'const checks = mode === "fail" ? [{ id: "a", status: "SUCCESS" }, { id: "b", status: "FAILURE" }] : mode === "empty" ? [] : [{ id: "a", status: mode === "guard" && !guarded ? "FAILURE" : "SUCCESS" }];',
   'if (mode !== "missing") fs.writeFileSync(path.join(d, "checks.json"), JSON.stringify(checks));',
   'process.exit(mode === "exit" ? 1 : 0);',
 ].join("\n");
@@ -46,6 +47,15 @@ describe("official runner", () => {
       const ok = await run("pass");
       expect(ok.ok).toBe(true);
       expect(ok.scenarios[0]?.result).toEqual({ checks: 1, passed: 1, failed: 0, statuses: { SUCCESS: 1 } });
+
+      const previousOptions = process.env.NODE_OPTIONS;
+      process.env.NODE_OPTIONS = "--import=file:///x/scripts/assert-no-pi.mjs";
+      try {
+        const guarded = await run("guard");
+        expect(guarded.scenarios[0]?.ok).toBe(true);
+      } finally {
+        if (previousOptions === undefined) delete process.env.NODE_OPTIONS; else process.env.NODE_OPTIONS = previousOptions;
+      }
 
       const fail = await run("fail");
       expect(fail.ok).toBe(false);

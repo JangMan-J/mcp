@@ -225,15 +225,34 @@ export async function runOfficial(root: string): Promise<OfficialResult> {
 
   const schema = map.resultSchema!;
   const bin = checkout.bin!;
+  // Keep assert-no-pi off the SDK-dependent black-box runner, but pass it to the CUT.
+  const preloadFlags: string[] = [];
+  const runnerOptions: string[] = [];
+  const runnerEnv: NodeJS.ProcessEnv = { ...process.env, npm_config_offline: "true" };
+  const tokens = (process.env.NODE_OPTIONS ?? "").match(/(?:"[^\"]*"|'[^']*'|\S+)/g) ?? [];
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i]!;
+    const separate = token === "--import" || token === "--require";
+    const value = separate ? tokens[i + 1] ?? "" : token.replace(/^--(?:import|require)=/, "");
+    if (/^--(?:import|require)(?:=|$)/.test(token) && /(?:^|\/)assert-no-pi\.mjs(?:["']?)$/.test(value)) {
+      preloadFlags.push(token);
+      if (separate) preloadFlags.push(tokens[++i]!);
+    } else {
+      runnerOptions.push(token);
+      if (separate && tokens[i + 1]) runnerOptions.push(tokens[++i]!);
+    }
+  }
+  if (runnerOptions.length) runnerEnv.NODE_OPTIONS = runnerOptions.join(" "); else delete runnerEnv.NODE_OPTIONS;
   const scenarios: OfficialScenarioResult[] = applicable.map((s) => {
     const outputDir = mkdtempSync(join(tmpdir(), "mcp-official-"));
     try {
-      const args = fill(map.runner.clientArgs, { cut: `${process.execPath} ${cutPath!}`, scenario: s.id, outputDir });
+      const cut = `${process.execPath}${preloadFlags.length ? ` ${preloadFlags.join(" ")}` : ""} ${cutPath!}`;
+      const args = fill(map.runner.clientArgs, { cut, scenario: s.id, outputDir });
       const r = spawnSync(process.execPath, [bin, ...args], {
         cwd: checkoutDir,
         encoding: "utf8",
         timeout: 120_000,
-        env: { ...process.env, npm_config_offline: "true" },
+        env: runnerEnv,
       });
       const out = `${r.stdout ?? ""}${r.stderr ?? ""}${r.error ? String(r.error) : ""}`;
       const { summary, error: checksError } = readChecks(outputDir, schema);
