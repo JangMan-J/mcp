@@ -61,6 +61,8 @@ export class ConfiguredBearer implements AuthProvider {
 export interface ClientRegistration {
   readonly clientId: string;
   readonly clientSecret?: string;
+  readonly clientSecretExpiresAt?: number; // seconds since epoch; set by dynamic registration
+  readonly authMethod?: 'none' | 'client_secret_basic' | 'client_secret_post'; // set by dynamic registration
   readonly redirectUris: readonly string[];
 }
 export type AuthorizationPrompt =
@@ -79,6 +81,7 @@ export interface OAuthOptions extends ResourceOptions, DiscoveryOptions {
   readonly redirectUri: string;
   readonly registrations?: Readonly<Record<string, ClientRegistration>>; // issuer -> registration, for this resource only
   readonly cimd?: { readonly clientIdUrl: string; readonly redirectUris: readonly string[]; readonly selfCheck?: boolean };
+  readonly dynamicRegistration?: { readonly clientName: string; readonly softwareId?: string }; // opt-in RFC 7591; absent = never POST
   readonly consent?: AuthorizationConsent;
   readonly browser?: { open(url: string, signal: AbortSignal): Promise<void> };
   readonly redirect?: RedirectPort;
@@ -193,7 +196,7 @@ export class OAuthAuthorization implements AuthProvider {
       ...(bearer?.scope !== undefined ? scopesOf(bearer.scope) : step && sameBinding ? [] : scopes.flatMap(scopesOf)),
     ])].filter(scope => scope !== 'offline_access');
     if (this.#options.offlineAccess && metadata.scopes.includes('offline_access')) selected.push('offline_access');
-    const session = { metadata, resource, registration: await this.registration(metadata, signal, context) };
+    const session = { metadata, resource, registration: await this.registration(metadata, signal, context, selected) };
     if (!step && (!previous || sameBinding)) {
       await this.renew(session, selected, signal, context, sameBinding ? previous : undefined);
     } else {
@@ -212,10 +215,12 @@ export class OAuthAuthorization implements AuthProvider {
   private validateRegistration(reg: ClientRegistration): ClientRegistration {
     if (!reg || typeof reg.clientId !== 'string' || !reg.clientId || !strings(reg.redirectUris).includes(this.#options.redirectUri) ||
       (reg.clientSecret !== undefined && typeof reg.clientSecret !== 'string')) fail('invalid-client-registration');
-    return { clientId: reg.clientId, redirectUris: [...reg.redirectUris], ...(reg.clientSecret !== undefined ? { clientSecret: reg.clientSecret } : {}) };
+    return { clientId: reg.clientId, redirectUris: [...reg.redirectUris], ...(reg.clientSecret !== undefined ? { clientSecret: reg.clientSecret } : {}),
+      ...(reg.clientSecretExpiresAt !== undefined ? { clientSecretExpiresAt: reg.clientSecretExpiresAt } : {}),
+      ...(reg.authMethod !== undefined ? { authMethod: reg.authMethod } : {}) };
   }
 
-  private async registration(metadata: Metadata, signal: AbortSignal, context?: AuthRequestContext): Promise<ClientRegistration> {
+  private async registration(metadata: Metadata, signal: AbortSignal, context?: AuthRequestContext, scopes: readonly string[] = []): Promise<ClientRegistration> {
     const registrations = this.#options.registrations;
     const preset = registrations && Object.hasOwn(registrations, metadata.issuer) ? registrations[metadata.issuer] : undefined;
     if (preset) return this.validateRegistration(preset);
@@ -234,7 +239,16 @@ export class OAuthAuthorization implements AuthProvider {
     if (registrations && Object.keys(registrations).length) fail('client-issuer-mismatch');
     const key = JSON.stringify(['registration', this.#resource, metadata.issuer, null]);
     const cached = await this.#store.get(key);
-    if (cached) return this.validateRegistration(JSON.parse(cached) as ClientRegistration);
+    if (cached) {
+      const reg = this.validateRegistration(JSON.parse(cached) as ClientRegistration);
+      if (!reg.clientSecretExpiresAt || reg.clientSecretExpiresAt * 1000 > this.now()) return reg;
+    }
+    if (this.#options.dynamicRegistration && metadata.registrationEndpoint) {
+      const registration = await this.register(metadata, metadata.registrationEndpoint, this.#options.dynamicRegistration, scopes, signal);
+      signal.throwIfAborted();
+      await this.#store.set(key, JSON.stringify(registration));
+      return registration;
+    }
     if (!this.#options.consent && !context?.consent) fail('no-registration-mechanism');
     const result = await this.consent({ kind: 'client-info', serverLabel: this.#options.serverLabel ?? context?.serverLabel ?? this.#resource,
       issuer: metadata.issuer, redirectUri: this.#options.redirectUri }, signal, context);
@@ -243,6 +257,33 @@ export class OAuthAuthorization implements AuthProvider {
     signal.throwIfAborted();
     await this.#store.set(key, JSON.stringify(registration));
     return registration;
+  }
+
+  // RFC 7591 dynamic client registration. Never logs or echoes the secret.
+  private async register(metadata: Metadata, endpoint: URL, dcr: NonNullable<OAuthOptions['dynamicRegistration']>,
+    scopes: readonly string[], signal: AbortSignal): Promise<ClientRegistration> {
+    const supported = metadata.clientAuthMethods;
+    const method = (['none', 'client_secret_basic', 'client_secret_post'] as const).find(m => supported.includes(m)) ?? 'client_secret_basic';
+    const body = { client_name: dcr.clientName, redirect_uris: [this.#options.redirectUri],
+      grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], token_endpoint_auth_method: method,
+      application_type: this.#redirect.protocol === 'http:' && isLoopback(this.#redirect.hostname) ? 'native' : 'web',
+      ...(dcr.softwareId !== undefined ? { software_id: dcr.softwareId } : {}), ...(scopes.length ? { scope: scopes.join(' ') } : {}) };
+    signal.throwIfAborted();
+    let response: Response;
+    try { response = await this.#fetch.fetch(endpoint.href, { method: 'POST', body: JSON.stringify(body),
+      headers: new Headers({ 'Content-Type': 'application/json', Accept: 'application/json' }), credentials: 'omit', redirect: 'error', signal }); }
+    catch { return fail('registration-failed'); }
+    let doc: Record<string, unknown>;
+    try { doc = object(await response.json()); } catch { return fail('registration-failed'); }
+    if (response.status !== 201 && response.status !== 200) return fail('registration-failed');
+    const { client_id: clientId, client_secret: secret, client_secret_expires_at: expires, token_endpoint_auth_method: returned } = doc;
+    if (typeof clientId !== 'string' || !clientId || (secret !== undefined && typeof secret !== 'string') ||
+      (expires !== undefined && (typeof expires !== 'number' || !Number.isFinite(expires)))) return fail('registration-failed');
+    const authMethod = returned ?? method;
+    if (authMethod !== 'none' && authMethod !== 'client_secret_basic' && authMethod !== 'client_secret_post') return fail('registration-failed');
+    if (authMethod !== 'none' && !secret) return fail('registration-failed');
+    return { clientId, redirectUris: [this.#options.redirectUri], authMethod,
+      ...(secret ? { clientSecret: secret } : {}), ...(expires ? { clientSecretExpiresAt: expires } : {}) };
   }
 
   private async consent(prompt: AuthorizationPrompt, signal: AbortSignal, context?: AuthRequestContext) {
@@ -314,11 +355,16 @@ export class OAuthAuthorization implements AuthProvider {
     form.set('client_id', registration.clientId);
     form.set('resource', session.resource);
     const headers = new Headers({ 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' });
-    if (registration.clientSecret !== undefined) {
+    const basicAuth = () => {
+      const encode = (value: string) => new URLSearchParams({ x: value }).toString().slice(2);
+      headers.set('Authorization', `Basic ${Buffer.from(`${encode(registration.clientId)}:${encode(registration.clientSecret!)}`).toString('base64')}`);
+    };
+    if (registration.authMethod === 'client_secret_basic') basicAuth();
+    else if (registration.authMethod === 'client_secret_post') form.set('client_secret', registration.clientSecret!);
+    else if (registration.authMethod === 'none') { /* public client */ }
+    else if (registration.clientSecret !== undefined) {
       if (!metadata.clientAuthMethods.length || metadata.clientAuthMethods.includes('client_secret_basic')) {
-        const encode = (value: string) => new URLSearchParams({ x: value }).toString().slice(2);
-        const basic = Buffer.from(`${encode(registration.clientId)}:${encode(registration.clientSecret)}`).toString('base64');
-        headers.set('Authorization', `Basic ${basic}`);
+        basicAuth();
       } else if (metadata.clientAuthMethods.includes('client_secret_post')) {
         form.set('client_secret', registration.clientSecret);
       } else fail('client-auth-method-unsupported');

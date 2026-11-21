@@ -6,7 +6,7 @@ import type { TLSSocket } from 'node:tls';
 import { beforeEach, expect, it, vi } from 'vitest';
 import { discoverIssuer } from '../src/discovery.js';
 import { runExchange } from '../src/conformance.js';
-import { OAuthAuthorization, SafeFetch, openSystemBrowser } from '../src/index.js';
+import { AuthError, OAuthAuthorization, SafeFetch, openSystemBrowser } from '../src/index.js';
 
 // Control the policy lookup, but leave Node to open a real TLS socket.
 const lookup = vi.hoisted(() => vi.fn(async (_host: string, _options: { all: true }) => [
@@ -162,4 +162,112 @@ it('[AUTH-URL-2] does not spawn for a rejected URL or an already-cancelled launc
   await expect(openSystemBrowser('https://as.invalid/`unsafe`', signal)).rejects.toThrow('invalid-url');
   await expect(openSystemBrowser('https://as.invalid/authorize', AbortSignal.abort())).rejects.toMatchObject({ name: 'AbortError' });
   expect(spawn).not.toHaveBeenCalled();
+});
+
+// ---- Dynamic client registration (opt-in) ----
+type Posted = { url: string; body: Record<string, unknown>; headers: Headers };
+function dcrHarness(options: { methods?: string[]; registrationEndpoint?: unknown; reply?: () => Response; redirectUri?: string;
+  issuer?: string; dcr?: boolean; credentials?: Map<string, string> } = {}) {
+  const resource = 'https://mcp.test/mcp';
+  const posts: Posted[] = [];
+  const tokens: Posted[] = [];
+  const state = { issuer: options.issuer ?? 'https://as.test' };
+  const store = options.credentials ?? new Map<string, string>();
+  const fetcher = { async fetch(url: string, init?: RequestInit) {
+    const u = new URL(url);
+    if (u.pathname.startsWith('/.well-known/oauth-protected-resource')) return Response.json({ resource, authorization_servers: [state.issuer] });
+    if (u.pathname.startsWith('/.well-known/oauth-authorization-server')) return Response.json({
+      issuer: state.issuer, authorization_endpoint: `${state.issuer}/authorize`, token_endpoint: `${state.issuer}/token`,
+      code_challenge_methods_supported: ['S256'], registration_endpoint: options.registrationEndpoint ?? `${state.issuer}/register`,
+      ...(options.methods ? { token_endpoint_auth_methods_supported: options.methods } : {}) });
+    const entry = { url, body: init?.body ? (init.headers instanceof Headers && init.headers.get('Content-Type') === 'application/json'
+      ? JSON.parse(init.body as string) : Object.fromEntries(new URLSearchParams(init.body as string))) : {}, headers: init?.headers as Headers };
+    if (u.pathname === '/register') { posts.push(entry); return options.reply?.() ?? Response.json({ client_id: 'dyn-id', client_secret: 'dyn-secret' }, { status: 201 }); }
+    if (u.pathname === '/token') { tokens.push(entry); return Response.json({ access_token: 'tok', token_type: 'Bearer', expires_in: 3600 }); }
+    return new Response('nope', { status: 404 });
+  } };
+  const redirectUri = options.redirectUri ?? 'https://client.test/callback';
+  const make = () => new OAuthAuthorization({ resource, redirectUri, fetch: fetcher, allowInsecureDev: redirectUri.startsWith('http:'),
+    ...(options.dcr === false ? {} : { dynamicRegistration: { clientName: 'Test Client', softwareId: 'sw-1' } }),
+    credentials: { get: async k => store.get(k), set: async (k, v) => { store.set(k, v); }, delete: async k => { store.delete(k); } },
+    consent: { request: async () => ({ decision: 'accept' as const }) },
+    browser: { open: async () => {} },
+    redirect: { waitForCallback: async ({ state: s }) => new URLSearchParams({ code: 'c', state: s }) } });
+  const flow = (auth = make()) => auth.onChallenge({ status: 401, resource, wwwAuthenticate: 'Bearer scope="read"' }, new AbortController().signal);
+  return { posts, tokens, state, flow, make };
+}
+
+it('[AUTH-DCR-1] never POSTs the registration endpoint by default, even when advertised', async () => {
+  const h = dcrHarness({ dcr: false });
+  await expect(h.flow()).rejects.toThrow('no-registration-mechanism');
+  expect(h.posts).toEqual([]);
+});
+
+it('[AUTH-DCR-1] registers once with dynamicRegistration and reuses the cached registration', async () => {
+  const h = dcrHarness();
+  await h.flow();
+  await h.flow(h.make());
+  expect(h.posts).toHaveLength(1);
+  expect(h.posts[0]!.body).toMatchObject({ client_name: 'Test Client', software_id: 'sw-1', redirect_uris: ['https://client.test/callback'],
+    grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], scope: 'read' });
+  expect(h.tokens).toHaveLength(2);
+});
+
+it('[AUTH-DCR-2] sets application_type native for a loopback redirect and web otherwise', async () => {
+  const native = dcrHarness({ redirectUri: 'http://127.0.0.1:8123/callback' });
+  await native.flow();
+  expect(native.posts[0]!.body['application_type']).toBe('native');
+  const web = dcrHarness();
+  await web.flow();
+  expect(web.posts[0]!.body['application_type']).toBe('web');
+});
+
+it('selects token_endpoint_auth_method by preference and uses it at the token endpoint', async () => {
+  const none = dcrHarness({ methods: ['client_secret_post', 'client_secret_basic', 'none'], reply: () => Response.json({ client_id: 'pub' }, { status: 201 }) });
+  await none.flow();
+  expect(none.posts[0]!.body['token_endpoint_auth_method']).toBe('none');
+  expect(none.tokens[0]!.headers.get('Authorization')).toBeNull();
+  expect(none.tokens[0]!.body).not.toHaveProperty('client_secret');
+  const basic = dcrHarness({ methods: ['client_secret_post', 'client_secret_basic'] });
+  await basic.flow();
+  expect(basic.posts[0]!.body['token_endpoint_auth_method']).toBe('client_secret_basic');
+  expect(basic.tokens[0]!.headers.get('Authorization')).toBe(`Basic ${Buffer.from('dyn-id:dyn-secret').toString('base64')}`);
+  const post = dcrHarness({ methods: ['client_secret_post'] });
+  await post.flow();
+  expect(post.posts[0]!.body['token_endpoint_auth_method']).toBe('client_secret_post');
+  expect(post.tokens[0]!.headers.get('Authorization')).toBeNull();
+  expect(post.tokens[0]!.body).toMatchObject({ client_id: 'dyn-id', client_secret: 'dyn-secret' });
+  const dflt = dcrHarness();
+  await dflt.flow();
+  expect(dflt.posts[0]!.body['token_endpoint_auth_method']).toBe('client_secret_basic');
+});
+
+it('re-registers when the issuer changes', async () => {
+  const credentials = new Map<string, string>();
+  const h = dcrHarness({ credentials });
+  await h.flow();
+  h.state.issuer = 'https://as2.test';
+  await h.flow(h.make());
+  expect(h.posts.map(p => p.url)).toEqual(['https://as.test/register', 'https://as2.test/register']);
+});
+
+it('maps a registration error to a typed AuthError without the secret', async () => {
+  const h = dcrHarness({ reply: () => Response.json({ error: 'invalid_redirect_uri', client_secret: 'leaky-secret' }, { status: 400 }) });
+  const error = await h.flow().then(() => undefined, (e: unknown) => e as Error);
+  expect(error).toBeInstanceOf(AuthError);
+  expect(error!.message).toContain('registration-failed');
+  expect(error!.message).not.toContain('leaky-secret');
+  const missing = dcrHarness({ reply: () => Response.json({ client_secret: 'leaky-secret' }, { status: 201 }) });
+  await expect(missing.flow()).rejects.toThrow('registration-failed');
+});
+
+it('ignores an insecure registration_endpoint and records a diagnostic', async () => {
+  const messages: string[] = [];
+  const doc = { issuer: 'https://as.test', authorization_endpoint: 'https://as.test/a', token_endpoint: 'https://as.test/t',
+    code_challenge_methods_supported: ['S256'], registration_endpoint: 'http://as.test/register' };
+  const meta = await discoverIssuer({ fetch: async () => Response.json(doc) }, 'https://as.test', { onDiagnostic: m => messages.push(m) }, new AbortController().signal);
+  expect(meta.registrationEndpoint).toBeUndefined();
+  expect(messages).toHaveLength(1);
+  const ok = await discoverIssuer({ fetch: async () => Response.json({ ...doc, registration_endpoint: 'https://as.test/register' }) }, 'https://as.test', {}, new AbortController().signal);
+  expect(ok.registrationEndpoint?.href).toBe('https://as.test/register');
 });

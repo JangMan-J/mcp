@@ -15,10 +15,12 @@ export interface Metadata {
   readonly responseIssuer: boolean;
   readonly scopes: readonly string[];
   readonly clientAuthMethods: readonly string[];
+  readonly registrationEndpoint?: URL;
 }
 
 export interface DiscoveryOptions {
   readonly allowInsecureDev?: boolean;
+  readonly onDiagnostic?: (message: string) => void;
   readonly chooseAuthorizationServer?: (candidates: readonly string[]) => string | Promise<string>;
 }
 
@@ -73,7 +75,19 @@ export async function discoverIssuer(fetcher: FetchPort, issuer: string, options
     const authorizationEndpoint = secureUrl(doc['authorization_endpoint'] as string, options.allowInsecureDev);
     const tokenEndpoint = secureUrl(doc['token_endpoint'] as string, options.allowInsecureDev);
     if (authorizationEndpoint.hash || tokenEndpoint.hash) fail('invalid-url');
-    return { issuer, authorizationEndpoint, tokenEndpoint,
+    let registrationEndpoint: URL | undefined;
+    if (doc['registration_endpoint'] !== undefined) {
+      try {
+        if (typeof doc['registration_endpoint'] !== 'string') fail('invalid-url');
+        registrationEndpoint = secureUrl(doc['registration_endpoint'] as string, options.allowInsecureDev);
+        if (registrationEndpoint.hash) fail('invalid-url');
+      } catch (error) {
+        if (!(error instanceof AuthError)) throw error;
+        registrationEndpoint = undefined;
+        options.onDiagnostic?.(`ignoring invalid registration_endpoint: ${error.message}`);
+      }
+    }
+    return { issuer, authorizationEndpoint, tokenEndpoint, ...(registrationEndpoint ? { registrationEndpoint } : {}),
       cimd: doc['client_id_metadata_document_supported'] === true,
       responseIssuer: doc['authorization_response_iss_parameter_supported'] === true,
       scopes: strings(doc['scopes_supported']),
