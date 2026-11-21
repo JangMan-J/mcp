@@ -35,15 +35,6 @@ module.exports = {
       to: { dependencyTypes: ["core"] }
     },
     {
-      name: "fixtures-only-core-types",
-      severity: "error",
-      from: { path: "^packages/fixtures/" },
-      to: {
-        path: "^packages/(?!core/|fixtures/)",
-        pathNot: "^packages/core/"
-      }
-    },
-    {
       name: "ops-auth-mrtr-never-import-transports",
       severity: "error",
       from: { path: "^packages/(ops|auth|mrtr-cache)/" },

@@ -2,12 +2,14 @@
   "files": [],
   "references": [
     { "path": "./packages/core" },
-    { "path": "./packages/fixtures" },
-    { "path": "./packages/conformance" },
     { "path": "./packages/transport-stdio" },
     { "path": "./packages/transport-http" },
-    { "path": "./packages/ops" },
     { "path": "./packages/auth" },
-    { "path": "./packages/mrtr-cache" }
+    { "path": "./packages/mrtr-cache" },
+    { "path": "./packages/ops" },
+    { "path": "./packages/telemetry-otel" },
+    { "path": "./packages/ext-events" },
+    { "path": "./packages/ext-skills" },
+    { "path": "./packages/ext-server-cards" }
   ]
 }

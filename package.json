@@ -7,24 +7,10 @@
   ],
   "scripts": {
     "build": "node scripts/build-workspaces.mjs",
-    "build:pi-durable": "npm --prefix adapters/pi-durable run build",
-    "build:pi-extension": "tsc -p adapters/pi-coding-agent/tsconfig.build.json",
-    "remove:ext-apps": "node scripts/check-remove-ext.mjs ext-apps",
-    "remove:ext-client-credentials": "node scripts/check-remove-ext.mjs ext-client-credentials",
-    "remove:ext-enterprise-auth": "node scripts/check-remove-ext.mjs ext-enterprise-auth",
-    "remove:ext-events": "node scripts/check-remove-ext.mjs ext-events",
-    "remove:ext-events-webhook": "node scripts/check-remove-ext.mjs ext-events-webhook",
-    "remove:ext-server-cards": "node scripts/check-remove-ext.mjs ext-server-cards",
-    "remove:ext-skills": "node scripts/check-remove-ext.mjs ext-skills",
-    "remove:ext-tasks": "node scripts/check-remove-ext.mjs ext-tasks",
     "test": "vitest run",
-    "gate": "bash scripts/gate.sh",
-    "req:build": "node scripts/req-build.mjs",
     "gen:schema": "node scripts/gen-schema-types.mjs",
     "check:deps": "node scripts/check-deps.mjs",
-    "check:forbidden": "node scripts/check-forbidden.mjs",
-    "check:deps-doc": "node scripts/check-deps-doc.mjs",
-    "check:coverage": "node packages/conformance/dist/cli.js check-coverage"
+    "check:forbidden": "node scripts/check-forbidden.mjs"
   },
   "devDependencies": {
     "@types/node": "26.6.6",

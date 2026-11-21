@@ -4,7 +4,27 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const deny = JSON.parse(readFileSync(join(ROOT, "packages/conformance/deny-pi.json"), "utf8"));
+const deny = {
+  packages: [
+    "@earendil-works/pi-coding-agent",
+    "@earendil-works/pi-ai",
+    "@earendil-works/pi-agent-core",
+    "@earendil-works/pi-tui",
+    "@earendil-works/pi-mcp",
+    "@jangmanj/pi-mcp-ext",
+    "@jangmanj/pi-router",
+    "@modelcontextprotocol/sdk",
+    "@modelcontextprotocol/conformance",
+  ],
+  prefixes: [
+    "@earendil-works/pi-",
+    "@mariozechner/pi-",
+  ],
+  substrings: [
+    "pi-mcp-ext",
+    "modelcontextprotocol/sdk",
+  ],
+};
 const lock = JSON.parse(readFileSync(join(ROOT, "package-lock.json"), "utf8"));
 
 const checkName = (name, where) => {
@@ -48,18 +68,11 @@ function walkTs(dir) {
 for (const file of walkTs(join(ROOT, "packages"))) {
   const txt = readFileSync(file, "utf8");
   for (const pat of [...deny.packages, ...deny.substrings]) {
-    if (txt.includes(pat) && !file.endsWith("deny-pi.json")) {
+    if (txt.includes(pat)) {
       console.error(`check-forbidden: denied reference '${pat}' in ${file}`);
       process.exit(1);
     }
   }
-}
-
-// Also verify fixtures package.json is private with no bin/shipped server
-const fixPkg = JSON.parse(readFileSync(join(ROOT, "packages/fixtures/package.json"), "utf8"));
-if (fixPkg.private !== true || fixPkg.bin) {
-  console.error("check-forbidden: packages/fixtures/package.json must be private with no bin");
-  process.exit(1);
 }
 
 console.log("check-forbidden: ok");
