@@ -1,6 +1,6 @@
 import { resolve as resolvePath } from "node:path";
 // Legacy Pi `mcpServers` reader. PICA-3: untrusted project never enables a server. PICA-11: pure/read-only, rollback stays one edit.
-export type LegacySource = "project" | "global";
+export type LegacySource = "project" | "global" | "dynamic";
 export type Exposure = "codemode" | "deferred" | "direct" | "hidden";
 export interface ReadOptions { source?: LegacySource; trusted?: boolean; trust?: boolean; } // trust: alias
 export interface LegacyServerConfig {
@@ -9,10 +9,20 @@ export interface LegacyServerConfig {
   readonly command?: string; readonly args?: readonly string[]; readonly cwd?: string;
   readonly env?: Readonly<Record<string, string>>; readonly url?: string;
   readonly headers?: Readonly<Record<string, string>>; readonly description?: string;
-  readonly timeout?: number; readonly aliases?: readonly string[];
+  readonly timeout?: number; readonly timeoutMs?: number; readonly aliases?: readonly string[];
   readonly toolExposure?: Readonly<Record<string, Exposure>>;
+  readonly subscribe?: readonly LegacySubscriptionConfig[];
   readonly oauth?: LegacyOAuthConfig;
   readonly auth?: LegacyAuthConfig;
+  readonly clientCredentials?: Readonly<Record<string, unknown>>;
+  readonly enterpriseAuth?: Readonly<Record<string, unknown>>;
+}
+export interface LegacySubscriptionConfig {
+  readonly name: string;
+  readonly delivery?: "auto" | "push" | "poll";
+  readonly holdSettle?: boolean;
+  readonly arguments?: Record<string, unknown>;
+  readonly maxAgeMs?: number;
 }
 export interface LegacyOAuthConfig {
   readonly clientId?: string; readonly clientSecret?: string; readonly callbackPort?: number;
@@ -39,7 +49,46 @@ function optStr(v: unknown, field: string): string | undefined {
   if (typeof v !== "string" || v === "") bad(`${field} must be a non-empty string`);
   return v;
 }
+function positiveMs(v: unknown, field: string): number | undefined {
+  if (v === undefined) return undefined;
+  if (typeof v !== "number" || !Number.isFinite(v) || v <= 0) bad(`${field} must be finite and positive`);
+  return v;
+}
+function parseSubscriptions(raw: unknown, field: string): LegacySubscriptionConfig[] | undefined {
+  if (raw === undefined) return undefined;
+  if (!Array.isArray(raw)) bad(`${field} must be an array`);
+  return Array.from(raw, (item: unknown, i) => {
+    const p = `${field}[${i}]`;
+    if (!isRec(item)) bad(`${p} must be an object`);
+    const name = optStr(item.name, `${p}.name`);
+    if (!name?.trim()) bad(`${p}.name must be a non-empty string`);
+    const { delivery, holdSettle, arguments: args } = item;
+    if (delivery !== undefined && delivery !== "auto" && delivery !== "push" && delivery !== "poll")
+      bad(`${p}.delivery must be auto, push, or poll`);
+    if (holdSettle !== undefined && typeof holdSettle !== "boolean") bad(`${p}.holdSettle must be boolean`);
+    if (args !== undefined && !isRec(args)) bad(`${p}.arguments must be an object`);
+    const maxAgeMs = positiveMs(item.maxAgeMs, `${p}.maxAgeMs`);
+    return { name, ...(delivery !== undefined && { delivery }), ...(holdSettle !== undefined && { holdSettle }),
+      ...(args !== undefined && { arguments: { ...args } }), ...(maxAgeMs !== undefined && { maxAgeMs }) };
+  });
+}
 const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]);
+function requireGlobalAuth(field: string, source: LegacySource, url: string | undefined, trusted: boolean): void {
+  if (source !== "global" || !trusted) bad(`${field} is only allowed in the global mcp.json`);
+  if (!url) bad(`${field} requires an HTTP server`);
+  const u = new URL(url);
+  if (!(u.protocol === "https:" || LOOPBACK.has(u.hostname))) bad(`${field} requires an https: or loopback http: url`);
+}
+function authBlock(v: unknown, field: string, source: LegacySource, url: string | undefined, trusted: boolean): Rec | undefined {
+  if (v === undefined) return undefined;
+  requireGlobalAuth(field, source, url, trusted);
+  if (!isRec(v) || (Object.getPrototypeOf(v) !== Object.prototype && Object.getPrototypeOf(v) !== null))
+    bad(`${field} must be an object`);
+  for (const k of ["secret", "clientSecret"]) {
+    if (v[k] !== undefined && typeof v[k] !== "string") bad(`${field}.${k} must be a string`);
+  }
+  return { ...v };
+}
 function parseUrl(v: string): URL | undefined { try { return new URL(v); } catch { return undefined; } }
 function validateOAuth(name: string, o: Rec): LegacyOAuthConfig {
   const p = `server "${name}" oauth`;
@@ -91,20 +140,21 @@ function parseServer(name: string, raw: unknown, source: LegacySource, trusted: 
       bad(`server "${name}": args must be string[]`);
     if (raw.enabled !== undefined && typeof raw.enabled !== "boolean") bad(`server "${name}": enabled must be boolean`);
     if (raw.timeout !== undefined && (typeof raw.timeout !== "number" || !(raw.timeout > 0))) bad(`server "${name}": timeout must be positive`);
+    const timeoutMs = positiveMs(raw.timeoutMs, `server "${name}" timeoutMs`);
+    const subscribe = parseSubscriptions(raw.subscribe, `server "${name}" subscribe`);
     if (raw.aliases !== undefined && (!Array.isArray(raw.aliases) || raw.aliases.some((a) => typeof a !== "string")))
       bad(`server "${name}": aliases must be string[]`);
     if (raw.oauth !== undefined && !isRec(raw.oauth)) bad(`server "${name}": oauth must be an object`);
     const oauth = isRec(raw.oauth) ? validateOAuth(name, raw.oauth) : undefined;
     let auth: LegacyAuthConfig | undefined;
     if (raw.auth !== undefined) {
-      if (source === "project") bad(`server "${name}": auth is only allowed in the global mcp.json`);
-      if (!http || !url) bad(`server "${name}": auth requires an HTTP server`);
+      requireGlobalAuth(`server "${name}": auth`, source, url, trusted);
       if (!isRec(raw.auth) || typeof raw.auth.provider !== "string" || raw.auth.provider.length === 0)
         bad(`server "${name}": auth.provider must be a non-empty string`);
-      const u = new URL(url);
-      if (!(u.protocol === "https:" || LOOPBACK.has(u.hostname))) bad(`server "${name}": auth requires an https: or loopback http: url`);
       auth = { provider: raw.auth.provider };
     }
+    const clientCredentials = authBlock(raw.clientCredentials, `server "${name}" clientCredentials`, source, url, trusted);
+    const enterpriseAuth = authBlock(raw.enterpriseAuth, `server "${name}" enterpriseAuth`, source, url, trusted);
     const toolExposure = raw.toolExposure === undefined ? undefined : Object.fromEntries(
       Object.entries(strMap(raw.toolExposure, `server "${name}" toolExposure`) ?? {}).map(([k, v]) => [k, exposure(v, "toolExposure")]));
     const env = strMap(raw.env, "env"); const headers = strMap(raw.headers, "headers");
@@ -117,6 +167,8 @@ function parseServer(name: string, raw: unknown, source: LegacySource, trusted: 
       ...(env ? { env } : {}), ...(headers ? { headers } : {}),
       ...(optStr(raw.description, "description") ? { description: raw.description as string } : {}),
       ...(raw.timeout !== undefined ? { timeout: raw.timeout as number } : {}),
+      ...(timeoutMs !== undefined ? { timeoutMs } : {}), ...(subscribe ? { subscribe } : {}),
+      ...(clientCredentials ? { clientCredentials } : {}), ...(enterpriseAuth ? { enterpriseAuth } : {}),
       ...(raw.aliases ? { aliases: [...raw.aliases as string[]] } : {}),
       ...(toolExposure ? { toolExposure } : {}),
       ...(oauth ? { oauth } : {}), ...(auth ? { auth } : {}),
@@ -155,7 +207,10 @@ export interface LoadedLegacyMcpConfig {
 }
 const OVERRIDE_KEYS = new Set(["enabled", "exposure", "toolExposure"]);
 const msg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
-export function loadLayeredMcpConfig(opts: { globalInput?: unknown; projectInput?: unknown; projectTrusted?: boolean }): LoadedLegacyMcpConfig {
+export function loadLayeredMcpConfig(opts: {
+  globalInput?: unknown; projectInput?: unknown; projectTrusted?: boolean;
+  dynamicServers?: Readonly<Rec>;
+}): LoadedLegacyMcpConfig {
   const errors: string[] = [];
   const servers = new Map<string, LegacyServerConfig>();
   let autoEnableCodemode: boolean | undefined;
@@ -182,16 +237,20 @@ export function loadLayeredMcpConfig(opts: { globalInput?: unknown; projectInput
           });
           continue;
         }
-        const cfg = parseServer(name, raw, source, true);
         const ns = mcpServerNamespace(name);
-        const clash = [...servers.keys()].find((n) => n !== name && mcpServerNamespace(n) === ns);
-        if (clash) { errors.push(`${source}: server "${name}" collides with "${clash}" in namespace "${ns}"`); continue; }
-        servers.set(name, cfg);
+        const existing = [...servers.values()].find((s) => mcpServerNamespace(s.name) === ns);
+        if (source === "dynamic" && existing && existing.source !== "dynamic") continue;
+        if (existing && existing.name !== name) {
+          errors.push(`${source}: server "${name}" collides with "${existing.name}" in namespace "${ns}"`);
+          continue;
+        }
+        servers.set(name, parseServer(name, raw, source, true));
       } catch (e) { errors.push(`${source}: ${msg(e)}`); }
     }
   };
   if (opts.globalInput !== undefined) layer(opts.globalInput, "global");
   if (opts.projectInput !== undefined && opts.projectTrusted === true) layer(opts.projectInput, "project");
+  if (opts.dynamicServers !== undefined) layer({ mcpServers: opts.dynamicServers }, "dynamic");
   return { servers: [...servers.values()], ...(autoEnableCodemode !== undefined ? { autoEnableCodemode } : {}), errors };
 }
 
@@ -200,7 +259,7 @@ export interface VariableContext {
   readonly cwd?: string;
   readonly disallowShellSubstitution?: boolean;
 }
-/** Pure `${NAME}` expansion in env/headers/oauth.clientSecret; `!cmd` is never executed. */
+/** Pure `${NAME}` expansion in env, headers and auth secrets; `!cmd` is never executed. */
 export function resolveServerVariables(config: LegacyServerConfig, ctx: VariableContext): LegacyServerConfig {
   const sub = (v: string): string => {
     if (v.startsWith("!")) {
@@ -211,11 +270,20 @@ export function resolveServerVariables(config: LegacyServerConfig, ctx: Variable
   };
   const map = (m: Readonly<Record<string, string>>): Record<string, string> =>
     Object.fromEntries(Object.entries(m).map(([k, v]) => [k, sub(v)]));
+  const secrets = (block: Readonly<Rec>): Rec => {
+    const copy = { ...block };
+    for (const k of ["secret", "clientSecret"]) {
+      if (typeof copy[k] === "string") copy[k] = sub(copy[k]);
+    }
+    return copy;
+  };
   return {
     ...config,
     ...(config.env ? { env: map(config.env) } : {}),
     ...(config.headers ? { headers: map(config.headers) } : {}),
-    ...(config.oauth ? { oauth: { ...config.oauth, ...(typeof config.oauth.clientSecret === "string" ? { clientSecret: sub(config.oauth.clientSecret) } : {}) } } : {}),
+    ...(typeof config.oauth?.clientSecret === "string" ? { oauth: { ...config.oauth, clientSecret: sub(config.oauth.clientSecret) } } : {}),
+    ...(config.clientCredentials ? { clientCredentials: secrets(config.clientCredentials) } : {}),
+    ...(config.enterpriseAuth ? { enterpriseAuth: secrets(config.enterpriseAuth) } : {}),
     ...(config.cwd !== undefined && ctx.cwd !== undefined ? { cwd: resolvePath(ctx.cwd, config.cwd) } : {}),
   };
 }

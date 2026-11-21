@@ -40,6 +40,8 @@ export interface McpServerPort {
   status(id: string): McpServerSummary | undefined | Promise<McpServerSummary | undefined>;
   setEnabled(id: string, enabled: boolean): void | Promise<void>;
   signIn(id: string, signal: AbortSignal): Promise<void>;
+  reconnect?(id: string, signal: AbortSignal): Promise<void>;
+  card?(id: string, signal: AbortSignal): Promise<unknown>;
   start(signal: AbortSignal): void | Promise<void>;
   shutdown(): void | Promise<void>;
 }
@@ -77,7 +79,8 @@ export interface HostPorts {
   readonly browser?: BrowserPort;
 }
 
-export type McpSubcommand = "list" | "status" | "enable" | "disable" | "sign-in";
+const mcpCommands = ["list", "status", "enable", "disable", "sign-in", "reconnect", "card"] as const;
+export type McpSubcommand = typeof mcpCommands[number];
 
 const formatServer = (s: McpServerSummary): string =>
   `${s.id}: ${s.enabled ? s.status : "disabled"}${s.detail ? ` (${s.detail})` : ""}`;
@@ -85,9 +88,9 @@ const formatServer = (s: McpServerSummary): string =>
 export function parseMcpArgs(args: string): { sub: McpSubcommand; id?: string } | undefined {
   const parts = args.trim().split(/\s+/u).filter(Boolean);
   const sub = (parts[0] ?? "list") as McpSubcommand;
-  if (!["list", "status", "enable", "disable", "sign-in"].includes(sub)) return undefined;
+  if (!mcpCommands.includes(sub)) return undefined;
   const id = parts[1];
-  if ((sub === "enable" || sub === "disable" || sub === "sign-in") && !id) return undefined;
+  if (sub !== "list" && sub !== "status" && !id) return undefined;
   return id === undefined ? { sub } : { sub, id };
 }
 
@@ -158,7 +161,7 @@ export function installHost(ports: HostPorts): Disposable {
   const dispatch = async (args: string, ctx: McpCommandContext): Promise<void> => {
     const parsed = parseMcpArgs(args);
     if (!parsed) {
-      ctx.notify("Usage: /mcp [list|status [server]|enable <server>|disable <server>|sign-in <server>]", "error");
+      ctx.notify("Usage: /mcp [list|status [server]|enable <server>|disable <server>|sign-in <server>|reconnect <server>|card <server>]", "error");
       return;
     }
     switch (parsed.sub) {
@@ -190,11 +193,27 @@ export function installHost(ports: HostPorts): Disposable {
         ctx.notify(`${parsed.id}: sign-in complete`);
         return;
       }
+      case "reconnect": {
+        if (!servers.reconnect) { ctx.notify("MCP reconnect is unavailable", "error"); return; }
+        await servers.reconnect(parsed.id!, sessionSignal(ctx));
+        const one = await servers.status(parsed.id!);
+        ctx.notify(one ? formatServer(one) : `${parsed.id}: reconnected`);
+        return;
+      }
+      case "card": {
+        if (!servers.card) { ctx.notify("MCP server cards are unavailable", "error"); return; }
+        const signal = sessionSignal(ctx);
+        signal.throwIfAborted();
+        const card = await servers.card(parsed.id!, signal);
+        signal.throwIfAborted();
+        ctx.notify(typeof card === "string" ? card : JSON.stringify(card, null, 2) ?? "No MCP server card.");
+        return;
+      }
     }
   };
 
   disposables.push(host.registerCommand("mcp", {
-    description: "List MCP servers, show status, enable/disable, or sign in",
+    description: "Inspect, enable, disable, sign in, or reconnect MCP servers",
     handler: dispatch,
   }));
 
