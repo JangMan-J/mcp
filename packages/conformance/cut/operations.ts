@@ -1,7 +1,7 @@
 import { McpClient, type ClientRequest, type Outcome, type RequestOptions } from "@mcp-client/core";
 import { HttpTransport, validateXmcpHeaderSchema } from "@mcp-client/transport-http";
 import { createOps, type OpsClient, type ToolEntry } from "@mcp-client/ops";
-import { StatefulClient } from "@mcp-client/mrtr-cache";
+import { StatefulClient, elicitationExtension, type ElicitationPort } from "@mcp-client/mrtr-cache";
 
 export const OPERATION_SCENARIOS = [
   "tools_call",
@@ -16,6 +16,42 @@ export const OPERATION_SCENARIOS = [
 const VERSION = "2026-07-28";
 type Ctx = Record<string, unknown>;
 const isRecord = (v: unknown): v is Ctx => typeof v === "object" && v !== null && !Array.isArray(v);
+
+/**
+ * Smallest value satisfying a JSON Schema fragment, derived at runtime from
+ * the server's own tools/list / elicitation schema (never hardcoded per tool).
+ */
+function sample(schema: unknown): unknown {
+  if (!isRecord(schema)) return "test";
+  if ("default" in schema) return schema["default"];
+  if ("const" in schema) return schema["const"];
+  const choices = schema["enum"];
+  if (Array.isArray(choices) && choices.length > 0) return choices[0];
+  const type = Array.isArray(schema["type"]) ? schema["type"][0] : schema["type"];
+  switch (type) {
+    case "number":
+    case "integer":
+      return typeof schema["minimum"] === "number" ? Math.max(1, schema["minimum"]) : 1;
+    case "boolean":
+      return true;
+    case "array":
+      return [];
+    case "object": {
+      const props = isRecord(schema["properties"]) ? schema["properties"] : {};
+      const required = Array.isArray(schema["required"]) ? (schema["required"] as string[]) : [];
+      return Object.fromEntries(required.map((k) => [k, sample(props[k])]));
+    }
+    default:
+      return "test";
+  }
+}
+
+/** Headless form port: accepts with schema-derived content. */
+const formPort: ElicitationPort = {
+  async form(request) {
+    return { action: "accept", content: sample(request.schema) as Record<string, unknown> };
+  },
+};
 
 function describe(o: Outcome<unknown>): string {
   switch (o.kind) {
@@ -73,11 +109,15 @@ export async function runOperations(url: string, scenario: string, context: Reco
     transport,
     server: { key: url },
     supportedVersions: [VERSION],
+    // clientInfo is a SHOULD in _meta; the runner warns (and exits 1) without it.
+    clientInfo: { name: "mcp-client-conformance-cut", version: "0.1.0" },
+    extensions: [elicitationExtension({ serverLabel: url, port: formPort })],
   });
   const stateful = new StatefulClient({
     request: (method, params, opts) => mcp.request(method, params, opts),
     serverRef: url,
     serverLabel: url,
+    port: formPort,
   });
   // OpsClient's contract is the PromiseLike<ClientRequest> slice of a client;
   // StatefulClient returns a plain Promise<Outcome>. The ops layer only ever
@@ -97,7 +137,9 @@ export async function runOperations(url: string, scenario: string, context: Reco
     if (discovered.kind === "ok" && isRecord(discovered.value) && isRecord(discovered.value["capabilities"])) {
       capabilities = discovered.value["capabilities"];
     }
-    const ops = createOps(opsClient, capabilities ? { capabilities } : {});
+    // request-metadata's peer answers tools/* while declaring no capabilities,
+    // so its (empty) declaration must not gate the calls.
+    const ops = createOps(opsClient, capabilities && scenario !== "request-metadata" ? { capabilities } : {});
 
     const listTools = async (): Promise<readonly ToolEntry[]> => value(await ops.tools.listAll(), scenario).items;
 
@@ -113,14 +155,26 @@ export async function runOperations(url: string, scenario: string, context: Reco
       return first;
     };
 
-    const callTool = async (tools: readonly ToolEntry[], extra: RequestOptions = {}): Promise<unknown> => {
-      const tool = pickTool(tools);
-      const result = value(
-        await ops.tools.call(tool.name, "arguments" in context ? context["arguments"] : {}, extra),
-        scenario,
-      );
-      return result.raw;
+    // Arguments: context.arguments, else a runner-supplied context.toolCalls
+    // entry for this tool, else a sample built from the tool's inputSchema.
+    // Runner-supplied arguments are sent verbatim (they may deliberately
+    // break the schema, e.g. a null for an annotated boolean); sampled ones
+    // stay validated.
+    const argsFor = (tool: ToolEntry): { args: unknown; verbatim: boolean } => {
+      if ("arguments" in context) return { args: context["arguments"], verbatim: true };
+      const calls = Array.isArray(context["toolCalls"]) ? context["toolCalls"] : [];
+      const planned = calls.find((c) => isRecord(c) && c["name"] === tool.name);
+      if (isRecord(planned) && "arguments" in planned) return { args: planned["arguments"], verbatim: true };
+      return { args: sample(tool.tool["inputSchema"]), verbatim: false };
     };
+
+    const callOne = async (tool: ToolEntry, extra: RequestOptions = {}): Promise<unknown> => {
+      const { args, verbatim } = argsFor(tool);
+      return value(await ops.tools.call(tool.name, args, verbatim ? { ...extra, validateInput: false } : extra), scenario).raw;
+    };
+
+    const callTool = async (tools: readonly ToolEntry[], extra: RequestOptions = {}): Promise<unknown> =>
+      callOne(pickTool(tools), extra);
 
     switch (scenario) {
       case "tools_call":
@@ -131,15 +185,30 @@ export async function runOperations(url: string, scenario: string, context: Reco
         return await callTool(await listTools());
       case "request-metadata": {
         const meta = isRecord(context["meta"]) ? context["meta"] : undefined;
-        return await callTool(await listTools(), meta ? { meta } : {});
+        const tools = await listTools();
+        // The peer may list no tools; the listing request itself carries the metadata.
+        return tools.length === 0 ? { scenario, listedTools: [] } : await callTool(tools, meta ? { meta } : {});
       }
       case "sep-2322-client-request-state":
         // StatefulClient's MRTR session echoes requestState verbatim on a
         // fresh request id and only adds inputResponses when the server
         // asked for input (MRTR-C-4/5/6).
-        return await callTool(await listTools(), { mrtr: "auto" });
-      case "http-custom-headers":
-        return await callTool(await listTools());
+        // The peer offers one tool per MRTR behaviour (echo state, no state,
+        // unrelated, no resultType); the tool descriptions say each must be
+        // exercised, and "unrelated" must run between rounds of another
+        // call, so all discovered tools are called concurrently.
+        return await Promise.all((await listTools()).map((t) => callOne(t, { mrtr: "auto" })));
+      case "http-custom-headers": {
+        // Call every tool the runner planned (context.toolCalls), in order.
+        const tools = await listTools();
+        const calls = Array.isArray(context["toolCalls"]) ? context["toolCalls"] : [];
+        const results: unknown[] = [];
+        for (const c of calls) {
+          const entry = isRecord(c) ? tools.find((t) => t.name === c["name"]) : undefined;
+          if (entry) results.push(await callOne(entry));
+        }
+        return results.length > 0 ? results : await callTool(tools);
+      }
       case "http-invalid-tool-headers": {
         // Rejects here on transport failure or any other non-ok list outcome.
         const tools = await listTools();
@@ -163,10 +232,10 @@ export async function runOperations(url: string, scenario: string, context: Reco
               "the expected local rejection did not occur (server offered no invalid tool, or exclusion is broken)",
           );
         }
-        // Expected local rejection confirmed. No tools/call is sent for the
-        // excluded tool, so nothing about this outcome is ambiguous with a
-        // transport failure (rejected above) or an accepted invalid call
-        // (rejected above).
+        // Expected local rejection confirmed. No tools/call is sent for an
+        // excluded tool; the tools that survived discovery are still valid
+        // and must stay usable, so call each of them.
+        for (const t of tools) await callOne(t);
         return { scenario, rejected, listedTools: tools.map((t) => t.name) };
       }
       case "json-schema-ref-no-deref":

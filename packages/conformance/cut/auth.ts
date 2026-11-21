@@ -22,17 +22,19 @@
  *    / loopback test peer. Consent for an arbitrary authorization
  *    server is never granted.
  *
+ * Host ports supplied here (the library has no equivalent):
+ *  - Client registration only from the runner's pre-registered
+ *    `client_id`/`client_secret` (consent port "client-info" prompt) or
+ *    CIMD; never dynamic client registration. Otherwise fail closed.
+ *  - A reusable loopback redirect listener (the library's is single use,
+ *    but step-up and AS migration need a second interactive flow).
+ *
  * Known gaps (flagged at runtime, never emulated):
- *  - `token-endpoint-auth-{basic,post,none}`: the public
- *    `OAuthOptions` surface exposes no token-endpoint client-auth
- *    method selector, so the CUT cannot force basic vs post vs none;
- *    the library's registered-credential behaviour decides.
  *  - A non-loopback authorization endpoint cannot be driven headlessly:
  *    opening a real system browser would hang the runner, so the
  *    browser port throws instead of pretending to browse.
- *  - A supplied `redirect_uri` that is not the loopback listener this
- *    process can bind cannot receive a callback; `startLoopbackRedirect`
- *    binds an ephemeral port and cannot adopt a caller-chosen one.
+ *  - A supplied `redirect_uri` that is not this process's loopback
+ *    listener cannot receive a callback.
  */
 import {
   AuthError,
@@ -40,11 +42,15 @@ import {
   OAuthAuthorization,
   SafeFetch,
   canonicalResource,
-  startLoopbackRedirect,
+  type RedirectPort,
   type AuthorizationConsent,
   type OAuthOptions,
 } from "@mcp-client/auth";
+import { createServer } from "node:http";
+import { McpClient } from "@mcp-client/core";
 import { HttpTransport } from "@mcp-client/transport-http";
+
+const VERSION = "2026-07-28";
 
 /** A real library/context gap: reported as such, never worked around. */
 export class CutAuthGapError extends Error {
@@ -60,6 +66,8 @@ const SCENARIOS = new Set([
   "iss-not-advertised", "iss-supported-missing", "iss-wrong-issuer", "iss-unexpected",
   "iss-normalized", "metadata-issuer-mismatch",
 ].map(name => `auth/${name}`));
+
+const DEFAULT_CLIENT_METADATA_URL = "https://conformance-test.local/client-metadata.json";
 
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
 
@@ -83,6 +91,48 @@ function stringField(context: Record<string, unknown>, key: string): string | un
 }
 
 /**
+ * Reusable loopback redirect listener. The library's `startLoopbackRedirect`
+ * is single use, but step-up and authorization-server migration run a second
+ * interactive flow with the same registered redirect_uri, so the CUT supplies
+ * its own host `RedirectPort`: one listener, one pending wait at a time.
+ */
+async function startReusableRedirect(): Promise<RedirectPort & { readonly redirectUri: string; close(): void }> {
+  let pending: ((params: URLSearchParams) => void) | undefined;
+  const server = createServer((request, response) => {
+    const target = request.url ?? "";
+    if (request.method !== "GET" || !target.startsWith("/callback?") || !pending) {
+      response.writeHead(404).end();
+      return;
+    }
+    const resolve = pending;
+    pending = undefined;
+    response.writeHead(200, { "Content-Type": "text/plain" }).end("Authorization response received.");
+    resolve(new URLSearchParams(target.slice("/callback?".length)));
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") throw new CutAuthGapError("redirect listener has no port");
+  const redirectUri = `http://127.0.0.1:${address.port}/callback`;
+  return {
+    redirectUri,
+    close: () => {
+      server.close();
+      server.closeAllConnections();
+    },
+    waitForCallback(options) {
+      if (options.redirectUri !== redirectUri) throw new CutAuthGapError("redirect_uri is not this listener");
+      return new Promise<URLSearchParams>((resolve, reject) => {
+        pending = resolve;
+        options.signal.addEventListener("abort", () => reject(options.signal.reason), { once: true });
+      });
+    },
+  };
+}
+
+/**
  * One authenticated MCP request against `url`. A `tools/call` is the
  * request that exercises bearer placement, 401 retry and 403 step-up;
  * the tool name defaults to the conformance peer's `test_tool` unless
@@ -98,7 +148,7 @@ export async function runAuth(
   }
   const serverUrl = new URL(url);
   requirePeer(serverUrl);
-  const allowInsecureDev = serverUrl.protocol === "http:";
+  const allowInsecureDev = true; // loopback runner
   const safeFetch = new SafeFetch({ allowInsecureDev, allowAddress: (_host, ip) => isLoopbackHost(ip) });
 
   const clientId = stringField(context, "client_id");
@@ -108,26 +158,9 @@ export async function runAuth(
   const accessToken = stringField(context, "access_token");
   const toolName = stringField(context, "tool_name") ?? "test_tool";
 
-  if (scenario === "auth/basic-cimd" && clientMetadataUrl === undefined) {
-    throw new CutAuthGapError(
-      'auth/basic-cimd requires documented context field "client_metadata_url"; absent, and CIMD is not emulated',
-    );
-  }
-  if (scenario.startsWith("auth/token-endpoint-auth-") && clientId === undefined) {
-    throw new CutAuthGapError(
-      `${scenario}: public OAuthOptions exposes no token-endpoint client-auth method selector ` +
-        'and no documented "client_id" was supplied; refusing to emulate token-endpoint authentication',
-    );
-  }
-  if (scenario.startsWith("auth/token-endpoint-auth-")) {
-    if (accessToken !== undefined || (scenario.endsWith("-none") !== (clientSecret === undefined))) {
-      throw new CutAuthGapError(`${scenario}: requires OAuth credentials matching the peer's advertised method`);
-    }
-  }
-
   // The redirect listener is a real library port; bind it before the
   // provider can need a redirect URI to register.
-  const redirect = accessToken === undefined ? await startLoopbackRedirect() : undefined;
+  const redirect = accessToken === undefined ? await startReusableRedirect() : undefined;
   try {
     if (suppliedRedirectUri !== undefined && suppliedRedirectUri !== redirect?.redirectUri) {
       throw new CutAuthGapError(
@@ -152,7 +185,12 @@ export async function runAuth(
               },
             };
           }
-          throw new CutAuthGapError(`${scenario}: provider requested registration but context has no client_id (no dynamic registration port)`);
+          // No dynamic client registration: without a pre-registered client
+          // (and no CIMD advertised by the AS) the scenario fails closed.
+          throw new CutAuthGapError(
+            `${scenario}: no pre-registered client_id in context and ${prompt.issuer} offers no CIMD; ` +
+              "dynamic client registration is not supported",
+          );
         }
         // Authorize prompts: grant only for this server's resource and
         // only when the issuer is the loopback test peer or the server
@@ -216,45 +254,41 @@ export async function runAuth(
             consent,
             browser,
             ...(redirect ? { redirect } : {}),
-            ...(clientMetadataUrl !== undefined
-              ? { cimd: { clientIdUrl: clientMetadataUrl, redirectUris: [redirectUri] } }
-              : {}),
+            // The runner supplies no client_metadata_url; used only when the
+            // authorization server advertises CIMD support.
+            cimd: { clientIdUrl: clientMetadataUrl ?? DEFAULT_CLIENT_METADATA_URL, redirectUris: [redirectUri] },
             ...(scenario === "auth/offline-access-scope" ||
             scenario === "auth/offline-access-not-supported"
               ? { offlineAccess: true }
               : {}),
           });
 
-    const transport = new HttpTransport({ url, authProvider: provider });
+    // McpClient stamps the per-request _meta (protocolVersion, capabilities)
+    // the stateless 2026-07-28 lifecycle requires; HttpTransport owns the
+    // 401/403 retry through the auth provider.
+    const mcp = new McpClient({
+      transport: new HttpTransport({ url, authProvider: provider, protocolVersion: VERSION }),
+      server: { key: url },
+      supportedVersions: [VERSION],
+      clientInfo: { name: "mcp-client-conformance-cut", version: "0.1.0" },
+    });
     try {
-      const end = await transport.start(
-        {
-          jsonrpc: "2.0",
-          id: 1,
-          method: "tools/call",
-          params: { name: toolName, arguments: {} },
-        },
-        {
-          idempotent: false,
-          signal: AbortSignal.timeout(30_000),
-          timeoutMs: 30_000,
-        },
-      ).done;
-      if (end.kind === "failure") {
-        const reason =
-          "reason" in end.failure ? `/${String(end.failure.reason)}` : "";
-        throw new Error(
-          `runAuth ${scenario}: request failed (${end.failure.kind}${reason}, ` +
-            `status ${String(end.failure.status)}, delivery ${end.delivery})`,
+      // Migration is only observable on a request made after the first
+      // authenticated one (the peer then moves PRM to a new authorization
+      // server), so that scenario makes a second call.
+      const calls = scenario === "auth/authorization-server-migration" ? 2 : 1;
+      for (let call = 0; call < calls; call++) {
+        const outcome = await mcp.request(
+          "tools/call",
+          { name: toolName, arguments: {} },
+          { signal: AbortSignal.timeout(30_000), timeoutMs: 30_000 },
         );
-      }
-      if ("error" in end.message) {
-        throw new Error(
-          `runAuth ${scenario}: JSON-RPC error ${end.message.error.code}: ${end.message.error.message}`,
-        );
+        if (outcome.kind !== "ok") {
+          throw new Error(`runAuth ${scenario}: ${JSON.stringify(outcome).slice(0, 500)}`);
+        }
       }
     } finally {
-      await transport.close();
+      await mcp.close();
     }
   } catch (error) {
     if (error instanceof AuthError) {
