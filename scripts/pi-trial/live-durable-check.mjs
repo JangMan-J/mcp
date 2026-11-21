@@ -10,6 +10,7 @@ import {setTimeout as sleep} from 'node:timers/promises';
 import {startFixture, EVENT, RESOURCE, SKILL, SKILL_FILE, TASK} from './live-ext-fixture.mjs';
 
 const pkg = '@earendil-works/pi-durable';
+const adapterDist = resolve(process.env.PI_DURABLE_ADAPTER_DIST ?? join(import.meta.dirname, '../../adapters/pi-durable/dist'));
 function discover() {
   const roots = process.env.PI_DURABLE_DIR ? [resolve(process.env.PI_DURABLE_DIR)] : [
     resolve(import.meta.dirname, '../../node_modules', pkg), resolve(import.meta.dirname, '../../../cellar/node_modules', pkg),
@@ -60,7 +61,7 @@ async function until(test, message) {
 async function run(runtime, probe) {
   assert.equal(process.env.HOME, process.cwd());
   if (probe) return withHarness(runtime, [], async tool => has(await tool('codemode',{code:'return "probe-ok";'}),'probe-ok'));
-  const {startDurableMcpHost} = await import('../../adapters/pi-durable/dist/index.js');
+  const {startDurableMcpHost} = await import(pathToFileURL(join(adapterDist, 'index.js')));
   const {DatabaseSync} = await import('node:sqlite');
   const fx = await startFixture(), deliveries = [], prompts = [];
   const inspect = async () => (await fetch(`${fx.base}/inspect`)).json();
@@ -138,7 +139,7 @@ async function run(runtime, probe) {
 }
 
 function checkTypes(runtime, scratch, env) {
-  const sdk = join(runtime, 'dist'), adapter = resolve(import.meta.dirname, '../../adapters/pi-durable/dist');
+  const sdk = join(runtime, 'dist'), adapter = adapterDist;
   assert(existsSync(join(sdk, 'index.d.ts')), `Missing SDK declarations: ${sdk}`);
   assert(existsSync(join(adapter, 'index.d.ts')), 'Missing adapter declarations; run npm run build:pi-durable');
   // NodeNext resolves these absolute .js specifiers to the adjacent .d.ts files.
@@ -161,7 +162,7 @@ if (process.argv[2] === '--child') {
 } else {
   const root = discover(), scratch = realpathSync(mkdtempSync(join(tmpdir(),'pi-durable-trial-')));
   const env = {PATH:dirname(process.execPath),HOME:scratch,TMPDIR:scratch,
-    XDG_CONFIG_HOME:scratch,XDG_CACHE_HOME:scratch,XDG_DATA_HOME:scratch,PI_CODING_AGENT_DIR:join(scratch,'agent')};
+    XDG_CONFIG_HOME:scratch,XDG_CACHE_HOME:scratch,XDG_DATA_HOME:scratch,PI_CODING_AGENT_DIR:join(scratch,'agent'),PI_DURABLE_ADAPTER_DIST:adapterDist};
   console.log(`Using ${pkg}@1.6.0: ${root}`);
   try {
     if (process.argv[2] === '--type-check') process.exitCode = checkTypes(root, scratch, env);
