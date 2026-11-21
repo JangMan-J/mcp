@@ -63,7 +63,13 @@ export class ExtensionRegistry {
   capabilities(): Record<string, unknown> {
     const merged: Record<string, unknown> = {};
     for (const { ext } of this.extensions.values()) {
-      Object.assign(merged, ext.capabilities(true));
+      const caps = ext.capabilities(true);
+      const prev = merged.extensions as Record<string, unknown> | undefined;
+      Object.assign(merged, caps);
+      // The standard `extensions` namespace is a map keyed by extension ID: merge by subkey into a fresh object.
+      if (Object.prototype.hasOwnProperty.call(caps, "extensions")) {
+        merged.extensions = { ...prev, ...caps.extensions };
+      }
     }
     return merged;
   }
