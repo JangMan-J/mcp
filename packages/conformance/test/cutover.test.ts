@@ -111,21 +111,32 @@ describe("[CUT-ROLLBACK-1] required abort conditions", () => {
 });
 
 describe("avoid claims of live drill", () => {
-  it("states no step has been executed and drill is described not yet executed", () => {
-    contains(/No step below has been executed: no side-by-side trial, cutover,[\s\S]*or rollback drill has been run/i);
-    contains(/nothing in Waves 0–2 changes the Pi fork/i);
-    contains(/described, not yet executed/i);
-    contains(/drill to rehearse in the scratch config before cutover is approved/i);
-    contains(/Each step becomes\s*\n?executable only when its pre-conditions are met and the director authorizes it/i);
+  it("states the scratch trial and scratch rollback drill ran at the pin", () => {
+    contains(/side-by-side trial and\s+the rollback drill ran in a disposable scratch directory at the pinned Pi\s+revision/i);
+    contains(/Side-by-side trial and rollback drill record \(scratch, 2026-11-21\)/);
+    contains(/scripts\/pi-trial/);
+    contains(/7d80b45f62f8a8b8cd0f91a71d78ba56f229b1ec/);
+    contains(/never modified/i);
+    contains(/nothing changes the Pi fork/i);
+    contains(/Each remaining step\s+becomes executable only when its pre-conditions are met and the director\s+authorizes it/i);
   });
-  it("does not claim a live drill or success", () => {
-    notContains(/drill was run/i);
-    notContains(/drill succeeded/i);
-    notContains(/drill has been executed/i);
+  it("states cutover, active-config rollback and observation window are not done", () => {
+    contains(/cutover, a rollback in the active config, and the\s+observation window have not been executed/i);
+    contains(/Not done: cutover in the active config, rollback in the active config, and the\s+observation window/i);
+    contains(/Pre-condition 1 \(gate report for SHA X\) is not yet met/i);
+  });
+  it("does not claim a live or active-config cutover, rollback, or observation window", () => {
     notContains(/cutover was performed/i);
-    notContains(/rollback was executed/i);
-    // no past-tense success claims
+    notContains(/rollback was executed in the active config/i);
+    notContains(/active config was switched/i);
+    notContains(/observation window (was|has been) (run|executed|completed|observed)/i);
+    notContains(/drill was run in the active/i);
     notContains(/trial was successful/i);
+  });
+  it("[CUT-ROLLBACK-1] record shows the one-edit rollback drill passed in scratch", () => {
+    contains(/Rollback drill: one edit of scratch `settings\.json` removing both entries; the new session has `builtin:mcp` back and the adapter gone \| pass/);
+    contains(/Rollback drill \(rehearsed in scratch on 2026-11-21; not run in the active config\)/);
+    contains(/No `mcp-auth\.json` was created \| pass/);
   });
 });
 

@@ -1,5 +1,6 @@
 # Pi Coding Agent adapter
-Status: typed entrypoint implemented; live fork trial pending.
+Status: typed entrypoint implemented; scratch trial at the pinned fork passed
+(2026-11-21); active-config cutover not done.
 
 ## Entrypoints
 - `createPiMcpExtension` (`pi-extension.ts`): the Pi extension factory. It
@@ -25,9 +26,20 @@ Status: typed entrypoint implemented; live fork trial pending.
 These run against fake host ports and a scratch config/store only. They
 prove adapter contracts; they do not prove behavior inside real Pi.
 
-## Live fork trial (pending, separately approved)
-Not run. Everything below describes the manual trial against the pinned
-fork. No entrypoint script launches it.
+## Live fork trial (scratch run done; active-config cutover not done)
+The scratch trial and rollback drill ran on 2026-11-21 at the pinned fork;
+results are in `docs/cutover.md` ("Side-by-side trial and rollback drill
+record"). Commands (each exits 0 only if all items pass; they use a scratch
+dir and never touch `~/.pi/agent`):
+- `node scripts/pi-trial/boot-check.mjs` (adapter on with `-builtin:mcp`,
+  then the rollback drill)
+- `node scripts/pi-trial/trial-a.mjs` (items 1-4)
+- `node scripts/pi-trial/trial-b.mjs` (items 5-8)
+- `node scripts/pi-trial/smoke.mjs` (synthetic server smoke check)
+
+The cutover in the active config has not been done, nor has an active-config
+rollback or the observation window. The manual list below is the scenario
+reference.
 
 ## Scratch test prerequisites
 - Pinned fork only: installed build `next-7d80b45f62f8` (`pi --version`

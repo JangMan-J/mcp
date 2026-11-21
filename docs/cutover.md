@@ -1,11 +1,14 @@
 # Cutover and rollback plan
 
 Wave 3 slice S3.0 record, per IMPLEMENTATION_PLAN.md §15.4–15.5. This is a
-plan document. No step below has been executed: no side-by-side trial, cutover,
-or rollback drill has been run, and nothing in Waves 0–2 changes the Pi fork
-source, the active Pi config, or `pi-mcp-ext` (§15.5 item 6). Each step becomes
-executable only when its pre-conditions are met and the director authorizes it.
-The pinned adapter target is recorded in `docs/decisions/pi-target.md`.
+plan document with one executed part. On 2026-11-21 the side-by-side trial and
+the rollback drill ran in a disposable scratch directory at the pinned Pi
+revision (record below). The cutover, a rollback in the active config, and the
+observation window have not been executed. Nothing changes the Pi fork source,
+the active Pi config, or `pi-mcp-ext` (§15.5 item 6). Each remaining step
+becomes executable only when its pre-conditions are met and the director
+authorizes it. The pinned adapter target is recorded in
+`docs/decisions/pi-target.md`.
 
 ## D7: standalone `pi mcp` stays on the old stack
 
@@ -58,6 +61,72 @@ Before any config is touched:
   synthetic server: tool registration, `/mcp`, exposure modes, deferred
   search, branch/fork/resume, abort mid-call, `uncertain-write` rendering, URL
   elicitation consent.
+
+## Side-by-side trial and rollback drill record (scratch, 2026-11-21)
+
+This section records what ran. It is a scratch-only record: no cutover in the
+active config, no rollback in the active config, and no observation window
+happened. Pre-condition 1 (gate report for SHA X) is not yet met; see
+`docs/conformance/GATE-STATUS.md`.
+
+Setup:
+
+- Pi revision: pinned `7d80b45f62f8a8b8cd0f91a71d78ba56f229b1ec` (pinned:
+  true). Pi ran from a `git clone --shared` scratch copy at the pin with
+  `node_modules` linked offline, because `~/pi` is at a later commit and the
+  pinned install build is no longer installed.
+- Pi was driven in-process through its SDK with the faux model provider,
+  `PI_CODING_AGENT_DIR=<scratch>/agent`, `HOME=<scratch>`, all under
+  `$TMPDIR`. `~/.pi/agent` and `~/pi` were never modified.
+- Tooling (committed in `scripts/pi-trial`): `server.mjs` (synthetic stdio MCP
+  server), `smoke.mjs`, `pi-scratch.mjs`, `extension.ts` (adapter entry with
+  scripted consent), `boot-check.mjs` (adapter on with `-builtin:mcp`, then the
+  rollback drill), `trial-a.mjs` (items 1-4), `trial-b.mjs` (items 5-8). Each
+  exits 0 only if all of its items pass.
+
+Boot check and rollback drill (scratch settings only):
+
+| Check | Result |
+|---|---|
+| Adapter run with scratch settings `{extensions: [extension.ts, '-builtin:mcp']}`: `/mcp` comes from the adapter and `builtin:mcp` is not loaded | pass |
+| Rollback drill: one edit of scratch `settings.json` removing both entries; the new session has `builtin:mcp` back and the adapter gone | pass |
+| No `mcp-auth.json` was created | pass |
+
+§15.2 acceptance items at the pin (all pass):
+
+| # | Item | Observed |
+|---|---|---|
+| 1 | Tool registration | `mcp__trial__echo`, `mcp__trial__needs_consent`, `mcp__trial__secret_lookup`, `mcp__trial__slow` registered; echo returns `echo: hi` |
+| 2 | `/mcp` | list, status, disable, enable work |
+| 3 | Exposure modes | per-tool `hidden` and server `deferred` honored |
+| 4 | Deferred search | `tool_search` finds `secret_lookup`; a call then returns `found: k` |
+| 5 | Branch/fork/resume | history isolated; no tokens or credentials in session files |
+| 6 | Abort mid-call | turn ended in about 7 ms; server saw `notifications/cancelled`; no late entries |
+| 7 | `uncertain-write` rendering | exact text: "Uncertain write: the operation may or may not have run; do not retry blindly. Check its effects first." |
+| 8 | URL elicitation consent | consent port saw the full URL; accept, decline, cancel give `consent accepted`, `consent declined`, `consent cancelled` |
+
+Active-config guard: the sha256 of every file under `~/.pi/agent` was taken
+before and after each run. All non-session files were unchanged (`settings.json`,
+`mcp.json`, `auth.json`, `mcp-auth.json`, and `extensions/` were named
+explicitly). Only `~/.pi/agent/sessions/**` changed, written by concurrent
+supervising Pi processes and not by the trial; no scratch path appears in any
+active file.
+
+Adapter bugs the trial found and fixed before the passing runs, each with a
+regression test:
+
+- `tool_search` and the resource tools were registered with exposure
+  `builtin`, which Pi does not support; now `direct`.
+- Per-tool `hidden` overrides were dropped; now honored.
+- Deferred tools matched by `tool_search` were registered but not activated;
+  now added to Pi's active tools.
+- The live runtime bypassed `StatefulClient`, so URL elicitation reached the
+  model as `mrtr-interim`; operations now go through `StatefulClient` with an
+  `ElicitationPort` built from the consent port. `BrowserPort` is a no-op; the
+  user opens the URL from the consent prompt.
+
+Not done: cutover in the active config, rollback in the active config, and the
+observation window.
 
 ## Cutover (§15.5 item 3)
 
@@ -114,9 +183,10 @@ Pinned from the Pi fork revision recorded in `docs/decisions/pi-target.md`. The 
 
 Option C is implemented separately: `adapters/pi-coding-agent/bin/mcp-cli.ts` is an optional standalone CLI on the new library. It does not change `pi mcp`, which stays on the old stack per D7.
 
-## Rollback drill (described, not yet executed)
+## Rollback drill (rehearsed in scratch on 2026-11-21; not run in the active config)
 
-The drill to rehearse in the scratch config before cutover is approved:
+The drill to rehearse in the scratch config before cutover is approved
+(it passed in scratch; see the record above):
 
 1. Remove the adapter entry and `-builtin:mcp` from settings — a single edit.
 2. Start Pi; confirm the built-in MCP stack comes back with the same tool
