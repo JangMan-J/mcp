@@ -109,6 +109,33 @@ describe("createPiMcpExtension", () => {
     await pi.emit("session_shutdown");
   });
 
+  it("[PICA-5] never passes adapter-internal \"builtin\" exposure to pi.registerTool", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pi-ext-"));
+    dirs.push(dir);
+    await writeFile(join(dir, "mcp.json"), JSON.stringify({ mcpServers: { srv: { command: "fake" } } }));
+    const ext = createPiMcpExtension({
+      configDir: dir,
+      createTransport: () => mockTransport((msg) => {
+        if (msg.method === "server/discover") return { kind: "response", message: { jsonrpc: JSONRPC_VERSION, id: msg.id, result: { resultType: "complete", cacheScope: "public", ttlMs: 60_000, supportedVersions: ["2026-07-28"], capabilities: { tools: {}, resources: {} } } } };
+        if (msg.method === "tools/list") return { kind: "response", message: { jsonrpc: JSONRPC_VERSION, id: msg.id, result: { tools: [{ name: "echo", inputSchema: { type: "object" } }] } } };
+        return { kind: "response", message: { jsonrpc: JSONRPC_VERSION, id: msg.id, result: {} } };
+      }),
+    });
+    const pi = fakePi();
+    ext(pi.api);
+    await pi.emit("session_start");
+    await vi.waitFor(() => expect(pi.tools.has("mcp__srv__echo")).toBe(true));
+    const piSupported = new Set(["direct", "model-only", "codemode", "deferred", "hidden"]);
+    for (const def of pi.tools.values()) {
+      expect(piSupported.has(def.exposure as string), `tool ${def.name} exposure ${def.exposure}`).toBe(true);
+    }
+    // Adapter-internal builtins (tool_search, resource tools) stay model-visible as "direct".
+    expect(pi.tools.get("tool_search")?.exposure).toBe("direct");
+    expect(pi.tools.get("list_mcp_resources")?.exposure).toBe("direct");
+    expect(pi.tools.get("read_mcp_resource")?.exposure).toBe("direct");
+    await pi.emit("session_shutdown");
+  });
+
   it("EDGE-27: createLiveMcpServerRuntime aborts StatefulClient transportClosed on close()", async () => {
     const rt = await createLiveMcpServerRuntime(
       { name: "s", source: "global", trusted: true, transport: "stdio", enabled: true, exposure: "direct", command: "fake" },

@@ -198,6 +198,35 @@ it("[PICA-14] composes tools, native resource tools and lazy branch restore thro
   } finally { installed.dispose(); }
 });
 
+it("[PICA-5] per-tool hidden override hides the tool end to end (no registration, not in tool_search)", async () => {
+  const configDir = await scratch();
+  await writeFile(join(configDir, "mcp.json"),
+    '{"mcpServers":{"docs":{"command":"fake","toolExposure":{"secret_lookup":"hidden","wipe_*":"hidden"}}}}');
+  const host = new FakeHost();
+  const registered = new Map<string, any>();
+  const toolHost = {
+    registerTool: (def: any) => { registered.set(def.name, def); return { dispose: () => void registered.delete(def.name) }; },
+    sandbox: { bind: () => ({ dispose() {} }) }, pipeline: {} as never,
+  };
+  const createClient = vi.fn(() => ({ close() {} }));
+  const list = vi.fn(async () => [{ name: "ping" }, { name: "secret_lookup" }, { name: "wipe_all" }]);
+  const installed = installCodingAgentAdapter(host, {
+    configDir, createClient, toolHost, toolClient: () => ({ list, call: vi.fn() as never }),
+  });
+  try {
+    await host.emit("session_start");
+    await vi.waitFor(() => expect([...registered.keys()].some(n => n.includes("ping"))).toBe(true));
+    // Hidden tools (exact and wildcard overrides) never reach the host.
+    expect([...registered.keys()].filter(n => n.includes("secret_lookup") || n.includes("wipe_"))).toEqual([]);
+    // Nor are they discoverable through tool_search (deferred registry).
+    const found = await registered.get("tool_search").execute("id", { query: "" }, new AbortController().signal);
+    const text = found.content.map((c: any) => c.text ?? "").join("\n");
+    expect(text).not.toContain("secret_lookup");
+    expect(text).not.toContain("wipe_all");
+    await host.emit("session_shutdown");
+  } finally { installed.dispose(); }
+});
+
 it("[PICA-14] keeps deferred-only servers unopened on a restored branch until tool_search", async () => {
   const configDir = await scratch();
   await writeFile(join(configDir, "mcp.json"), '{"mcpServers":{"docs":{"command":"fake","exposure":"deferred"}}}');

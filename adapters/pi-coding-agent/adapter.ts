@@ -170,8 +170,9 @@ export function installCodingAgentAdapter<C extends Client>(
         const lazy = branch !== undefined && descriptor.exposure !== "direct"
           && !Object.values(descriptor.toolExposure ?? {}).includes("direct");
         if (lazy) lazyIds.push(descriptor.name);
-        const overrides = Object.entries(descriptor.toolExposure ?? {}).filter(([, v]) => v !== "hidden")
-          .map(([k, v]) => [k, { exposure: v as "direct" | "codemode" | "deferred" }] as const);
+        // Hidden overrides pass through; the tools layer drops hidden tools from host, sandbox and tool_search.
+        const overrides = Object.entries(descriptor.toolExposure ?? {})
+          .map(([k, v]) => [k, { exposure: v }] as const);
         return {
         server: descriptor.name,
         exposure: descriptor.exposure as "direct" | "codemode" | "deferred",

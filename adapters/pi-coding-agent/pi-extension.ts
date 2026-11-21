@@ -136,6 +136,8 @@ export function createPiMcpExtension(options: PiMcpExtensionOptions): (pi: PiExt
       registerTool: (def) => {
         const reg = {
           ...def,
+          // Pi at the pin has no "builtin" exposure; adapter-internal builtins stay model-visible as "direct".
+          exposure: def.exposure === "builtin" ? "direct" : def.exposure,
           label: def.name,
           parameters: def.parameters ?? { type: "object", properties: {} },
           ...(def.name === "tool_search" ? { reachesTools: () => "all" as const } : { outputSchema: def.outputSchema ?? createCallToolResultSchema() }),
