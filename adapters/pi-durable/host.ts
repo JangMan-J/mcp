@@ -1,23 +1,77 @@
-import { AsyncLocalStorage } from 'node:async_hooks';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { DurableToolAdapter, type ToolIntent, type ToolWire } from './adapter.js';
+import {
+  McpOutcomeError,
+  type AuthProvider,
+  type BrowserPort,
+  type ConsentPort,
+  type DiscoverResult,
+  type Outcome,
+  type TelemetryPort,
+  type Transport,
+} from '@mcp-client/core';
+import type { AuthorizationConsent } from '@mcp-client/auth';
+import type { AppRenderPort } from '@mcp-client/ext-apps';
+import type { OtelTelemetryOptions } from '@mcp-client/telemetry-otel';
+import type { ToolIntent } from './adapter.js';
 import type { PerKeyMutex } from './calls.js';
+import { featureParameters } from './durable-tools.js';
 import {
-  createDurableMcpExtension, type DurableExtension, type DurablePromptSection, type DurableToolExecutionApi,
-  type DurableContext, type Exposure, type McpCallToolResult, type McpToolDescriptor,
+  durableToolNames,
+  type Exposure,
+  type McpCallToolResult,
+  type McpContent,
+  type McpToolDescriptor,
 } from './extension.js';
+import { registerOperation, type HostToolRegistration, type HostToolResult } from './host-tools.js';
+import type { IdempotencyPolicy } from './policies.js';
 import {
-  errorToHostResult, featureParameters, outcomeToHostResult, valueToHostResult, type HostToolResult,
-} from './durable-tools.js';
+  loadServers,
+  normalizeServer,
+  openRuntime,
+  type DurableRuntime,
+  type RuntimeOptions,
+  type ServerDescriptor,
+} from './runtime.js';
 import { createSqliteDurableCallStore } from './sqlite-store.js';
-import { loadServers, openRuntime } from './runtime.js';
 import { createCoreFeatures } from './core-features.js';
 import { createStreamFeatures } from './stream-features.js';
 import { createExtendedFeatures } from './extended-features.js';
 
-/** One MCP server as described by explicit options or mcp.json (parsed by ./runtime.js). */
-export interface DurableServerDescriptor {
+export type { HostToolRegistration, HostToolResult } from './host-tools.js';
+export type { DurableRuntime, RuntimeOptions, ServerDescriptor } from './runtime.js';
+
+/** Structural prompt section assignable to @earendil-works/pi-durable@1.6.0 PromptSection. */
+export interface HostPromptSection {
+  readonly key: string;
+  readonly tag?: boolean;
+  render(): string | undefined | Promise<string | undefined>;
+}
+
+/** Structural extension assignable to @earendil-works/pi-durable@1.6.0 Extension. */
+export interface HostExtension {
   readonly name: string;
+  readonly namespace?: {
+    readonly name: string;
+    readonly description: string;
+    readonly instructions?: string;
+  };
+  readonly tools?: readonly HostToolRegistration[];
+  readonly sections?: readonly HostPromptSection[];
+}
+
+/** Input accepted in DurableHostOptions.servers (raw config object or normalized ServerDescriptor). */
+export interface DurableServerInput {
+  readonly name: string;
+  readonly transport?: 'stdio' | 'http';
+  readonly command?: string;
+  readonly args?: readonly string[];
+  readonly cwd?: string;
+  readonly env?: Readonly<Record<string, string>>;
+  readonly url?: string;
+  readonly headers?: Readonly<Record<string, string>>;
   readonly description?: string;
   readonly instructions?: string;
   readonly exposure?: Exposure;
@@ -25,46 +79,71 @@ export interface DurableServerDescriptor {
   readonly readOnlyTools?: readonly string[];
   readonly toolOverrides?: Readonly<Record<string, 'replay' | 'interrupt'>>;
   readonly acceptDuplicate?: boolean;
+  readonly enabled?: boolean;
+  readonly timeout?: number;
+  readonly timeoutMs?: number;
+  readonly aliases?: readonly string[];
+  readonly allowLegacyInitialize?: boolean;
+  readonly inheritEnv?: boolean | readonly string[];
+  readonly trusted?: boolean;
+  readonly source?: 'project' | 'global' | 'dynamic';
   readonly [k: string]: unknown;
-}
-
-/** Structural contract implemented by ./runtime.js openRuntime(). */
-export interface DurableRuntime {
-  listTools(signal?: AbortSignal): Promise<readonly McpToolDescriptor[]>;
-  callTool(request: ToolWire, signal?: AbortSignal): Promise<McpCallToolResult>;
-  onToolsChanged?(listener: () => void): void;
-  signIn?(signal?: AbortSignal): Promise<unknown>;
-  inspectCard?(signal?: AbortSignal): Promise<unknown>;
-  close(): Promise<void>;
 }
 
 export interface FeatureModule {
-  names: string[];
+  readonly names: readonly string[];
   run(name: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown>;
   close(): Promise<void>;
 }
+
+export interface FeatureOptions {
+  readonly consent?: ConsentPort;
+  readonly deliver?: (event: Record<string, unknown>) => void | Promise<void>;
+  readonly skillsCacheDir?: string;
+  readonly appRenderer?: AppRenderPort;
+  readonly stateDir?: string;
+}
+
 export interface FeatureContext {
-  id: string;
-  runtime: DurableRuntime;
-  descriptor: DurableServerDescriptor;
-  db: DatabaseSync;
-  options: DurableHostOptions;
+  readonly id: string;
+  readonly runtime: DurableRuntime;
+  readonly descriptor: ServerDescriptor;
+  readonly db: DatabaseSync;
+  readonly options: FeatureOptions;
 }
 
 export interface DurableHostOptions {
-  readonly servers?: readonly DurableServerDescriptor[];
+  readonly servers?: readonly (ServerDescriptor | DurableServerInput)[];
   readonly mcpConfig?: string;
   /** SQLite file for call records, cursors and handles; defaults to in-memory. */
   readonly databasePath?: string;
+  /** Isolated state directory for credentials and caches; defaults to `${databasePath}.state` or an isolated temp dir. */
+  readonly stateDir?: string;
+  readonly skillsCacheDir?: string;
   readonly toolNaming?: 'prefixed' | 'bare';
   readonly readOnlyTools?: ReadonlySet<string> | readonly string[];
-  admitTool?(toolName: string, serverId: string): boolean;
-  /** Remaining hooks (consent, authorizationConsent, deliver, appRenderer, ...) pass through to runtime/features. */
-  readonly [k: string]: unknown;
+  readonly admitTool?: (toolName: string, serverId: string) => boolean;
+  readonly consent?: ConsentPort;
+  readonly authorizationConsent?: AuthorizationConsent;
+  readonly browser?: BrowserPort;
+  readonly resolveProviderToken?: (provider: string) => Promise<string>;
+  readonly deliver?: (event: Record<string, unknown>) => void | Promise<void>;
+  readonly appRenderer?: AppRenderPort;
+  readonly telemetry?: TelemetryPort;
+  readonly otel?: OtelTelemetryOptions;
+  readonly createTransport?: (descriptor: ServerDescriptor) => Transport | Promise<Transport>;
+  readonly authProvider?: AuthProvider;
+  readonly allowLegacyInitialize?: boolean;
+  readonly inheritEnv?: boolean | readonly string[];
+  readonly acceptDuplicate?: boolean;
+  readonly restartLimit?: number;
+  readonly policies?: readonly IdempotencyPolicy[];
+  readonly newRequestId?: () => string;
+  readonly signal?: AbortSignal;
 }
 
 export interface DurableMcpHost {
-  readonly extensions: readonly DurableExtension[];
+  readonly extensions: readonly HostExtension[];
   readonly toolNames: readonly string[];
   readonly servers: readonly string[];
   call(key: string, name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<HostToolResult>;
@@ -75,16 +154,38 @@ export interface DurableMcpHost {
 }
 
 interface Server {
-  id: string;
-  descriptor: DurableServerDescriptor;
-  runtime: DurableRuntime;
+  readonly id: string;
+  readonly descriptor: ServerDescriptor;
+  readonly instructions?: string;
+  readonly readOnlyTools?: readonly string[];
+  readonly toolOverrides?: Readonly<Record<string, 'replay' | 'interrupt'>>;
+  readonly acceptDuplicate?: boolean;
+  readonly runtime: DurableRuntime;
   features: FeatureModule[];
   tools: McpToolDescriptor[];
-  extension: DurableExtension;
-  adapter: DurableToolAdapter<McpCallToolResult>;
-  /** registered name -> MCP tool name */
-  names: Map<string, string>;
+  authorized: boolean;
+  extension: HostExtension;
+  readonly operations: Map<string, HostToolRegistration>;
+  unsubToolsChanged?: () => void;
 }
+
+interface NormalizedEntry {
+  readonly descriptor: ServerDescriptor;
+  readonly instructions?: string;
+  readonly readOnlyTools?: readonly string[];
+  readonly toolOverrides?: Readonly<Record<string, 'replay' | 'interrupt'>>;
+  readonly acceptDuplicate?: boolean;
+}
+
+const FEATURE_ACTIONS: Readonly<Record<string, readonly string[]>> = {
+  mcp_prompts: ['list', 'get', 'complete'],
+  mcp_resources: ['list', 'templates', 'read', 'directory', 'subscribe', 'unsubscribe', 'subscriptions'],
+  mcp_events: ['servers', 'list', 'subscribe', 'unsubscribe', 'subscriptions', 'poll'],
+  mcp_tasks: ['call', 'get', 'update', 'cancel', 'active'],
+  mcp_skills: ['list', 'get', 'load', 'read_file', 'directory'],
+};
+
+const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 
 function keyedMutex(): PerKeyMutex {
   const tails = new Map<string, Promise<unknown>>();
@@ -96,140 +197,480 @@ function keyedMutex(): PerKeyMutex {
       void tail.then(() => { if (tails.get(key) === tail) tails.delete(key); });
       return run;
     },
-  } as PerKeyMutex;
+  };
+}
+
+function globToRegExp(pattern: string): RegExp {
+  const escaped = pattern.split('*').map(part => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('.*');
+  return new RegExp(`^${escaped}$`);
+}
+
+/** Exact key wins, then `*` wildcard patterns in insertion order, then the server default. */
+function resolveToolExposure(
+  descriptor: Pick<ServerDescriptor, 'exposure' | 'toolExposure'>,
+  toolName: string,
+): Exposure {
+  const map = descriptor.toolExposure;
+  if (map) {
+    if (Object.hasOwn(map, toolName)) return map[toolName]!;
+    for (const [pattern, exp] of Object.entries(map)) {
+      if (!pattern.includes('*')) continue;
+      if (globToRegExp(pattern).test(toolName)) return exp;
+    }
+  }
+  return descriptor.exposure ?? 'direct';
+}
+
+function isNormalizedDescriptor(raw: ServerDescriptor | DurableServerInput): raw is ServerDescriptor {
+  return (
+    typeof raw.source === 'string' &&
+    typeof raw.trusted === 'boolean' &&
+    (raw.transport === 'stdio' || raw.transport === 'http') &&
+    typeof raw.enabled === 'boolean' &&
+    typeof raw.exposure === 'string'
+  );
+}
+
+function normalizeEntry(raw: ServerDescriptor | DurableServerInput): NormalizedEntry {
+  const descriptor = isNormalizedDescriptor(raw) ? raw : normalizeServer(raw.name, raw);
+  const rec = raw as DurableServerInput;
+  const d = descriptor as DurableServerInput;
+  const instructions = typeof rec.instructions === 'string'
+    ? rec.instructions
+    : typeof d.instructions === 'string'
+      ? d.instructions
+      : undefined;
+  const readOnlyTools = Array.isArray(rec.readOnlyTools)
+    ? [...rec.readOnlyTools]
+    : Array.isArray(d.readOnlyTools)
+      ? [...d.readOnlyTools]
+      : undefined;
+  const toolOverrides = isRecord(rec.toolOverrides)
+    ? (rec.toolOverrides as Readonly<Record<string, 'replay' | 'interrupt'>>)
+    : isRecord(d.toolOverrides)
+      ? (d.toolOverrides as Readonly<Record<string, 'replay' | 'interrupt'>>)
+      : undefined;
+  const acceptDuplicate = typeof rec.acceptDuplicate === 'boolean'
+    ? rec.acceptDuplicate
+    : typeof d.acceptDuplicate === 'boolean'
+      ? d.acceptDuplicate
+      : undefined;
+  return {
+    descriptor,
+    ...(instructions !== undefined ? { instructions } : {}),
+    ...(readOnlyTools !== undefined ? { readOnlyTools } : {}),
+    ...(toolOverrides !== undefined ? { toolOverrides } : {}),
+    ...(acceptDuplicate !== undefined ? { acceptDuplicate } : {}),
+  };
+}
+
+function isUnauthorizedOutcome(outcome: Outcome<DiscoverResult>): boolean {
+  if (outcome.kind === 'auth-failure' || outcome.kind === 'auth-unavailable') return true;
+  if (outcome.kind === 'transport-failure') {
+    const f = outcome.failure;
+    return (
+      f.kind === 'auth-failure' ||
+      f.kind === 'auth-unavailable' ||
+      f.kind === 'forbidden' ||
+      f.status === 401 ||
+      f.status === 403
+    );
+  }
+  return false;
+}
+
+function rawToMcpResult(raw: unknown): McpCallToolResult {
+  if (isRecord(raw) && Array.isArray(raw['content'])) {
+    return {
+      content: raw['content'] as McpContent[],
+      ...(raw['structuredContent'] !== undefined
+        ? { structuredContent: raw['structuredContent'] }
+        : { structuredContent: raw }),
+      ...(raw['isError'] === true ? { isError: true } : {}),
+    };
+  }
+  const text = typeof raw === 'string' ? raw : JSON.stringify(raw ?? null, null, 2);
+  return {
+    content: [{ type: 'text', text }],
+    structuredContent: raw ?? null,
+  };
+}
+
+function featureSchema(name: string): Record<string, unknown> {
+  const actions = FEATURE_ACTIONS[name];
+  if (actions) return featureParameters(actions);
+  return {
+    type: 'object',
+    properties: {
+      server: { type: 'string', description: 'MCP server id' },
+      action: { type: 'string' },
+    },
+    required: ['action'],
+    additionalProperties: true,
+  };
+}
+
+function isFileDatabase(databasePath: string | undefined): databasePath is string {
+  return (
+    typeof databasePath === 'string' &&
+    databasePath.length > 0 &&
+    databasePath !== ':memory:' &&
+    !databasePath.startsWith('file::memory:')
+  );
 }
 
 export async function startDurableMcpHost(options: DurableHostOptions = {}): Promise<DurableMcpHost> {
   const db = new DatabaseSync(options.databasePath ?? ':memory:');
   const store = createSqliteDurableCallStore<ToolIntent, McpCallToolResult>(db);
   const mutex = keyedMutex();
-  const signals = new AsyncLocalStorage<AbortSignal>();
-  /** callId -> in-flight controller, for idempotent cancel(). */
-  const inflight = new Map<string, AbortController>();
+  const shutdownCtrl = new AbortController();
+  const lifetimeSignal = options.signal
+    ? AbortSignal.any([shutdownCtrl.signal, options.signal])
+    : shutdownCtrl.signal;
+  const activeExecutions = new Set<Promise<unknown>>();
   const globalReadOnly = [...(options.readOnlyTools ?? [])];
   const servers = new Map<string, Server>();
   const featureRoutes = new Map<string, Server[]>();
-  let extensions: DurableExtension[] = [];
+  const featureOperations = new Map<string, HostToolRegistration>();
+  let extensions: HostExtension[] = [];
   let closed = false;
+  let closing: Promise<void> | undefined;
+  let tempStateDir: string | undefined;
 
-  const send = (runtime: DurableRuntime) => (wire: ToolWire) => runtime.callTool(wire, signals.getStore());
+  let stateDir: string;
+  if (options.stateDir !== undefined) {
+    stateDir = options.stateDir;
+  } else if (isFileDatabase(options.databasePath)) {
+    stateDir = `${resolve(options.databasePath)}.state`;
+  } else {
+    tempStateDir = await mkdtemp(join(tmpdir(), 'pi-durable-'));
+    stateDir = tempStateDir;
+  }
 
-  const buildExtension = (s: Server): void => {
-    const admitted = s.tools.filter(t => options.admitTool?.(t.name, s.id) ?? true);
-    const readOnlyTools = [...globalReadOnly, ...(s.descriptor.readOnlyTools ?? [])];
-    const ext = createDurableMcpExtension({
-      serverId: s.id,
-      description: s.descriptor.description ?? `MCP server ${s.id}`,
-      ...(s.descriptor.instructions !== undefined ? { instructions: s.descriptor.instructions } : {}),
-      ...(s.descriptor.exposure ? { exposure: s.descriptor.exposure } : {}),
-      ...(s.descriptor.toolExposure ? { toolExposure: s.descriptor.toolExposure } : {}),
-      ...(s.descriptor.toolOverrides ? { toolOverrides: s.descriptor.toolOverrides } : {}),
-      ...(s.descriptor.acceptDuplicate !== undefined ? { acceptDuplicate: s.descriptor.acceptDuplicate } : {}),
-      tools: admitted, readOnlyTools, store, mutex, send: send(s.runtime),
-      onCancel: ({ callId }) => { inflight.get(callId)?.abort(); },
-    });
-    s.names.clear();
-    const prefix = `mcp__${s.id}__`;
-    const tools = (ext.tools ?? []).map(t => {
-      const mcpName = admitted.find(a => t.name === `${prefix}${a.name}` || t.name.startsWith(prefix) && a.name === t.name.slice(prefix.length))?.name
-        ?? t.description.replace(/^MCP tool (\S+) on .*$/, '$1');
-      const name = options.toolNaming === 'bare' ? mcpName : t.name;
-      s.names.set(name, mcpName);
-      return {
-        ...t, name,
-        async execute(args: Readonly<Record<string, unknown>>, api: DurableToolExecutionApi, ctx: DurableContext) {
-          const ac = new AbortController();
-          ctx.signal?.addEventListener('abort', () => ac.abort(), { once: true });
-          inflight.set(api.callId, ac);
-          try {
-            const r = await signals.run(ac.signal, () => t.execute(args, api, ctx));
-            const outcome = r.details && (r.details as { status?: string }).status === 'interrupted'
-              ? { status: 'interrupted' as const, ...(r.details as object) }
-              : { status: 'completed' as const, result: r.structuredOutput as McpCallToolResult };
-            return outcomeToHostResult(outcome as never);
-          } finally { inflight.delete(api.callId); }
-        },
-      };
-    });
-    s.extension = { ...ext, tools: tools as never };
+  const featureOptions: FeatureOptions = {
+    stateDir,
+    skillsCacheDir: options.skillsCacheDir ?? join(stateDir, 'skills'),
+    ...(options.consent !== undefined ? { consent: options.consent } : {}),
+    ...(options.deliver !== undefined ? { deliver: options.deliver } : {}),
+    ...(options.appRenderer !== undefined ? { appRenderer: options.appRenderer } : {}),
   };
 
-  const featureExtension = (): DurableExtension | undefined => {
-    if (featureRoutes.size === 0) return undefined;
-    const tools = [...featureRoutes.entries()].map(([name, owners]) => ({
-      name,
-      description: `MCP ${name.replace(/^mcp_/, '')} across servers: ${owners.map(o => o.id).join(', ')}. Pass "server" and "action".`,
-      parameters: featureParameters([]),
-      replay: 'unsafe' as const,
-      callers: ['model', 'tools'] as const,
-      async execute(args: Readonly<Record<string, unknown>>, api: DurableToolExecutionApi, ctx: DurableContext) {
-        const id = typeof args['server'] === 'string' ? args['server'] : owners.length === 1 ? owners[0]!.id : undefined;
-        const owner = owners.find(o => o.id === id);
-        if (!owner) return errorToHostResult(`"server" must be one of: ${owners.map(o => o.id).join(', ')}`);
-        const ac = new AbortController();
-        ctx.signal?.addEventListener('abort', () => ac.abort(), { once: true });
-        inflight.set(api.callId, ac);
-        try {
-          const mod = owner.features.find(f => f.names.includes(name))!;
-          return valueToHostResult(await mod.run(name, { ...args }, ac.signal));
-        } catch (e) { return errorToHostResult(e); } finally { inflight.delete(api.callId); }
+  const runtimeOptions: RuntimeOptions = {
+    stateDir,
+    signal: lifetimeSignal,
+    ...(options.consent !== undefined ? { consent: options.consent } : {}),
+    ...(options.authorizationConsent !== undefined ? { authorizationConsent: options.authorizationConsent } : {}),
+    ...(options.browser !== undefined ? { browser: options.browser } : {}),
+    ...(options.resolveProviderToken !== undefined ? { resolveProviderToken: options.resolveProviderToken } : {}),
+    ...(options.telemetry !== undefined ? { telemetry: options.telemetry } : {}),
+    ...(options.otel !== undefined ? { otel: options.otel } : {}),
+    ...(options.createTransport !== undefined ? { createTransport: options.createTransport } : {}),
+    ...(options.authProvider !== undefined ? { authProvider: options.authProvider } : {}),
+    ...(options.appRenderer !== undefined ? { appRenderer: options.appRenderer } : {}),
+    ...(options.allowLegacyInitialize !== undefined ? { allowLegacyInitialize: options.allowLegacyInitialize } : {}),
+    ...(options.inheritEnv !== undefined ? { inheritEnv: options.inheritEnv } : {}),
+  };
+
+  function closeAll(): Promise<void> {
+    if (closing) return closing;
+    closed = true;
+    shutdownCtrl.abort(new Error('Durable MCP host closed'));
+    closing = (async () => {
+      await Promise.allSettled([...activeExecutions]);
+      for (const s of servers.values()) s.unsubToolsChanged?.();
+      await Promise.allSettled(
+        [...servers.values()].flatMap(s => [...s.features.map(f => f.close()), s.runtime.close()]),
+      );
+      if (db.isOpen) db.close();
+      if (tempStateDir) await rm(tempStateDir, { recursive: true, force: true }).catch(() => undefined);
+    })();
+    return closing;
+  }
+
+  const wrapExecution = (reg: HostToolRegistration): HostToolRegistration => ({
+    ...reg,
+    execute(args, api, context) {
+      if (closed || lifetimeSignal.aborted) {
+        return Promise.reject(new Error('Durable MCP host is closed'));
+      }
+      const sig = context.signal ? AbortSignal.any([lifetimeSignal, context.signal]) : lifetimeSignal;
+      const p = reg.execute(args, api, { ...context, signal: sig });
+      activeExecutions.add(p);
+      return p.finally(() => { activeExecutions.delete(p); });
+    },
+  });
+
+  const operationDeps = (serverAcceptDuplicate?: boolean) => ({
+    store,
+    mutex,
+    ...((serverAcceptDuplicate ?? options.acceptDuplicate) !== undefined
+      ? { acceptDuplicate: serverAcceptDuplicate ?? options.acceptDuplicate }
+      : {}),
+    ...(options.restartLimit !== undefined ? { restartLimit: options.restartLimit } : {}),
+    ...(options.policies !== undefined ? { policies: options.policies } : {}),
+    ...(options.newRequestId !== undefined ? { newRequestId: options.newRequestId } : {}),
+  });
+
+  const isServerHidden = (s: Server): boolean =>
+    s.descriptor.exposure === 'hidden' &&
+    !Object.values(s.descriptor.toolExposure ?? {}).some(e => e !== 'hidden');
+
+  const buildExtension = (s: Server): void => {
+    s.operations.clear();
+    const description = s.descriptor.description ?? `MCP server ${s.id}`;
+    if (!s.authorized) {
+      s.extension = {
+        name: `mcp-${s.id}`,
+        namespace: {
+          name: s.id,
+          description,
+          ...(s.instructions !== undefined ? { instructions: s.instructions } : {}),
+        },
+        tools: [],
+        sections: [],
+      };
+      return;
+    }
+
+    const admitted = s.tools.filter(t => options.admitTool?.(t.name, s.id) ?? true);
+    const nameMap = durableToolNames(s.id, admitted.map(t => t.name));
+    const readOnlyTools = [...globalReadOnly, ...(s.readOnlyTools ?? [])];
+    const visible: { tool: McpToolDescriptor; name: string; exposure: 'direct' | 'codemode' | 'deferred' }[] = [];
+
+    for (const tool of admitted) {
+      const exposure = resolveToolExposure(s.descriptor, tool.name);
+      if (exposure === 'hidden') continue;
+      const name = options.toolNaming === 'bare' ? tool.name : nameMap.get(tool.name)!;
+      visible.push({ tool, name, exposure });
+    }
+
+    const tools: HostToolRegistration[] = visible.map(({ tool, name, exposure }) => {
+      const override = s.toolOverrides?.[tool.name];
+      const reg = wrapExecution(registerOperation({
+        name,
+        serverId: s.id,
+        wireName: tool.name,
+        description: tool.description ?? `MCP tool ${tool.name} on ${s.id}`,
+        inputSchema: tool.inputSchema,
+        exposure,
+        readOnly: readOnlyTools.includes(tool.name),
+        ...(override !== undefined ? { override } : {}),
+        invoke: (args, signal, requestId) =>
+          s.runtime.callTool(
+            { requestId, serverId: s.id, toolName: tool.name, args },
+            signal ?? lifetimeSignal,
+          ),
+      }, operationDeps(s.acceptDuplicate)));
+      s.operations.set(name, reg);
+      return reg;
+    });
+
+    const sections: HostPromptSection[] = visible.length === 0 ? [] : [{
+      key: 'mcp_servers',
+      render: () => {
+        const lines = [`MCP server ${s.id}: ${description}`];
+        if (s.instructions) lines.push(s.instructions);
+        for (const v of visible) {
+          lines.push(`- ${v.name} (${v.exposure})${v.tool.description ? `: ${v.tool.description}` : ''}`);
+        }
+        return lines.join('\n');
       },
-      async cancel(_args: unknown, api: DurableToolExecutionApi) { inflight.get(api.callId)?.abort(); },
-    }));
-    const sections: DurablePromptSection[] = [];
-    return { name: 'mcp-features', tools: tools as never, sections };
+    }];
+
+    s.extension = {
+      name: `mcp-${s.id}`,
+      namespace: {
+        name: s.id,
+        description,
+        ...(s.instructions !== undefined ? { instructions: s.instructions } : {}),
+      },
+      tools,
+      sections,
+    };
+  };
+
+  const buildFeatureExtension = (): HostExtension | undefined => {
+    featureOperations.clear();
+    if (featureRoutes.size === 0) return undefined;
+    const tools: HostToolRegistration[] = [...featureRoutes.entries()].map(([name, owners]) => {
+      const reg = wrapExecution(registerOperation({
+        name,
+        serverId: 'mcp-features',
+        wireName: name,
+        description: `MCP ${name.replace(/^mcp_/, '')} across servers: ${owners.map(o => o.id).join(', ')}. Pass "server" and "action".`,
+        inputSchema: featureSchema(name),
+        exposure: 'direct',
+        readOnly: globalReadOnly.includes(name),
+        invoke: async (args, signal) => {
+          const action = args['action'];
+          if (typeof args['server'] !== 'string' && owners.length > 1 && name === 'mcp_events' && action === 'servers') {
+            return rawToMcpResult({ servers: owners.map(o => o.id) });
+          }
+          const id = typeof args['server'] === 'string'
+            ? args['server']
+            : owners.length === 1
+              ? owners[0]!.id
+              : undefined;
+          const owner = owners.find(o => o.id === id);
+          if (!owner) {
+            throw new Error(`"server" must be one of: ${owners.map(o => o.id).join(', ')}`);
+          }
+          const mod = owner.features.find(f => f.names.includes(name));
+          if (!mod) throw new Error(`Server ${owner.id} does not support ${name}`);
+          const raw = await mod.run(name, { ...args }, signal ?? lifetimeSignal);
+          return rawToMcpResult(raw);
+        },
+      }, operationDeps()));
+      featureOperations.set(name, reg);
+      return reg;
+    });
+    return { name: 'mcp-features', tools, sections: [] };
+  };
+
+  const rebuildFeatureRoutes = (): void => {
+    featureRoutes.clear();
+    for (const s of servers.values()) {
+      for (const f of s.features) {
+        for (const n of f.names) {
+          featureRoutes.set(n, [...(featureRoutes.get(n) ?? []), s]);
+        }
+      }
+    }
   };
 
   const rebuild = (): void => {
-    extensions = [...servers.values()].map(s => s.extension);
-    const f = featureExtension();
-    if (f) extensions.push(f);
+    const nextExtensions = [...servers.values()].map(s => s.extension);
+    const featureExt = buildFeatureExtension();
+    if (featureExt) nextExtensions.push(featureExt);
+
+    // Detect colliding registered tool names across servers and feature tools.
+    const seenTools = new Map<string, string>();
+    for (const ext of nextExtensions) {
+      for (const tool of ext.tools ?? []) {
+        const prev = seenTools.get(tool.name);
+        if (prev !== undefined) {
+          throw new Error(`Colliding MCP tool name "${tool.name}" across ${prev} and ${ext.name}`);
+        }
+        seenTools.set(tool.name, ext.name);
+      }
+    }
+    extensions = nextExtensions;
   };
 
-  const refresh = async (s: Server, signal?: AbortSignal): Promise<void> => {
+  const buildFeatures = async (s: Server): Promise<FeatureModule[]> => {
+    if (isServerHidden(s)) return [];
+    const ctx: FeatureContext = {
+      id: s.id,
+      runtime: s.runtime,
+      descriptor: s.descriptor,
+      db,
+      options: featureOptions,
+    };
+    const settled = await Promise.allSettled([
+      createCoreFeatures(ctx),
+      createStreamFeatures(ctx),
+      createExtendedFeatures(ctx),
+    ]);
+    const modules: FeatureModule[] = [];
+    let firstFailure: unknown;
+    let hasFailure = false;
+    for (const r of settled) {
+      if (r.status === 'fulfilled') modules.push(r.value);
+      else if (!hasFailure) { hasFailure = true; firstFailure = r.reason; }
+    }
+    if (hasFailure) {
+      await Promise.allSettled(modules.map(m => m.close()));
+      throw firstFailure;
+    }
+    return modules;
+  };
+
+  const wireToolsChanged = (s: Server): void => {
+    s.unsubToolsChanged?.();
+    s.unsubToolsChanged = s.runtime.onToolsChanged?.(() => {
+      if (!closed) void refreshServer(s).then(() => rebuild()).catch(() => undefined);
+    });
+  };
+
+  const refreshServer = async (s: Server, signal?: AbortSignal): Promise<void> => {
+    if (!s.authorized) {
+      buildExtension(s);
+      return;
+    }
     s.tools = [...await s.runtime.listTools(signal)];
     buildExtension(s);
-    rebuild();
   };
 
-  // Explicit servers win over same-named mcp.json entries.
-  const fromConfig = options.mcpConfig ? (await loadServers(options.mcpConfig)) as DurableServerDescriptor[] : [];
-  const explicit = options.servers ?? [];
-  const descriptors = [...fromConfig.filter(d => !explicit.some(e => e.name === d.name)), ...explicit];
-  const opened = await Promise.allSettled(descriptors.map(async descriptor => {
-    const runtime = (await openRuntime(descriptor as never, options as never)) as unknown as DurableRuntime;
-    const s: Server = {
-      id: descriptor.name, descriptor, runtime, features: [], tools: [], names: new Map(),
-      extension: { name: `mcp-${descriptor.name}` },
-      adapter: new DurableToolAdapter<McpCallToolResult>({ store, mutex, send: send(runtime) }),
-    };
-    try {
-      const ctx: FeatureContext = { id: s.id, runtime, descriptor, db, options };
-      s.features = (await Promise.all([createCoreFeatures(ctx as never), createStreamFeatures(ctx as never), createExtendedFeatures(ctx as never)]))
-        .map(m => m as FeatureModule);
-      await refresh(s);
-      runtime.onToolsChanged?.(() => { if (!closed) void refresh(s).catch(() => undefined); });
-    } catch (e) {
-      await Promise.allSettled(s.features.map(f => f.close()));
-      await runtime.close().catch(() => undefined);
-      throw e;
+  try {
+    const fromConfig = options.mcpConfig ? await loadServers(options.mcpConfig) : [];
+    const explicitRaw = options.servers ?? [];
+    const seenExplicit = new Set<string>();
+    const explicitEntries: NormalizedEntry[] = [];
+    for (const raw of explicitRaw) {
+      if (seenExplicit.has(raw.name)) {
+        throw new Error(`Duplicate MCP server name: ${raw.name}`);
+      }
+      seenExplicit.add(raw.name);
+      explicitEntries.push(normalizeEntry(raw));
     }
-    return s;
-  }));
-  const failure = opened.find((r): r is PromiseRejectedResult => r.status === 'rejected');
-  for (const r of opened) if (r.status === 'fulfilled') servers.set(r.value.id, r.value);
-  if (failure) { await closeAll(); throw failure.reason; }
-  for (const s of servers.values()) for (const f of s.features) for (const n of f.names) {
-    featureRoutes.set(n, [...(featureRoutes.get(n) ?? []), s]);
-  }
-  rebuild();
 
-  async function closeAll(): Promise<void> {
-    if (closed) return;
-    closed = true;
-    for (const ac of inflight.values()) ac.abort();
-    await Promise.allSettled([...servers.values()].flatMap(s => [...s.features.map(f => f.close()), s.runtime.close()]));
-    db.close();
+    const entries: NormalizedEntry[] = [
+      ...fromConfig.filter(d => !seenExplicit.has(d.name)).map(d => normalizeEntry(d)),
+      ...explicitEntries,
+    ].filter(e => e.descriptor.enabled !== false);
+
+    const opened = await Promise.allSettled(entries.map(async entry => {
+      const { descriptor } = entry;
+      const runtime = await openRuntime(descriptor, runtimeOptions);
+      const s: Server = {
+        id: descriptor.name,
+        descriptor,
+        ...(entry.instructions !== undefined ? { instructions: entry.instructions } : {}),
+        ...(entry.readOnlyTools !== undefined ? { readOnlyTools: entry.readOnlyTools } : {}),
+        ...(entry.toolOverrides !== undefined ? { toolOverrides: entry.toolOverrides } : {}),
+        ...(entry.acceptDuplicate !== undefined ? { acceptDuplicate: entry.acceptDuplicate } : {}),
+        runtime,
+        features: [],
+        tools: [],
+        authorized: false,
+        extension: { name: `mcp-${descriptor.name}`, tools: [], sections: [] },
+        operations: new Map(),
+      };
+      try {
+        // Discover capabilities before constructing any feature modules.
+        const disc = await runtime.ready(lifetimeSignal);
+        if (isUnauthorizedOutcome(disc)) {
+          s.authorized = false;
+          buildExtension(s);
+          return s;
+        }
+        if (disc.kind !== 'ok') {
+          throw new McpOutcomeError(disc);
+        }
+        s.authorized = true;
+        s.features = await buildFeatures(s);
+        await refreshServer(s, lifetimeSignal);
+        wireToolsChanged(s);
+        return s;
+      } catch (e) {
+        s.unsubToolsChanged?.();
+        await Promise.allSettled(s.features.map(f => f.close()));
+        await runtime.close().catch(() => undefined);
+        throw e;
+      }
+    }));
+
+    const failure = opened.find((r): r is PromiseRejectedResult => r.status === 'rejected');
+    for (const r of opened) {
+      if (r.status === 'fulfilled') servers.set(r.value.id, r.value);
+    }
+    if (failure) throw failure.reason;
+
+    rebuildFeatureRoutes();
+    rebuild();
+  } catch (e) {
+    await closeAll();
+    throw e;
   }
 
   const server = (id: string): Server => {
@@ -243,33 +684,43 @@ export async function startDurableMcpHost(options: DurableHostOptions = {}): Pro
     get toolNames() { return extensions.flatMap(e => (e.tools ?? []).map(t => t.name)); },
     get servers() { return [...servers.keys()]; },
     async call(key, name, args, signal) {
+      if (closed || lifetimeSignal.aborted) throw new Error('Durable MCP host is closed');
       for (const s of servers.values()) {
-        const mcpName = s.names.get(name);
-        if (mcpName === undefined) continue;
-        const tool = s.tools.find(t => t.name === mcpName)!;
-        // Same durable pipeline as registered tools: intent-before-send, digest, outcome-before-return.
-        const outcome = await signals.run(signal ?? new AbortController().signal, () =>
-          s.adapter.callTool(key, { key: 'mcp' }, { serverId: s.id, toolName: mcpName, inputSchema: tool.inputSchema, args }));
-        return outcomeToHostResult(outcome);
+        const reg = s.operations.get(name);
+        if (reg) return reg.execute(args, { callId: key }, signal ? { signal } : {});
       }
-      const owners = featureRoutes.get(name);
-      const reg = owners && extensions.at(-1)?.tools?.find(t => t.name === name);
-      if (!reg) throw new Error(`Unknown tool: ${name}`);
-      return reg.execute(args, { callId: key, executeTool: async () => { throw new Error('nested calls unsupported in host.call'); } },
-        signal ? { signal } : {}) as unknown as Promise<HostToolResult>;
+      const featureReg = featureOperations.get(name);
+      if (featureReg) return featureReg.execute(args, { callId: key }, signal ? { signal } : {});
+      throw new Error(`Unknown tool: ${name}`);
     },
-    refreshTools: async (id) => { await Promise.all((id ? [server(id)] : [...servers.values()]).map(s => refresh(s))); },
+    async refreshTools(id) {
+      const targets = id !== undefined ? [server(id)] : [...servers.values()];
+      await Promise.all(targets.map(s => refreshServer(s, lifetimeSignal)));
+      rebuild();
+    },
     async signIn(id, signal) {
       const s = server(id);
       if (!s.runtime.signIn) throw new Error(`Server ${id} has no sign-in`);
-      const r = await s.runtime.signIn(signal);
-      await refresh(s, signal);
-      return r;
+      const sig = signal ? AbortSignal.any([lifetimeSignal, signal]) : lifetimeSignal;
+      const result = await s.runtime.signIn(sig);
+      const disc = await s.runtime.rediscover(sig);
+      if (disc.kind !== 'ok') throw new McpOutcomeError(disc);
+      s.unsubToolsChanged?.();
+      await Promise.allSettled(s.features.map(f => f.close()));
+      s.features = [];
+      s.authorized = true;
+      s.features = await buildFeatures(s);
+      await refreshServer(s, sig);
+      wireToolsChanged(s);
+      rebuildFeatureRoutes();
+      rebuild();
+      return result;
     },
     async inspectCard(id, signal) {
       const s = server(id);
       if (!s.runtime.inspectCard) throw new Error(`Server ${id} has no server card support`);
-      return s.runtime.inspectCard(signal);
+      const sig = signal ? AbortSignal.any([lifetimeSignal, signal]) : lifetimeSignal;
+      return s.runtime.inspectCard(sig);
     },
     close: closeAll,
   };
