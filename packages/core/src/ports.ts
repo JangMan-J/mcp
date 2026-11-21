@@ -8,6 +8,70 @@ export interface TransportDiagnostic {
   readonly atMs: number;
 }
 
+export const DEFAULT_MAX_DIAGNOSTICS = 1000;
+
+/**
+ * Bounded diagnostic ring buffer with AsyncIterable streaming (LIM-DIAG-1).
+ */
+export class DiagnosticChannel implements AsyncIterable<TransportDiagnostic> {
+  private readonly maxEvents: number;
+  private readonly ring: TransportDiagnostic[] = [];
+  private readonly liveQueue: TransportDiagnostic[] = [];
+  private readonly waiters: Array<(res: IteratorResult<TransportDiagnostic>) => void> = [];
+  private closed = false;
+
+  constructor(maxEvents = DEFAULT_MAX_DIAGNOSTICS) {
+    this.maxEvents = Math.max(0, maxEvents);
+  }
+
+  emit(diag: TransportDiagnostic): void {
+    if (this.maxEvents > 0) {
+      this.ring.push(diag);
+      if (this.ring.length > this.maxEvents) {
+        this.ring.shift();
+      }
+    }
+    if (this.closed) return;
+    const waiter = this.waiters.shift();
+    if (waiter) {
+      waiter({ value: diag, done: false });
+    } else if (this.maxEvents > 0) {
+      this.liveQueue.push(diag);
+      if (this.liveQueue.length > this.maxEvents) {
+        this.liveQueue.shift();
+      }
+    }
+  }
+
+  snapshot(): readonly TransportDiagnostic[] {
+    return [...this.ring];
+  }
+
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    while (this.waiters.length > 0) {
+      this.waiters.shift()!({ value: undefined, done: true });
+    }
+  }
+
+  [Symbol.asyncIterator](): AsyncIterator<TransportDiagnostic> {
+    return {
+      next: (): Promise<IteratorResult<TransportDiagnostic>> => {
+        if (this.liveQueue.length > 0) {
+          return Promise.resolve({ value: this.liveQueue.shift()!, done: false });
+        }
+        if (this.closed) {
+          return Promise.resolve({ value: undefined, done: true });
+        }
+        return new Promise<IteratorResult<TransportDiagnostic>>((resolve) => {
+          this.waiters.push(resolve);
+        });
+      },
+    };
+  }
+}
+
 export interface TransportCall {
   readonly signal: AbortSignal;
   readonly idempotent: boolean;

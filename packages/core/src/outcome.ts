@@ -92,7 +92,6 @@ export type Outcome<T> =
       readonly kind: "mrtr-interim";
       readonly inputRequests?: InputRequestsField;
       readonly requestState?: string;
-      readonly resume: (responses?: InputResponsesField) => PromiseLike<Outcome<T>>;
       readonly meta: OutcomeMeta;
     }
   | { readonly kind: "task-handle"; readonly handle: unknown; readonly meta: OutcomeMeta }

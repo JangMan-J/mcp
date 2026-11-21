@@ -5,7 +5,8 @@ import {
   createReadOnlyPredicate,
   DEFAULT_READ_ONLY_METHODS,
   isReadOnlyMethod,
-  LifecycleClient,
+  McpClient,
+  withAbort,
   type Clock,
   type ExchangeEnd,
   type JsonRpcNotification,
@@ -88,8 +89,10 @@ describe("cancel classification (WIRE-CANCEL-5, N14)", () => {
     expect(classifyInterruptedCall({ method: "tools/list", readOnly: true, cause: "timeout", delivery: "maybe-delivered" })).toBe("transport-failure");
   });
 
-  it("default read-only list excludes tools/call and is overridable", () => {
+  it("default read-only list includes subscriptions/listen, excludes tools/call, and is overridable", () => {
     expect(isReadOnlyMethod("tools/list")).toBe(true);
+    expect(isReadOnlyMethod("subscriptions/listen")).toBe(true);
+    expect(DEFAULT_READ_ONLY_METHODS).toContain("subscriptions/listen");
     expect(isReadOnlyMethod("tools/call")).toBe(false);
     expect(DEFAULT_READ_ONLY_METHODS).toContain("prompts/get");
     const strict = createReadOnlyPredicate(DEFAULT_READ_ONLY_METHODS.filter((m) => m !== "prompts/get"));
@@ -102,12 +105,27 @@ describe("cancel classification (WIRE-CANCEL-5, N14)", () => {
     expect(d).not.toContain("hunter2");
     expect(d).toMatch(/^fnv1a-[0-9a-f]{8}$/);
   });
+
+  it("withAbort settles on work completion or rejects on abort (with optional onAbort)", async () => {
+    const ac1 = new AbortController();
+    await expect(withAbort(Promise.resolve("ok"), ac1.signal)).resolves.toBe("ok");
+
+    const ac2 = new AbortController();
+    const pending = new Promise<string>(() => {});
+    const raced = withAbort(pending, ac2.signal);
+    ac2.abort("stop-now");
+    await expect(raced).rejects.toBe("stop-now");
+
+    const ac3 = new AbortController();
+    ac3.abort("already");
+    await expect(withAbort(Promise.resolve("never"), ac3.signal, () => new Error("custom-abort"))).rejects.toThrow("custom-abort");
+  });
 });
 
-describe("cancel and timeout semantics through LifecycleClient", () => {
-  it("cancel after settle is a no-op: outcome stays ok, nothing sent, nothing counted (WIRE-CANCEL-1, EDGE-5)", async () => {
+describe("cancel and timeout semantics through McpClient", () => {
+  it("cancel after settle is a no-op: outcome stays ok and nothing is sent (WIRE-CANCEL-1, EDGE-5)", async () => {
     const t = manualTransport();
-    const client = new LifecycleClient({ transport: t.transport, server: { key: "s" } });
+    const client = new McpClient({ transport: t.transport, server: { key: "s" } });
     const req = client.request("tools/call", { name: "w" });
     t.respond(0, { resultType: "complete", content: [] });
     const out = await req;
@@ -116,14 +134,11 @@ describe("cancel and timeout semantics through LifecycleClient", () => {
     expect(out.kind).toBe("ok");
     expect(await req).toBe(out);
     expect(t.notified).toHaveLength(0);
-    const s = client.wireStats();
-    expect(s.lateResponses).toBe(0);
-    expect(s.localAbortSettles).toBe(0);
   });
 
-  it("abort of a sent write is uncertain-write; a late response is ignored and counted (WIRE-CANCEL-3/5)", async () => {
+  it("abort of a sent write is uncertain-write; a late response is ignored (WIRE-CANCEL-3/5)", async () => {
     const t = manualTransport();
-    const client = new LifecycleClient({ transport: t.transport, server: { key: "s" } });
+    const client = new McpClient({ transport: t.transport, server: { key: "s" } });
     const req = client.request("tools/call", { name: "create" });
     req.cancel("user");
     const out = await req;
@@ -134,22 +149,21 @@ describe("cancel and timeout semantics through LifecycleClient", () => {
     }
     t.respond(0);
     await tick();
-    expect(client.wireStats().lateResponses).toBe(1);
+    expect(await req).toBe(out);
   });
 
   it("a transport that settles on abort wins the race, keeping delivery not-sent (stdio queued cancel)", async () => {
     const t = manualTransport({ settleOnAbort: true });
-    const client = new LifecycleClient({ transport: t.transport, server: { key: "s" } });
+    const client = new McpClient({ transport: t.transport, server: { key: "s" } });
     const req = client.request("tools/call", { name: "create" });
     req.cancel();
     const out = await req;
     expect(out).toMatchObject({ kind: "cancelled", wasSent: false });
-    expect(client.wireStats().localAbortSettles).toBe(0);
   });
 
   it("explicit idempotent overrides the read-only default", async () => {
     const t = manualTransport();
-    const client = new LifecycleClient({ transport: t.transport, server: { key: "s" } });
+    const client = new McpClient({ transport: t.transport, server: { key: "s" } });
     const req = client.request("tools/call", { name: "safe" }, { idempotent: true });
     req.cancel();
     expect((await req).kind).toBe("cancelled");
@@ -163,7 +177,7 @@ describe("cancel and timeout semantics through LifecycleClient", () => {
   it("default timeout is 60s and the per-request override applies (WIRE-TO-1)", async () => {
     const clock = fakeClock();
     const t = manualTransport();
-    const client = new LifecycleClient({ transport: t.transport, server: { key: "s" }, ports: { clock } });
+    const client = new McpClient({ transport: t.transport, server: { key: "s" }, ports: { clock } });
     const a = client.request("tools/list");
     const b = client.request("tools/list", {}, { timeoutMs: 100 });
     expect(t.pending[0]!.ctx.timeoutMs).toBe(60_000);
@@ -180,7 +194,7 @@ describe("cancel and timeout semantics through LifecycleClient", () => {
   it("hard max timeout caps larger requests, and progress does not reset the clock (WIRE-TO-2, WIRE-TO-3 off)", async () => {
     const clock = fakeClock();
     const t = manualTransport();
-    const client = new LifecycleClient({ transport: t.transport, server: { key: "s" }, ports: { clock } });
+    const client = new McpClient({ transport: t.transport, server: { key: "s" }, ports: { clock } });
     const req = client.request("tools/list", {}, { timeoutMs: 10_000_000, onProgress: () => {} });
     expect(t.pending[0]!.ctx.timeoutMs).toBe(600_000);
     clock.advance(600_000);
@@ -192,7 +206,7 @@ describe("cancel and timeout semantics through LifecycleClient", () => {
   it("local timeout carries no JSON-RPC code (ERR-LOCAL-1); a timed-out write is uncertain-write", async () => {
     const clock = fakeClock();
     const t = manualTransport();
-    const client = new LifecycleClient({ transport: t.transport, server: { key: "s" }, ports: { clock } });
+    const client = new McpClient({ transport: t.transport, server: { key: "s" }, ports: { clock } });
     const req = client.request("tools/call", { name: "pay" }, { timeoutMs: 5 });
     clock.advance(5);
     const out = await req;

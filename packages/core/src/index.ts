@@ -1,7 +1,23 @@
 import { ExtensionRegistry, type Disposable, type Extension } from "./extension.js";
-import type { IdGenerator } from "./jsonrpc.js";
+import { SUPPORTED_PROTOCOL_VERSION, type IdGenerator } from "./jsonrpc.js";
+import {
+  defaultLifecycleHooks,
+  DISCOVER_PROBE_TIMEOUT_MS,
+  EraCache,
+  type EraState,
+  type LifecycleContext,
+  type LifecycleHooks,
+  type LifecyclePolicyOptions,
+  type ProbeOptions,
+} from "./lifecycle.js";
 import type { PortRegistry, Transport } from "./ports.js";
-import { RequestManager, type ClientRequest, type Limits, type RequestOptions } from "./request.js";
+import {
+  RequestManager,
+  type ClientRequest,
+  type Limits,
+  type NotifyOptions,
+  type RequestOptions,
+} from "./request.js";
 import type { DiscoverResult } from "./schema/index.js";
 
 export * as McpSchema from "./schema/index.js";
@@ -36,15 +52,27 @@ export interface McpClientOptions {
     readonly mrtr?: "auto" | "manual";
     readonly limits?: Partial<Limits>;
   };
+  readonly lifecycle?: LifecyclePolicyOptions;
 }
 
 export class McpClient {
   readonly server: ServerRef;
   private readonly extensions = new ExtensionRegistry();
   private readonly manager: RequestManager;
+  private readonly eraCache: EraCache;
+  private readonly hooks: LifecycleHooks;
+  private readonly ctx: LifecycleContext;
 
   constructor(opts: McpClientOptions) {
     this.server = opts.server;
+    const lc = opts.lifecycle ?? {};
+    this.hooks = { ...defaultLifecycleHooks, ...lc.hooks };
+    this.eraCache = lc.eraCache ?? new EraCache();
+    this.ctx = {
+      binding: opts.transport.binding,
+      endpointOrCommand: opts.server.label ?? opts.server.key,
+      supportedVersions: opts.supportedVersions ?? [SUPPORTED_PROTOCOL_VERSION],
+    };
     if (opts.extensions) {
       for (const ext of opts.extensions) {
         this.extensions.register(ext);
@@ -58,7 +86,8 @@ export class McpClient {
       extensions: this.extensions,
       ...(opts.idGenerator ? { idGenerator: opts.idGenerator } : {}),
       ...(opts.supportedVersions ? { supportedVersions: opts.supportedVersions } : {}),
-      ...(opts.defaults?.limits || opts.defaults?.timeoutMs
+      ...(opts.lifecycle ? { lifecycle: opts.lifecycle } : {}),
+      ...(opts.defaults?.limits || opts.defaults?.timeoutMs !== undefined
         ? {
             limits: {
               ...opts.defaults?.limits,
@@ -77,8 +106,36 @@ export class McpClient {
     return this.manager.request<T>(method, params, opts);
   }
 
+  notify(
+    method: string,
+    params: Record<string, unknown> = {},
+    opts?: NotifyOptions,
+  ): Promise<void> {
+    return this.manager.notify(method, params, opts);
+  }
+
   discover(opts?: RequestOptions): ClientRequest<DiscoverResult> {
     return this.manager.request<DiscoverResult>("server/discover", {}, { ...opts, idempotent: true });
+  }
+
+  /**
+   * Probes the server era with server/discover once per server key and caches the verdict in
+   * memory (VER-5, VER-CACHE-1, VER-DIAG-1). Never sends initialize. Local cancels and transport
+   * faults yield `unknown` and are not cached.
+   */
+  probe(opts: ProbeOptions = {}): Promise<EraState> {
+    return this.eraCache.resolve(this.server.key, async () => {
+      const outcome = await this.discover({
+        timeoutMs: opts.timeoutMs ?? DISCOVER_PROBE_TIMEOUT_MS,
+        ...(opts.signal ? { signal: opts.signal } : {}),
+      });
+      return this.hooks.classifyDiscover(outcome, this.ctx);
+    });
+  }
+
+  /** Cached era verdict for this server, if any. */
+  era(): EraState | undefined {
+    return this.eraCache.get(this.server.key);
   }
 
   use(ext: Extension): Disposable {

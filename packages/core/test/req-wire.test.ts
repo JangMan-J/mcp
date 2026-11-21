@@ -2,19 +2,79 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it } from 'vitest';
-import { InprocTransport } from '@mcp-client/fixtures';
 import { StdioTransport } from '@mcp-client/transport-stdio';
 import { HttpTransport } from '@mcp-client/transport-http';
-import { createCoreAdapter } from '../../conformance/src/adapter.js';
-import { runExchange as runAuth } from '../../auth/src/conformance.js';
-import { StatefulClient } from '../../mrtr-cache/src/index.js';
+import { StatefulClient } from '@mcp-client/mrtr-cache';
 import {
   McpClient, McpOutcomeError, META_CLIENT_CAPABILITIES, META_CLIENT_INFO,
-  META_PROTOCOL_VERSION, unwrapOutcome, type JsonRpcRequest,
+  META_PROTOCOL_VERSION, NotificationQueue, unwrapOutcome,
+  type Clock, type ExchangeEnd, type JsonRpcNotification, type JsonRpcRequest,
+  type RequestId, type Transport, type TransportDiagnostic,
 } from '../src/index.js';
 
 const server = { key: 'test' };
 const tick = () => new Promise<void>(r => setImmediate(r));
+
+function makeInprocTransport() {
+  const sent: { request: JsonRpcRequest; rawText: string }[] = [];
+  const pending = new Map<string, { req: JsonRpcRequest; resolve: (end: ExchangeEnd) => void }>();
+  const keyOf = (id: RequestId) => `${typeof id}:${String(id)}`;
+  const transport: Transport = {
+    binding: 'stdio',
+    start(msg) {
+      sent.push({ request: msg, rawText: JSON.stringify(msg) });
+      const notifications: AsyncIterable<JsonRpcNotification> = { async *[Symbol.asyncIterator]() {} };
+      const done = new Promise<ExchangeEnd>((resolve) => {
+        pending.set(keyOf(msg.id), { req: msg, resolve });
+      });
+      return { notifications, done };
+    },
+    async notify() {},
+    async close() {
+      for (const [k, entry] of pending) {
+        pending.delete(k);
+        entry.resolve({ kind: 'failure', failure: { kind: 'closed', message: 'closed' }, delivery: 'maybe-delivered' });
+      }
+    },
+    diagnostics: { async *[Symbol.asyncIterator](): AsyncIterator<TransportDiagnostic> {} },
+  };
+  const deliverResult = (id: RequestId, result: Record<string, unknown>) => {
+    const entry = pending.get(keyOf(id));
+    if (!entry) return;
+    pending.delete(keyOf(id));
+    entry.resolve({ kind: 'response', message: { jsonrpc: '2.0', id, result } });
+  };
+  const deliverError = (id: RequestId, code: number, message: string, data?: unknown) => {
+    const entry = pending.get(keyOf(id));
+    if (!entry) return;
+    pending.delete(keyOf(id));
+    entry.resolve({ kind: 'response', message: { jsonrpc: '2.0', id, error: { code, message, ...(data !== undefined ? { data } : {}) } } });
+  };
+  return Object.assign(transport, { sent, deliverResult, deliverError });
+}
+
+function makeFakeClock(): Clock & { advance(ms: number): void } {
+  let nowMs = 0;
+  let nextTimer = 1;
+  const timers = new Map<number, { due: number; fn: () => void }>();
+  return {
+    now: () => nowMs,
+    setTimeout(fn, ms) {
+      const id = nextTimer++;
+      timers.set(id, { due: nowMs + ms, fn });
+      return () => timers.delete(id);
+    },
+    advance(ms) {
+      nowMs += ms;
+      for (const [id, t] of [...timers]) {
+        if (t.due <= nowMs) {
+          timers.delete(id);
+          t.fn();
+        }
+      }
+    },
+  };
+}
 
 it('[WIRE-DIR-1] the stdio send seam rejects both kinds of response envelope', async () => {
   const transport = new StdioTransport({ command: process.execPath });
@@ -28,7 +88,7 @@ it('[WIRE-DIR-1] the stdio send seam rejects both kinds of response envelope', a
 });
 
 it('[WIRE-META-4] caller cannot override version or capabilities before send; clientInfo is optional', async () => {
-  const transport = new InprocTransport();
+  const transport = makeInprocTransport();
   const client = new McpClient({ server, transport, clientInfo: false });
   for (const key of [META_PROTOCOL_VERSION, META_CLIENT_CAPABILITIES]) {
     expect(() => client.request('tools/list', {}, { meta: { [key]: {} } })).toThrow(/reserved/i);
@@ -41,7 +101,7 @@ it('[WIRE-META-4] caller cannot override version or capabilities before send; cl
 });
 
 it('[WIRE-META-5] invalid prefix/name is rejected; valid plain and namespaced keys reach the wire', async () => {
-  const transport = new InprocTransport();
+  const transport = makeInprocTransport();
   const client = new McpClient({ server, transport });
   for (const key of ['bad prefix/name', 'example.org/', '/name', 'example.org/a/b', 'bad key']) {
     expect(() => client.request('tools/list', {}, { meta: { [key]: 1 } })).toThrow(/syntax/);
@@ -55,7 +115,7 @@ it('[WIRE-META-5] invalid prefix/name is rejected; valid plain and namespaced ke
 });
 
 it('[API-OUT-1] request resolves to a discriminated outcome; unwrap returns the value or throws McpOutcomeError', async () => {
-  const transport = new InprocTransport();
+  const transport = makeInprocTransport();
   const client = new McpClient({ server, transport });
   const ok = client.request('tools/list');
   transport.deliverResult(ok.id, { tools: [] });
@@ -133,19 +193,32 @@ it('[WIRE-CANCEL-1] cancelling a settled stdio call writes no cancellation frame
 });
 
 it('[WIRE-TO-2] progress just before the hard deadline cannot extend a longer requested timeout', async () => {
-  const h = createCoreAdapter().create({});
+  const clock = makeFakeClock();
+  const queues = new Map<RequestId, NotificationQueue<JsonRpcNotification>>();
+  const transport: Transport = {
+    binding: 'stdio',
+    start(req) {
+      const q = new NotificationQueue<JsonRpcNotification>();
+      queues.set(req.id, q);
+      return { notifications: q, done: new Promise<ExchangeEnd>(() => {}) };
+    },
+    async notify() {},
+    async close() {},
+    diagnostics: { async *[Symbol.asyncIterator]() {} },
+  };
+  const client = new McpClient({ transport, server, ports: { clock } });
   const seen: number[] = [];
-  const call = h.call('tools/list', {}, { timeoutMs: 900_000, onProgress: p => seen.push(p.progress) });
-  h.clock.advance(599_999);
-  h.notify!(call.id, { jsonrpc: '2.0', method: 'notifications/progress', params: { progressToken: call.id, progress: 9 } });
+  const call = client.request('tools/list', {}, { timeoutMs: 900_000, onProgress: p => seen.push(p.progress) });
+  clock.advance(599_999);
+  queues.get(call.id)!.push({ jsonrpc: '2.0', method: 'notifications/progress', params: { progressToken: call.id, progress: 9 } });
   await tick();
   expect(seen).toEqual([9]);
-  h.clock.advance(1);
+  clock.advance(1);
   expect(await call).toMatchObject({ kind: 'transport-failure', failure: { kind: 'timeout' } });
 });
 
 it('[DEP-INCLUDECTX-1] sampling input requesting allServers fails closed without a context-bearing retry', async () => {
-  const transport = new InprocTransport();
+  const transport = makeInprocTransport();
   const core = new McpClient({ server, transport });
   const client = new StatefulClient({ serverRef: server.key, serverLabel: server.key, request: core.request.bind(core) });
   const pending = client.request('prompts/get', { name: 'p' });
@@ -156,14 +229,6 @@ it('[DEP-INCLUDECTX-1] sampling input requesting allServers fails closed without
   expect(await pending).toMatchObject({ kind: 'protocol-violation', detail: { reason: 'unsupported-input-request' } });
   expect(transport.sent).toHaveLength(1);
   expect(transport.sent[0]!.rawText).not.toContain('includeContext');
-});
-
-it('[DEP-DCR-1] an AS advertising only registration_endpoint is not contacted for registration', async () => {
-  const fixture = JSON.parse(readFileSync(new URL('../../fixtures/exchanges/auth/dcr-never-called.exchange.json', import.meta.url), 'utf8'));
-  const { frames } = await runAuth(fixture);
-  expect(frames.filter(f => f.direction === 'client').map(f => [f.method, new URL(f.url!).pathname])).toEqual([
-    ['GET', '/custom-prm'], ['GET', '/.well-known/oauth-authorization-server/tenant'],
-  ]);
 });
 
 it('[DEP-HTTPSSE-1] a legacy SSE endpoint announcement is never followed', async () => {

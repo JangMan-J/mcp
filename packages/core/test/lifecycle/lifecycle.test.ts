@@ -8,7 +8,7 @@ import {
   EraCache,
   LIBRARY_CLIENT_INFO,
   mapLifecycleOutcome,
-  LifecycleClient,
+  McpClient,
   META_CLIENT_CAPABILITIES,
   META_CLIENT_INFO,
   META_LOG_LEVEL,
@@ -18,11 +18,13 @@ import {
   validateCallerMeta,
   type ExchangeEnd,
   type Extension,
+  type JsonRpcNotification,
   type JsonRpcRequest,
   type LifecycleContext,
   type Outcome,
   type OutcomeMeta,
   type Transport,
+  type TransportCall,
 } from "../../src/index.js";
 
 const META: OutcomeMeta = { requestId: 1, method: "server/discover", binding: "stdio", attempts: 1 };
@@ -30,17 +32,20 @@ const CTX: LifecycleContext = { binding: "stdio", endpointOrCommand: "my-server 
 
 function scripted(handler: (req: JsonRpcRequest, n: number) => ExchangeEnd) {
   const sent: JsonRpcRequest[] = [];
+  const notificationsSent: { msg: JsonRpcNotification; ctx: TransportCall }[] = [];
   const transport: Transport = {
     binding: "stdio",
     start(req) {
       sent.push(req);
       return { notifications: { async *[Symbol.asyncIterator]() {} }, done: Promise.resolve(handler(req, sent.length)) };
     },
-    async notify() {},
+    async notify(msg, ctx) {
+      notificationsSent.push({ msg, ctx });
+    },
     async close() {},
     diagnostics: { async *[Symbol.asyncIterator]() {} },
   };
-  return { transport, sent };
+  return { transport, sent, notificationsSent };
 }
 const ok = (req: JsonRpcRequest, result: Record<string, unknown>): ExchangeEnd => ({
   kind: "response",
@@ -58,9 +63,8 @@ describe("_meta injection (WIRE-META-1..5, WIRE-LOG-1)", () => {
     const ext: Extension = {
       id: "io.example/widgets",
       capabilities: () => ({ "io.example/widgets": { v: 1 } }),
-      attach: () => ({ dispose() {} }),
     };
-    const client = new LifecycleClient({ transport, server: { key: "s" }, extensions: [ext] });
+    const client = new McpClient({ transport, server: { key: "s" }, extensions: [ext] });
     await client.request("tools/list");
     await client.request("prompts/list");
     for (const r of sent) {
@@ -73,8 +77,8 @@ describe("_meta injection (WIRE-META-1..5, WIRE-LOG-1)", () => {
 
   it("capabilities are empty when nothing is registered, and recomputed after dispose", async () => {
     const { transport, sent } = scripted((req) => ok(req, {}));
-    const client = new LifecycleClient({ transport, server: { key: "s" } });
-    const d = client.use({ id: "x", capabilities: () => ({ x: {} }), attach: () => ({ dispose() {} }) });
+    const client = new McpClient({ transport, server: { key: "s" } });
+    const d = client.use({ id: "x", capabilities: () => ({ x: {} }) });
     await client.request("tools/list");
     d.dispose();
     await client.request("tools/list");
@@ -84,22 +88,45 @@ describe("_meta injection (WIRE-META-1..5, WIRE-LOG-1)", () => {
 
   it("clientInfo: false omits it; an IdentityPort wins over the library default", async () => {
     const a = scripted((req) => ok(req, {}));
-    await new LifecycleClient({ transport: a.transport, server: { key: "s" }, clientInfo: false }).request("tools/list");
+    await new McpClient({ transport: a.transport, server: { key: "s" }, clientInfo: false }).request("tools/list");
     expect(META_CLIENT_INFO in metaOf(a.sent[0]!)).toBe(false);
     const b = scripted((req) => ok(req, {}));
     const identity = { clientInfo: () => ({ name: "host", version: "9" }) };
-    await new LifecycleClient({ transport: b.transport, server: { key: "s" }, ports: { identity } }).request("tools/list");
+    await new McpClient({ transport: b.transport, server: { key: "s" }, ports: { identity } }).request("tools/list");
     expect(metaOf(b.sent[0]!)[META_CLIENT_INFO]).toEqual({ name: "host", version: "9" });
   });
 
   it("rejects reserved overrides, bad key syntax, and logLevel before anything is sent", () => {
     const { transport, sent } = scripted((req) => ok(req, {}));
-    const client = new LifecycleClient({ transport, server: { key: "s" } });
+    const client = new McpClient({ transport, server: { key: "s" } });
     expect(() => client.request("tools/list", {}, { meta: { [META_PROTOCOL_VERSION]: "x" } })).toThrow(/WIRE-META-4/);
     expect(() => client.request("tools/list", {}, { meta: { "bad key": 1 } })).toThrow(/WIRE-META-5/);
     expect(() => client.request("tools/list", {}, { meta: { [META_LOG_LEVEL]: "debug" } })).toThrow(/WIRE-LOG-1/);
     expect(() => validateCallerMeta({ "com.example/trace-id": "a" })).not.toThrow();
     expect(sent).toHaveLength(0);
+  });
+
+  it("McpClient.notify delegates to transport.notify with _meta and caller validation", async () => {
+    const { transport, notificationsSent } = scripted((req) => ok(req, {}));
+    const client = new McpClient({ transport, server: { key: "s", label: "srv" } });
+    await expect(client.notify("notifications/initialized", { ready: true }, { meta: { [META_LOG_LEVEL]: "warn" } })).rejects.toThrow(/WIRE-LOG-1/);
+    expect(notificationsSent).toHaveLength(0);
+
+    await client.notify("notifications/initialized", { ready: true }, { meta: { trace: "abc" }, headersHint: { name: "h" } });
+    expect(notificationsSent).toHaveLength(1);
+    const sent = notificationsSent[0]!;
+    expect(sent.msg.jsonrpc).toBe("2.0");
+    expect(sent.msg.method).toBe("notifications/initialized");
+    expect(sent.msg.params).toMatchObject({
+      ready: true,
+      _meta: {
+        [META_PROTOCOL_VERSION]: "2026-07-28",
+        [META_CLIENT_INFO]: LIBRARY_CLIENT_INFO,
+        trace: "abc",
+      },
+    });
+    expect(sent.ctx.headersHint).toEqual({ name: "h" });
+    expect(sent.ctx.serverLabel).toBe("srv");
   });
 });
 
@@ -146,7 +173,7 @@ describe("version negotiation (VER-2/3/4)", () => {
 
   it("no mutual version: one request, unsupported-version diagnostic", async () => {
     const { transport, sent } = scripted((req) => err(req, -32022, "Unsupported", { requested: "2026-07-28", supported: ["2025-11-25"] }));
-    const client = new LifecycleClient({ transport, server: { key: "s", label: "my-server" } });
+    const client = new McpClient({ transport, server: { key: "s", label: "my-server" } });
     const out = await client.request("tools/list");
     expect(sent).toHaveLength(1);
     expect(out.kind).toBe("unsupported-version");
@@ -163,24 +190,25 @@ describe("version negotiation (VER-2/3/4)", () => {
 
   it("retries at most once (VER-4)", async () => {
     const { transport, sent } = scripted((req) => err(req, -32022, "Unsupported", { requested: "2026-07-28", supported: ["2026-07-28"] }));
-    const client = new LifecycleClient({ transport, server: { key: "s" } });
+    const client = new McpClient({ transport, server: { key: "s" } });
     const out = await client.request("tools/list");
     expect(sent).toHaveLength(2);
     expect(sent[0]!.id).not.toBe(sent[1]!.id);
     expect(out).toMatchObject({ kind: "unsupported-version", meta: { attempts: 2 } });
   });
 
-  it("mapLifecycleOutcome passes other outcomes through and maps mrtr resumes", async () => {
+  it("mapLifecycleOutcome passes non--32022 outcomes (including pure mrtr-interim) through and maps -32022", () => {
     const plain: Outcome<unknown> = { kind: "jsonrpc-error", code: -32601, message: "nf", meta: META };
     expect(mapLifecycleOutcome(plain, CTX)).toBe(plain);
     const interim: Outcome<unknown> = {
       kind: "mrtr-interim",
-      resume: () => Promise.resolve({ kind: "jsonrpc-error", code: -32022, message: "u", meta: META } as Outcome<unknown>),
+      requestState: "rs-1",
+      inputRequests: { q: { method: "elicitation/create", params: {} } },
       meta: META,
     };
-    const mapped = mapLifecycleOutcome(interim, CTX);
-    if (mapped.kind !== "mrtr-interim") throw new Error("expected interim");
-    expect((await mapped.resume()).kind).toBe("unsupported-version");
+    expect(mapLifecycleOutcome(interim, CTX)).toBe(interim);
+    const badVer: Outcome<unknown> = { kind: "jsonrpc-error", code: -32022, message: "u", meta: META };
+    expect(mapLifecycleOutcome(badVer, CTX).kind).toBe("unsupported-version");
   });
 });
 
@@ -231,7 +259,7 @@ describe("discover, era cache, diagnostics (VER-5/6, VER-CACHE-1, VER-DIAG-1)", 
 
   it("probe sends server/discover once per client and caches only in memory", async () => {
     const { transport, sent } = scripted((req) => ok(req, discover));
-    const client = new LifecycleClient({ transport, server: { key: "s" } });
+    const client = new McpClient({ transport, server: { key: "s" } });
     const [a, b] = await Promise.all([client.probe(), client.probe()]);
     expect(a).toBe(b);
     expect(await client.probe()).toBe(a);
@@ -239,7 +267,7 @@ describe("discover, era cache, diagnostics (VER-5/6, VER-CACHE-1, VER-DIAG-1)", 
     expect(sent.map((r) => r.method)).toEqual(["server/discover"]);
     expect(sent.some((r) => r.method === "initialize")).toBe(false);
 
-    const other = new LifecycleClient({ transport, server: { key: "s" } });
+    const other = new McpClient({ transport, server: { key: "s" } });
     expect(other.era()).toBeUndefined();
     await other.probe();
     expect(sent).toHaveLength(2);
@@ -254,7 +282,7 @@ describe("discover, era cache, diagnostics (VER-5/6, VER-CACHE-1, VER-DIAG-1)", 
 
   it("legacy peer: probe yields a populated diagnostic", async () => {
     const { transport } = scripted((req) => err(req, -32601, "Method not found: server/discover"));
-    const client = new LifecycleClient({ transport, server: { key: "cmd", label: "node old-server.js" } });
+    const client = new McpClient({ transport, server: { key: "cmd", label: "node old-server.js" } });
     const st = await client.probe();
     expect(st).toMatchObject({
       era: "legacy-or-unresponsive",

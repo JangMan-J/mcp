@@ -27,6 +27,7 @@ export const DEFAULT_READ_ONLY_METHODS: readonly string[] = Object.freeze([
   "resources/templates/list",
   "resources/read",
   "completion/complete",
+  "subscriptions/listen",
 ]);
 
 export function createReadOnlyPredicate(methods: readonly string[] = DEFAULT_READ_ONLY_METHODS): (method: string) => boolean {
@@ -35,6 +36,55 @@ export function createReadOnlyPredicate(methods: readonly string[] = DEFAULT_REA
 }
 
 export const isReadOnlyMethod: (method: string) => boolean = createReadOnlyPredicate();
+
+/**
+ * Races `work` against `signal`; rejects on abort with `onAbort()` (or `signal.reason` if omitted).
+ */
+export function withAbort<T>(
+  work: PromiseLike<T>,
+  signal: AbortSignal,
+  onAbort?: () => unknown,
+): Promise<T> {
+  const abortReason = (): unknown => {
+    if (!onAbort) return signal.reason;
+    try {
+      return onAbort();
+    } catch (err) {
+      return err;
+    }
+  };
+  if (signal.aborted) {
+    Promise.resolve(work).then(
+      () => {},
+      () => {},
+    );
+    return Promise.reject(abortReason());
+  }
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const abort = () => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener("abort", abort);
+      reject(abortReason());
+    };
+    signal.addEventListener("abort", abort, { once: true });
+    Promise.resolve(work).then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener("abort", abort);
+        resolve(value);
+      },
+      (err) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener("abort", abort);
+        reject(err);
+      },
+    );
+  });
+}
 
 /** Stable, non-cryptographic digest of call arguments for UncertainWrite records (no secrets stored). */
 export function argsDigest(obj: unknown): string {

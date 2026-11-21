@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ExtensionRegistry, type Extension, type ExtensionCapabilities } from "../src/extension.js";
+import { McpClient, NotificationQueue, type ExchangeEnd, type JsonRpcNotification, type Transport } from "../src/index.js";
 
 function ext(id: string, caps: ExtensionCapabilities, onDispose: () => void = () => {}): Extension {
   return {
@@ -56,5 +57,74 @@ describe("ExtensionRegistry.capabilities", () => {
     expect(aDisposed).toBe(1);
     expect(bDisposed).toBe(1);
     expect(reg.capabilities()).toEqual({});
+  });
+
+  it("supports optional capabilities and attach, plus onNotification and onRequest on ExtensionHost", async () => {
+    const reg = new ExtensionRegistry();
+    const received: JsonRpcNotification[] = [];
+
+    // Capability-only extension (no attach shell needed)
+    reg.register({
+      id: "cap-only",
+      capabilities: () => ({ extensions: { "io.example/cap": { enabled: true } } }),
+    });
+
+    // Attach-only extension (no capabilities needed)
+    const hookReg = reg.register({
+      id: "hook-only",
+      attach(host) {
+        const d1 = host.onNotification?.("notifications/tasks", (n) => received.push(n));
+        const d2 = host.onRequest?.("sampling/createMessage", () => ({ ok: true }));
+        return {
+          dispose() {
+            d1?.dispose();
+            d2?.dispose();
+          },
+        };
+      },
+    });
+
+    expect(reg.capabilities()).toEqual({ extensions: { "io.example/cap": { enabled: true } } });
+    expect(reg.resolveRequestHandler("sampling/createMessage")?.({ jsonrpc: "2.0", id: 1, method: "sampling/createMessage" })).toEqual({ ok: true });
+
+    reg.dispatchNotification({ jsonrpc: "2.0", method: "notifications/tasks", params: { taskId: "t1" } });
+    expect(received).toHaveLength(1);
+
+    hookReg.dispose();
+    expect(reg.resolveRequestHandler("sampling/createMessage")).toBeUndefined();
+    reg.dispatchNotification({ jsonrpc: "2.0", method: "notifications/tasks", params: { taskId: "t2" } });
+    expect(received).toHaveLength(1);
+
+    // Live dispatch through McpClient
+    const liveEvents: JsonRpcNotification[] = [];
+    const q = new NotificationQueue<JsonRpcNotification>();
+    let resolveDone!: (end: ExchangeEnd) => void;
+    const transport: Transport = {
+      binding: "stdio",
+      start() {
+        return { notifications: q, done: new Promise<ExchangeEnd>((r) => (resolveDone = r)) };
+      },
+      async notify() {},
+      async close() {},
+      diagnostics: { async *[Symbol.asyncIterator]() {} },
+    };
+    const client = new McpClient({
+      transport,
+      server: { key: "s" },
+      extensions: [
+        {
+          id: "live-tasks",
+          attach(host) {
+            return host.onNotification?.("notifications/tasks", (n) => liveEvents.push(n)) ?? { dispose() {} };
+          },
+        },
+      ],
+    });
+    const req = client.request("tools/call", { name: "job" });
+    q.push({ jsonrpc: "2.0", method: "notifications/tasks", params: { taskId: "t99" } });
+    await new Promise((r) => setImmediate(r));
+    expect(liveEvents).toEqual([{ jsonrpc: "2.0", method: "notifications/tasks", params: { taskId: "t99" } }]);
+    resolveDone({ kind: "response", message: { jsonrpc: "2.0", id: req.id, result: {} } });
+    await req;
   });
 });

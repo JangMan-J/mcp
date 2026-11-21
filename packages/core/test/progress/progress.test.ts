@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  LifecycleClient,
+  McpClient,
   META_PROGRESS_TOKEN,
   NotificationQueue,
   parseProgressParams,
@@ -29,13 +29,13 @@ describe("ProgressRegistry (PROG-1..5)", () => {
     expect(r.stats().nonMonotonic).toBe(3);
   });
 
-  it("drops unknown tokens as inactive and released tokens as after-complete (PROG-3/4)", () => {
+  it("drops unknown and released tokens as inactive (PROG-3/4)", () => {
     const r = new ProgressRegistry();
     r.register(7);
     expect(r.accept({ progressToken: 8, progress: 1 })).toEqual({ accept: false, reason: "inactive" });
     r.release(7);
-    expect(r.accept({ progressToken: 7, progress: 1 })).toEqual({ accept: false, reason: "after-complete" });
-    expect(r.stats()).toMatchObject({ inactive: 1, afterComplete: 1, active: 0 });
+    expect(r.accept({ progressToken: 7, progress: 1 })).toEqual({ accept: false, reason: "inactive" });
+    expect(r.stats()).toMatchObject({ inactive: 2, active: 0 });
   });
 
   it("drops a token that belongs to a different active request as foreign", () => {
@@ -58,16 +58,6 @@ describe("ProgressRegistry (PROG-1..5)", () => {
     expect(parseProgressParams({ progressToken: 1.5, progress: 1 })).toBeUndefined();
     expect(parseProgressParams({ progressToken: 1, progress: 1, message: 3 })).toBeUndefined();
   });
-
-  it("bounds the recently-released memory", () => {
-    const r = new ProgressRegistry({ recentLimit: 1 });
-    r.register(1);
-    r.register(2);
-    r.release(1);
-    r.release(2);
-    expect(r.accept({ progressToken: 1, progress: 1 })).toMatchObject({ reason: "inactive" });
-    expect(r.accept({ progressToken: 2, progress: 1 })).toMatchObject({ reason: "after-complete" });
-  });
 });
 
 describe("NotificationQueue", () => {
@@ -83,7 +73,7 @@ describe("NotificationQueue", () => {
   });
 });
 
-describe("progress through LifecycleClient", () => {
+describe("progress and live notification streaming through McpClient", () => {
   function pushTransport() {
     const queues: { req: JsonRpcRequest; q: NotificationQueue<JsonRpcNotification>; resolve(e: ExchangeEnd): void }[] = [];
     const transport: Transport = {
@@ -112,7 +102,8 @@ describe("progress through LifecycleClient", () => {
 
   it("mints a token only with onProgress, delivers valid progress, drops the rest", async () => {
     const { transport, queues } = pushTransport();
-    const client = new LifecycleClient({ transport, server: { key: "s" } });
+    const progressRegistry = new ProgressRegistry();
+    const client = new McpClient({ transport, server: { key: "s" }, lifecycle: { progressRegistry } });
     const events: ProgressEvent[] = [];
     const req = client.request("tools/call", { name: "job" }, { onProgress: (e) => events.push(e) });
     const plain = client.request("tools/list");
@@ -134,9 +125,64 @@ describe("progress through LifecycleClient", () => {
     const collected: number[] = [];
     for await (const p of req.progress) collected.push(p.progress);
     expect(collected).toEqual([1, 2.5]);
-    expect(client.wireStats().progress).toMatchObject({ delivered: 2, nonMonotonic: 1, inactive: 1, afterComplete: 1, active: 0 });
+    expect(progressRegistry.stats()).toMatchObject({ delivered: 2, nonMonotonic: 1, inactive: 1, active: 0 });
 
     queues[1]!.resolve({ kind: "response", message: { jsonrpc: "2.0", id: queues[1]!.req.id, result: {} } });
     expect((await plain).kind).toBe("ok");
+  });
+
+  it("streams req.notifications and req.progress live before request settlement", async () => {
+    const { transport, queues } = pushTransport();
+    const client = new McpClient({ transport, server: { key: "s" } });
+    let settled = false;
+    const req = client.request("tools/call", { name: "stream" }, { onProgress: () => {} });
+    void Promise.resolve(req).then(() => {
+      settled = true;
+    });
+
+    const e0 = queues[0]!;
+    const notifIter = req.notifications[Symbol.asyncIterator]();
+    const progIter = req.progress[Symbol.asyncIterator]();
+
+    const firstNotifPromise = notifIter.next();
+    const firstProgPromise = progIter.next();
+
+    e0.q.push({ jsonrpc: "2.0", method: "notifications/custom", params: { step: "start" } });
+    e0.q.push(prog(req.id, 1));
+
+    const firstNotif = await firstNotifPromise;
+    const firstProg = await firstProgPromise;
+
+    expect(settled).toBe(false);
+    expect(firstNotif).toEqual({
+      done: false,
+      value: { jsonrpc: "2.0", method: "notifications/custom", params: { step: "start" } },
+    });
+
+    const secondNotif = await notifIter.next();
+    expect(settled).toBe(false);
+    expect(secondNotif).toEqual({
+      done: false,
+      value: prog(req.id, 1),
+    });
+    expect(firstProg).toEqual({
+      done: false,
+      value: { progressToken: req.id, progress: 1 },
+    });
+
+    e0.q.push(prog(req.id, 2));
+    const secondProg = await progIter.next();
+    expect(settled).toBe(false);
+    expect(secondProg).toEqual({
+      done: false,
+      value: { progressToken: req.id, progress: 2 },
+    });
+    expect((await notifIter.next()).value).toEqual(prog(req.id, 2));
+
+    e0.resolve({ kind: "response", message: { jsonrpc: "2.0", id: e0.req.id, result: { ok: true } } });
+    expect((await req).kind).toBe("ok");
+    expect(settled).toBe(true);
+    expect(await notifIter.next()).toEqual({ done: true, value: undefined });
+    expect(await progIter.next()).toEqual({ done: true, value: undefined });
   });
 });
