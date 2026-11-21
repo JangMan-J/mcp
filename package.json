@@ -7,6 +7,7 @@
   ],
   "scripts": {
     "build": "node scripts/build-workspaces.mjs",
+    "build:pi-durable": "npm --prefix adapters/pi-durable run build",
     "build:pi-extension": "tsc -p adapters/pi-coding-agent/tsconfig.build.json",
     "remove:ext-apps": "node scripts/check-remove-ext.mjs ext-apps",
     "remove:ext-client-credentials": "node scripts/check-remove-ext.mjs ext-client-credentials",

@@ -25,5 +25,5 @@
     { "path": "../packages/transport-stdio" }
   ],
   "include": ["pi-coding-agent/**/*.ts", "pi-durable/**/*.ts"],
-  "exclude": ["dist", "pi-coding-agent/dist", "node_modules"]
+  "exclude": ["dist", "pi-coding-agent/dist", "pi-durable/dist", "node_modules"]
 }

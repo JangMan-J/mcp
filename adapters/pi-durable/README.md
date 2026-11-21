@@ -5,8 +5,39 @@ intent before sending it, replay committed outcomes from storage, and surface
 — never silently resolve — calls whose remote effect is unknown after a
 restart.
 
-This document describes the contracts of the modules in this directory. It is
-not evidence of a live run against a Pi host or a remote server.
+## Install the built host in a durable registry
+
+From the repository root, run `npm run build` to build the workspace packages,
+then `npm run build:pi-durable` to emit `adapters/pi-durable/dist/index.js` and
+its type declarations. The adapter is not a root workspace; the consuming
+application supplies `@earendil-works/pi-durable@1.6.0`.
+
+```js
+import { createRegistry } from '@earendil-works/pi-durable';
+import { startDurableMcpHost } from './adapters/pi-durable/dist/index.js';
+
+const host = await startDurableMcpHost({
+  mcpConfig: './mcp.json',             // reads the mcpServers map
+  databasePath: './mcp-calls.sqlite',  // reuse this file after restart
+});
+try {
+  const registry = createRegistry();
+  for (const extension of host.extensions) registry.install(extension);
+  // Use the registry throughout the durable session.
+} finally {
+  await host.close();
+}
+```
+
+`host.extensions` contains durable `Extension` objects: install them directly,
+without converting MCP responses to strings or wrapping tool registrations.
+Tool results expose content blocks for display and `structuredOutput` for
+codemode. For a call outside the registry, use `host.call(key, name, args)`
+with a stable key for that logical operation and a name from `host.toolNames`.
+Reusing the database and key lets the host replay a committed result instead
+of resending the request.
+
+## Lower-level modules
 
 | Module | Owns |
 | --- | --- |
