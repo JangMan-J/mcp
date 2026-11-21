@@ -98,6 +98,8 @@ export interface PiExtensionAPI {
   registerCommand(name: "mcp", cmd: { description: string; handler(args: string, ctx: { ui: { notify(msg: string, type?: "info" | "warning" | "error"): void }; signal?: AbortSignal }): Promise<void> }): void;
   registerTool(def: Record<string, unknown>): void;
   on(event: string, handler: (event: any, ctx: any) => unknown): () => void;
+  getActiveTools?(): string[];
+  setActiveTools?(names: string[]): void;
   getAllTools?(): readonly { name: string; reachesTools?: (input: Record<string, unknown>) => "all" | readonly string[] }[];
 }
 
@@ -144,6 +146,11 @@ export function createPiMcpExtension(options: PiMcpExtensionOptions): (pi: PiExt
           execute: (id: string, params: unknown, signal: AbortSignal | undefined) => def.execute(id, params, signal ?? new AbortController().signal),
         };
         pi.registerTool(reg);
+        // Pi never activates deferred tools on registration; they register only once tool_search matches them, so declare them to the model now.
+        if (reg.exposure === "deferred" && pi.getActiveTools && pi.setActiveTools) {
+          const active = pi.getActiveTools();
+          if (!active.includes(def.name)) pi.setActiveTools([...active, def.name]);
+        }
         return { dispose() { pi.registerTool({ ...reg, exposure: "hidden" }); } };
       },
     };

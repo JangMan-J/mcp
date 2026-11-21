@@ -22,6 +22,7 @@ function mockTransport(handler: (msg: JsonRpcRequest) => ExchangeEnd | Promise<E
 function fakePi() {
   const tools = new Map<string, Record<string, unknown>>();
   const handlers = new Map<string, ((e: any, c: any) => unknown)[]>();
+  const active = new Set<string>();
   let mcpCmd: { handler(args: string, ctx: any): Promise<void> } | undefined;
   const api: PiExtensionAPI = {
     registerCommand(_n, cmd) { mcpCmd = cmd; },
@@ -32,6 +33,8 @@ function fakePi() {
       handlers.set(ev, list);
       return () => { const i = list.indexOf(h); if (i >= 0) list.splice(i, 1); };
     },
+    getActiveTools: () => [...active],
+    setActiveTools(names) { active.clear(); for (const n of names) if (tools.has(n)) active.add(n); },
     getAllTools: () => Array.from(tools.values()) as unknown as ReturnType<NonNullable<PiExtensionAPI["getAllTools"]>>,
   };
   const emit = async (ev: string, e: unknown = {}, c: unknown = { ui: { notify: () => {} } }) => {
@@ -42,7 +45,7 @@ function fakePi() {
     await mcpCmd!.handler(args, { ui: { notify: (msg: string, type?: string) => notes.push({ msg, ...(type !== undefined ? { type } : {}) }) } });
     return notes;
   };
-  return { api, tools, emit, runCmd };
+  return { api, tools, active, emit, runCmd };
 }
 
 describe("createPiMcpExtension", () => {
@@ -133,6 +136,30 @@ describe("createPiMcpExtension", () => {
     expect(pi.tools.get("tool_search")?.exposure).toBe("direct");
     expect(pi.tools.get("list_mcp_resources")?.exposure).toBe("direct");
     expect(pi.tools.get("read_mcp_resource")?.exposure).toBe("direct");
+    await pi.emit("session_shutdown");
+  });
+
+  it("[PICA-5] activates deferred tools in Pi once tool_search matches them", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pi-ext-"));
+    dirs.push(dir);
+    await writeFile(join(dir, "mcp.json"), JSON.stringify({ mcpServers: { srv: { command: "fake", toolExposure: { lookup: "deferred" } } } }));
+    const ext = createPiMcpExtension({
+      configDir: dir,
+      createTransport: () => mockTransport((msg) => {
+        if (msg.method === "server/discover") return { kind: "response", message: { jsonrpc: JSONRPC_VERSION, id: msg.id, result: { resultType: "complete", cacheScope: "public", ttlMs: 60_000, supportedVersions: ["2026-07-28"], capabilities: { tools: {} } } } };
+        if (msg.method === "tools/list") return { kind: "response", message: { jsonrpc: JSONRPC_VERSION, id: msg.id, result: { tools: [{ name: "echo", inputSchema: { type: "object" } }, { name: "lookup", description: "Find a thing", inputSchema: { type: "object" } }] } } };
+        return { kind: "response", message: { jsonrpc: JSONRPC_VERSION, id: msg.id, result: {} } };
+      }),
+    });
+    const pi = fakePi();
+    ext(pi.api);
+    await pi.emit("session_start");
+    await vi.waitFor(() => expect(pi.tools.has("mcp__srv__echo")).toBe(true));
+    expect(pi.active.has("mcp__srv__lookup")).toBe(false);
+    const search = pi.tools.get("tool_search") as { execute(id: string, p: unknown, s?: AbortSignal): Promise<unknown> };
+    await search.execute("1", { query: "lookup" });
+    expect(pi.tools.get("mcp__srv__lookup")?.exposure).toBe("deferred");
+    expect(pi.active.has("mcp__srv__lookup")).toBe(true);
     await pi.emit("session_shutdown");
   });
 
