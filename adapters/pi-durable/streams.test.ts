@@ -3,6 +3,7 @@ import { createEventsExtension, EVENTS_EXTENSION_ID, type Occurrence } from '@mc
 import { expect, it, vi } from 'vitest';
 import { createStreamFeatures, globToRegExp } from './stream-features.js';
 import { createCoreFeatures } from './core-features.js';
+import type { ServerDescriptor } from './runtime.js';
 
 const occurrence: Occurrence = {
   eventId: 'event-1', name: 'task.done', timestamp: new Date().toISOString(), data: { ok: true }, cursor: 'cursor-1',
@@ -19,7 +20,7 @@ function eventRuntime(poll = vi.fn(async () => ({ kind: 'ok' as const, value: { 
     client: { request },
   };
 }
-function context(db: DatabaseSync, runtime: ReturnType<typeof eventRuntime>, subscribe?: unknown) {
+function context(db: DatabaseSync, runtime: ReturnType<typeof eventRuntime>, subscribe?: ServerDescriptor['subscribe']) {
   const wake = vi.fn();
   const deliver = vi.fn();
   return {
@@ -34,7 +35,7 @@ function context(db: DatabaseSync, runtime: ReturnType<typeof eventRuntime>, sub
 it('matches globs and restores durable subscriptions without replaying committed events', async () => {
   const db = new DatabaseSync(':memory:');
   const rt = eventRuntime();
-  const first = context(db, rt, ['task.*']);
+  const first = context(db, rt, [{ name: 'task.*' }]);
   const features = await createStreamFeatures(first.ctx);
   await vi.waitFor(() => expect(first.deliver).toHaveBeenCalledWith(occurrence));
   expect(first.wake).toHaveBeenCalledWith('alpha', 'event task.done');
