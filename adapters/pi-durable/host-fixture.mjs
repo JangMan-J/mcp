@@ -59,14 +59,15 @@ export function createHandler(onCall = () => {}) {
   };
 }
 
-/** Streamable HTTP fixture; optional bearer token requirement. */
-export async function startHttpFixture({ token } = {}) {
+/** Streamable HTTP fixture with optional expected headers and bearer token. */
+export async function startHttpFixture({ headers = {}, token } = {}) {
   const calls = [];
   const handle = createHandler(c => calls.push(c));
   const server = createServer(async (req, res) => {
     let raw = ''; for await (const c of req) raw += c;
     if (new URL(req.url, 'http://x').pathname !== '/mcp') { res.writeHead(404).end(); return; }
     if (token && req.headers.authorization !== `Bearer ${token}`) { res.writeHead(401).end(); return; }
+    if (Object.entries(headers).some(([name, value]) => req.headers[name.toLowerCase()] !== value)) { res.writeHead(400).end(); return; }
     if (req.method !== 'POST') { res.writeHead(405).end(); return; }
     const reply = await handle(JSON.parse(raw || '{}'));
     if (!reply) { res.writeHead(202).end(); return; }

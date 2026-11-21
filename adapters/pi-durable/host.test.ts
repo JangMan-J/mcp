@@ -183,10 +183,24 @@ describe('startDurableMcpHost: stdio', () => {
 });
 
 describe('startDurableMcpHost: Streamable HTTP', () => {
-  it('discovers and calls tools over HTTP with configured headers', async () => {
-    const fx = await startHttpFixture({ token: 'tok' });
+  it('discovers and calls tools over HTTP with custom headers and provider-owned authorization', async () => {
+    const headers = { 'X-Fixture': 'configured' };
+    const fx = await startHttpFixture({ headers, token: 'tok' });
     closers.push(fx.close);
-    const host = await start({ servers: [{ name: 'web', url: fx.url, headers: { Authorization: 'Bearer tok' } }] });
+    const anonymous = await start({
+      servers: [{ name: 'web', url: fx.url, headers: { ...headers, Authorization: 'Bearer tok' } }],
+    });
+    expect(anonymous.servers).toEqual(['web']);
+    expect(anonymous.toolNames).toEqual([]);
+    await anonymous.close();
+
+    const host = await start({
+      servers: [{ name: 'web', url: fx.url, headers, auth: { provider: 'fixture' } }],
+      resolveProviderToken: async (provider: string) => {
+        expect(provider).toBe('fixture');
+        return 'tok';
+      },
+    });
     expect(host.toolNames).toContain('mcp__web__echo');
     const r = await call(host, 'h-1', 'mcp__web__image');
     expect(r.output).toEqual([{ type: 'text', text: 'pic' }, { type: 'image', data: PNG, mimeType: 'image/png' }]);
