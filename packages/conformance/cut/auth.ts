@@ -23,9 +23,10 @@
  *    server is never granted.
  *
  * Host ports supplied here (the library has no equivalent):
- *  - Client registration only from the runner's pre-registered
- *    `client_id`/`client_secret` (consent port "client-info" prompt) or
- *    CIMD; never dynamic client registration. Otherwise fail closed.
+ *  - Client registration: the library tries CIMD, cached, then opt-in
+ *    dynamic registration (done by the library, never the CUT); the
+ *    runner's pre-registered `client_id`/`client_secret` is supplied via the
+ *    consent port "client-info" prompt. Otherwise fail closed.
  *  - A reusable loopback redirect listener (the library's is single use,
  *    but step-up and AS migration need a second interactive flow).
  *
@@ -185,18 +186,22 @@ export async function runAuth(
               },
             };
           }
-          // No dynamic client registration: without a pre-registered client
-          // (and no CIMD advertised by the AS) the scenario fails closed.
-          throw new CutAuthGapError(
-            `${scenario}: no pre-registered client_id in context and ${prompt.issuer} offers no CIMD; ` +
-              "dynamic client registration is not supported",
-          );
+          // Reached only when the library found no preset, CIMD, cached or
+          // dynamic registration: fail closed.
+          throw new CutAuthGapError(`${scenario}: no registration available for ${prompt.issuer}`);
         }
         // Authorize prompts: grant only for this server's resource and
         // only when the issuer is the loopback test peer or the server
         // host itself. Anything else is an arbitrary authorization
         // server and consent is declined, never auto-granted.
-        const resourceOk = prompt.resource === canonicalResource(url) || prompt.resource === url;
+        // The PRM resource may name an ancestor of the MCP endpoint (RFC 9728:
+        // e.g. the origin); accept it when this server URL lies within it.
+        const resource = new URL(prompt.resource);
+        const resourcePath = resource.pathname.endsWith("/") ? resource.pathname : `${resource.pathname}/`;
+        const resourceOk =
+          prompt.resource === canonicalResource(url) ||
+          prompt.resource === url ||
+          (resource.origin === serverUrl.origin && `${serverUrl.pathname}/`.startsWith(resourcePath));
         const issuerOk = isLoopbackHost(prompt.issuerHost);
         if (!resourceOk || !issuerOk) return { decision: "decline" };
         return { decision: "accept" };
@@ -242,7 +247,9 @@ export async function runAuth(
             resource: url,
             redirectUri,
             allowInsecureDev,
+            dynamicRegistration: { clientName: "mcp-client conformance CUT" },
             flowTimeoutMs: 20_000,
+            stepUpLimit: 2, // runner counts total authorization attempts (max 3), so the CUT host sets 2 step-ups; library default (AUTH-STEP-3) unchanged
             fetch: {
               fetch(input, init) {
                 // allowAddress only relaxes SafeFetch's blocklist. Check the host
