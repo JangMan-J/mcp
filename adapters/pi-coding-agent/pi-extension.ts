@@ -9,6 +9,7 @@ import { createOps, type Ops, type OpsClient } from "@mcp-client/ops";
 import { StdioTransport } from "@mcp-client/transport-stdio";
 import { HttpTransport } from "@mcp-client/transport-http";
 import { ConfiguredBearer } from "@mcp-client/auth";
+import { createOtelTelemetry, type OtelTelemetryOptions } from "@mcp-client/telemetry-otel";
 import { installCodingAgentAdapter } from "./adapter.js";
 import type { BranchSessionPort } from "./branch-host.js";
 import type { LegacyServerConfig } from "./config.js";
@@ -27,6 +28,8 @@ export interface LiveRuntimeOptions {
   /** Optional extra client extension, e.g. AppsExtension. */
   readonly apps?: Extension;
   readonly telemetry?: TelemetryPort;
+  /** OTel tracer/context source; used when `telemetry` is not given. Content capture stays off unless set. */
+  readonly otel?: OtelTelemetryOptions;
 }
 
 export interface LiveMcpServerRuntime {
@@ -68,14 +71,15 @@ export async function createLiveMcpServerRuntime(
   // One ID space for the client and side streams so request IDs never collide on a shared transport.
   let lastId = 0;
   const idGenerator = () => ++lastId;
+  const telemetry = opts?.telemetry ?? (opts?.otel ? createOtelTelemetry(opts.otel) : undefined);
   const timeoutMs = descriptor.timeoutMs ?? (descriptor.timeout !== undefined ? descriptor.timeout * 1000 : undefined);
   const client = new McpClient({
     transport,
     idGenerator,
     server: { key: descriptor.name },
-    ...(opts?.consent || opts?.telemetry ? { ports: {
-      ...(opts.consent ? { consent: cancellableConsentPort(opts.consent, opts.signal) } : {}),
-      ...(opts.telemetry ? { telemetry: opts.telemetry } : {}),
+    ...(opts?.consent || telemetry ? { ports: {
+      ...(opts?.consent ? { consent: cancellableConsentPort(opts.consent, opts.signal) } : {}),
+      ...(telemetry ? { telemetry } : {}),
     } } : {}),
     ...(timeoutMs !== undefined ? { defaults: { timeoutMs } } : {}),
   });
@@ -152,7 +156,7 @@ export interface PiExtensionAPI {
   sendMessage?(message: { customType: string; content: string; display: boolean }, options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" }): void;
   appendEntry?(customType: string, data?: unknown): void;
   /** Host-registered MCP servers; changes arrive as the `mcp_servers_change` event. */
-  getMcpServers?(): readonly ({ name: string } & Record<string, unknown>)[];
+  getMcpServers?(): readonly { name: string; config: Record<string, unknown>; extensionPath: string }[];
 }
 
 /** Host handed to feature factories (core/events/extended); each returns a per-server connector. */
@@ -189,6 +193,8 @@ export interface PiMcpExtensionOptions {
   readonly onContext?: (ctx: unknown) => void;
   /** Optional telemetry port per server (e.g. createOtelTelemetry); receives the latest Pi context. */
   readonly createOtelTelemetry?: (descriptor: LegacyServerConfig, options: { context: unknown }) => TelemetryPort | undefined;
+  /** Direct OTel integration (createOtelTelemetry per server); the hook above takes precedence. */
+  readonly otel?: OtelTelemetryOptions;
   readonly createTransport?: (descriptor: LegacyServerConfig) => Transport | Promise<Transport>;
   readonly resolveProviderToken?: (provider: string) => Promise<string>;
   readonly consent?: ConsentPort;
@@ -266,7 +272,7 @@ export function createPiMcpExtension(options: PiMcpExtensionOptions): (pi: PiExt
     };
     type LiveClient = LiveMcpServerRuntime & { auth?: PiLiveAuth; reconnect?(signal: AbortSignal): Promise<void> };
     const piServers = pi.getMcpServers
-      ? () => Object.fromEntries(pi.getMcpServers!().map(({ name, ...cfg }) => [name, cfg]))
+      ? () => Object.fromEntries(pi.getMcpServers!().map(({ name, config }) => [name, config]))
       : undefined;
     const dynamicServers = options.dynamicServers && piServers
       ? () => ({ ...piServers(), ...options.dynamicServers!() })
@@ -291,6 +297,7 @@ export function createPiMcpExtension(options: PiMcpExtensionOptions): (pi: PiExt
         const rt = await createLiveMcpServerRuntime(ctx.descriptor, {
           signal: ctx.signal,
           ...(telemetry ? { telemetry } : {}),
+          ...(options.otel ? { otel: options.otel } : {}),
           ...(auth?.provider ? { authProvider: auth.provider } : {}),
           ...(options.consent ? { consent: options.consent } : {}),
           ...(options.createTransport ? { createTransport: options.createTransport } : {}),

@@ -163,6 +163,65 @@ describe("createPiMcpExtension", () => {
     await pi.emit("session_shutdown");
   });
 
+  it("maps installed Pi getMcpServers() {name,config,extensionPath} and follows mcp_servers_change register/update/unregister", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pi-ext-"));
+    dirs.push(dir);
+    const created: string[] = [];
+    const ext = createPiMcpExtension({
+      configDir: dir,
+      createTransport: (d) => { created.push(`${d.name}:${d.command}`); return mockTransport((msg) => {
+        if (msg.method === "server/discover") return { kind: "response", message: { jsonrpc: JSONRPC_VERSION, id: msg.id, result: { resultType: "complete", cacheScope: "public", ttlMs: 60_000, supportedVersions: ["2026-07-28"], capabilities: { tools: {} } } } };
+        if (msg.method === "tools/list") return { kind: "response", message: { jsonrpc: JSONRPC_VERSION, id: msg.id, result: { tools: [{ name: "ping", inputSchema: { type: "object" } }] } } };
+        return { kind: "response", message: { jsonrpc: JSONRPC_VERSION, id: msg.id, result: {} } };
+      }); },
+    });
+    const pi = fakePi();
+    // Structural fake of the installed Pi SDK shape.
+    let servers: { name: string; config: Record<string, unknown>; extensionPath: string }[] = [{ name: "dyn", config: { command: "one" }, extensionPath: "/ext/a" }];
+    ext({ ...pi.api, getMcpServers: () => servers });
+    await pi.emit("session_start");
+    await vi.waitFor(() => expect(pi.tools.has("mcp__dyn__ping")).toBe(true));
+    expect(created).toContain("dyn:one");
+    servers = [{ name: "dyn", config: { command: "two" }, extensionPath: "/ext/a" }];
+    await pi.emit("mcp_servers_change");
+    await vi.waitFor(() => expect(created).toContain("dyn:two"));
+    servers = [];
+    await pi.emit("mcp_servers_change");
+    await vi.waitFor(() => expect(pi.tools.get("mcp__dyn__ping")?.exposure).toBe("hidden"));
+    await pi.emit("session_shutdown");
+  });
+
+  it("integrates OtelTelemetryOptions: propagates traceparent in _meta only when contextSource active", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pi-ext-"));
+    dirs.push(dir);
+    await writeFile(join(dir, "mcp.json"), JSON.stringify({ mcpServers: { srv: { command: "fake" } } }));
+    const metas: { method: string; meta: Record<string, unknown> | undefined }[] = [];
+    const tracer = { startSpan: () => ({ setAttribute() {}, recordException() {}, setStatus() {}, end() {} }) };
+    let active = false;
+    const contextSource = { activeSpanContext: () => active ? { traceId: "0af7651916cd43dd8448eb211c80319c", spanId: "b7ad6b7169203331", traceFlags: 1 } : undefined };
+    const ext = createPiMcpExtension({
+      configDir: dir,
+      otel: { tracer, contextSource },
+      createTransport: () => mockTransport((msg) => {
+        metas.push({ method: msg.method, meta: (msg.params as { _meta?: Record<string, unknown> } | undefined)?._meta });
+        if (msg.method === "server/discover") return { kind: "response", message: { jsonrpc: JSONRPC_VERSION, id: msg.id, result: { resultType: "complete", cacheScope: "public", ttlMs: 60_000, supportedVersions: ["2026-07-28"], capabilities: { tools: {} } } } };
+        if (msg.method === "tools/list") return { kind: "response", message: { jsonrpc: JSONRPC_VERSION, id: msg.id, result: { tools: [{ name: "echo", inputSchema: { type: "object" } }] } } };
+        return { kind: "response", message: { jsonrpc: JSONRPC_VERSION, id: msg.id, result: { content: [{ type: "text", text: "ok" }] } } };
+      }),
+    });
+    const pi = fakePi();
+    ext(pi.api);
+    await pi.emit("session_start");
+    await vi.waitFor(() => expect(pi.tools.has("mcp__srv__echo")).toBe(true));
+    expect(metas.every(m => m.meta?.["traceparent"] === undefined)).toBe(true);
+    active = true;
+    const echo = pi.tools.get("mcp__srv__echo") as { execute(id: string, p: unknown, s?: AbortSignal): Promise<any> };
+    await echo.execute("1", { secret: "s3cret" });
+    const call = metas.find(m => m.method === "tools/call");
+    expect(call?.meta?.["traceparent"]).toBe("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01");
+    await pi.emit("session_shutdown");
+  });
+
   it("EDGE-27: createLiveMcpServerRuntime aborts StatefulClient transportClosed on close()", async () => {
     const rt = await createLiveMcpServerRuntime(
       { name: "s", source: "global", trusted: true, transport: "stdio", enabled: true, exposure: "direct", command: "fake" },
