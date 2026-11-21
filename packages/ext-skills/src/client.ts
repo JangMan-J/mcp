@@ -1,6 +1,6 @@
 import type { McpClient, Outcome, OutcomeMeta } from "@mcp-client/core";
 import type { SkillCache } from "./cache.js";
-import { SKILLS_EXTENSION_ID, SKILLS_PIN } from "./extension.js";
+import { SKILLS_EXTENSION_ID, SKILLS_REVISION } from "./extension.js";
 import {
   isSkillMdUri,
   manifestFingerprint,
@@ -107,7 +107,7 @@ export class SkillsClient {
     if (!isObj(exts)) return { ok: false, reason: "server extensions capability absent" };
     const ext = exts[SKILLS_EXTENSION_ID];
     if (!isObj(ext)) return { ok: false, reason: "server skills extension capability absent" };
-    if (ext["revision"] !== undefined && ext["revision"] !== SKILLS_PIN.date) {
+    if (ext["revision"] !== undefined && ext["revision"] !== SKILLS_REVISION) {
       return { ok: false, reason: `unknown skills revision: ${String(ext["revision"])}` };
     }
     return { ok: true, directoryRead: ext["directoryRead"] === true };

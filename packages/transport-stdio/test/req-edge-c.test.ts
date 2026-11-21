@@ -9,7 +9,7 @@ import { StdioTransport } from "../src/index.js";
 it("[EDGE-35] diagnoses an unsolicited server ping without writing any reply", async () => {
   const dir = await mkdtemp(join(tmpdir(), "edge-server-ping-"));
   const log = join(dir, "wire.log");
-  const server = fileURLToPath(new URL("../../fixtures/server/stdio-main.ts", import.meta.url));
+  const server = fileURLToPath(new URL("./helpers/stdio-server.ts", import.meta.url));
   const transport = new StdioTransport({
     command: process.execPath,
     args: ["--no-warnings", "--experimental-strip-types", server, "--log", log, "--mode", "server-request"],

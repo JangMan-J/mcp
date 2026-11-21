@@ -161,19 +161,4 @@ export function extractAtPath(args: unknown, path: readonly string[]): unknown {
   return cur;
 }
 
-/** Built-in read-only methods (mirrors core recovery policy, §6.5). */
-export const READ_ONLY_METHODS: ReadonlySet<string> = new Set([
-  "server/discover",
-  "tools/list",
-  "prompts/list",
-  "prompts/get",
-  "resources/list",
-  "resources/templates/list",
-  "resources/read",
-  "completion/complete",
-  "subscriptions/listen",
-]);
-
-export function isReadOnlyMethod(method: string): boolean {
-  return READ_ONLY_METHODS.has(method);
-}
+export { isReadOnlyMethod } from "@mcp-client/core";

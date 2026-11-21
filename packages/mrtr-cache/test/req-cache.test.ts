@@ -34,8 +34,9 @@ describe("MRTR deadline", () => {
       const m = new MrtrSession(req as unknown as RequestFn, { serverLabel: "x", clock });
       const o = await m.run("tools/call", {}, { mrtr: "manual", timeoutMs: 1000 });
       if (o.kind !== "mrtr-interim") throw Error(o.kind);
+      expect("resume" in o).toBe(false);
       now = at; // time spent waiting for consent
-      return o.resume();
+      return m.resume(o);
     };
     // Inside the 5 minute deadline a long consent wait still gets the full per-request timeout.
     expect((await run(299_999)).kind).toBe("mrtr-interim");
@@ -155,7 +156,7 @@ describe("subscriptions", () => {
 });
 
 describe("cache", () => {
-  it("[CACHE-SF-1] identical misses coalesce; other auth contexts and abort signals are not coalesced", async () => {
+  it("[CACHE-SF-1] identical misses coalesce across distinct abort signals within an auth context; other auth contexts are not coalesced", async () => {
     const c = new ResultCache();
     const a = new AbortController();
     const b = new AbortController();
@@ -169,9 +170,57 @@ describe("cache", () => {
     calls.push(run(undefined, "2"));
     calls.push(run(a.signal, "1"), run(a.signal, "1"), run(b.signal, "1"));
     await tick();
-    expect(work).toHaveLength(4); // none, auth 2, signal a (coalesced pair), signal b
+    expect(work).toHaveLength(2); // auth 1 (coalesced across undefined, a, b), auth 2
     for (const w of work) w(okv());
     await Promise.all(calls);
+  });
+
+  it("coalesces distinct AbortSignals onto one wire request and aborts upstream only when all callers abort", async () => {
+    const c = new ResultCache();
+    const a = new AbortController();
+    const b = new AbortController();
+    const wireSignals: (AbortSignal | undefined)[] = [];
+    const resolvers: ((o: Outcome<unknown>) => void)[] = [];
+    const req = vi.fn<RequestFn>((_m, _p, o) => {
+      wireSignals.push(o.signal);
+      return new Promise((resolve) => {
+        resolvers.push(resolve);
+      });
+    });
+
+    const p1 = c.run(ctx, "tools/list", {}, { signal: a.signal }, req);
+    const p2 = c.run(ctx, "tools/list", {}, { signal: b.signal }, req);
+    await tick();
+    expect(req).toHaveBeenCalledTimes(1);
+    expect(wireSignals[0]?.aborted).toBe(false);
+
+    a.abort("first-left");
+    expect((await p1).kind).toBe("cancelled");
+    expect(wireSignals[0]?.aborted).toBe(false);
+
+    b.abort("last-left");
+    expect((await p2).kind).toBe("cancelled");
+    expect(wireSignals[0]?.aborted).toBe(true);
+    resolvers[0]!(okv());
+  });
+
+  it("relies on notifications/tools/list_changed and explicit invalidate rather than error-message regexes", async () => {
+    const c = new ResultCache({ now: () => 0 });
+    let listCalls = 0;
+    const listReq: RequestFn = async () => okv({ tools: [{ name: `t${++listCalls}` }] });
+    await c.run(ctx, "tools/list", {}, {}, listReq);
+    // tools/call -32602 with "unknown tool" message must NOT invalidate cached tools/list
+    await c.run(ctx, "tools/call", { name: "missing" }, {}, async () => ({
+      kind: "jsonrpc-error",
+      code: -32602,
+      message: "Unknown tool: missing",
+      meta,
+    }));
+    expect((await c.run(ctx, "tools/list", {}, {}, listReq)).meta.cache).toBe("hit");
+    expect(listCalls).toBe(1);
+    c.notification("server", "notifications/tools/list_changed");
+    expect((await c.run(ctx, "tools/list", {}, {}, listReq)).meta.cache).toBe("miss");
+    expect(listCalls).toBe(2);
   });
 
   it("[CACHE-LIMIT-1] 4 MiB per entry, 32 MiB total and 500 entries caps, LRU eviction", async () => {

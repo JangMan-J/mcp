@@ -2,31 +2,25 @@ import {
   systemClock,
   type Clock,
   type ClientRequest,
+  type Extension,
   type ExtensionCapabilities,
   type RequestOptions,
   type StreamHandle,
 } from "@mcp-client/core";
+import { object, cursor, type Obj, type Occurrence } from "./model.js";
 import { watchStream, type PushMessage } from "./push.js";
 export type { PushMessage } from "./push.js";
+export type { Obj, Occurrence } from "./model.js";
 export { openEventsStream } from "./stream.js";
 
 export const EVENTS_EXTENSION_ID = "io.modelcontextprotocol/events";
-export class EventsExtension {
+export class EventsExtension implements Extension {
   readonly id = EVENTS_EXTENSION_ID;
-  readonly stage = "draft" as const;
-  readonly defaultEnabled = false as const;
-  readonly capabilityDescriptor = {
-    stage: "draft",
-    defaultEnabled: false,
-  } as const;
-  private removed = false;
   constructor(
     private readonly opts: { enabled?: boolean; healthy?: boolean } = {},
   ) {}
   health() {
-    return !this.removed &&
-      this.opts.enabled === true &&
-      this.opts.healthy !== false
+    return this.opts.enabled === true && this.opts.healthy !== false
       ? "working"
       : "unavailable";
   }
@@ -38,14 +32,6 @@ export class EventsExtension {
       ? { extensions: { [this.id]: {} } }
       : {};
   }
-  attach() {
-    this.removed = false;
-    return {
-      dispose: () => {
-        this.removed = true;
-      },
-    };
-  }
 }
 export const createEventsExtension = (opts?: {
   enabled?: boolean;
@@ -56,8 +42,6 @@ export interface WebhookEndpointPort {
   readonly secret: string;
   isReady(): boolean;
 }
-import { object, cursor, type Obj, type Occurrence } from "./model.js";
-export type { Obj, Occurrence } from "./model.js";
 export interface EventsOptions {
   extension: EventsExtension;
   peerCapabilities(): unknown;

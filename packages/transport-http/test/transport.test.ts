@@ -1,8 +1,8 @@
-import { describe, expect, it } from "vitest";
-import { McpClient, type AuthProvider, type FetchPort, type JsonRpcNotification, type JsonRpcRequest } from "@mcp-client/core";
+import { describe, expect, it, vi } from "vitest";
+import { McpClient, type AuthProvider, type FetchPort, type JsonRpcNotification, type JsonRpcRequest, type JsonRpcResponse } from "@mcp-client/core";
 import { HttpTransport } from "../src/index.js";
-import { createHttpTestServer, respondError, respondJson } from "../../fixtures/server/http-main.ts";
-import { formatSseComment, formatSseJson } from "../../fixtures/server/sse.ts";
+import { createHttpTestServer, respondError, respondJson } from "./helpers/http-server.js";
+import { formatSseComment, formatSseJson } from "./helpers/sse.js";
 
 interface CapturedCall {
   readonly url: string;
@@ -204,14 +204,17 @@ describe("HttpTransport response handling", () => {
     });
   });
 
-  it("5xx is delivered-no-response with Retry-After recorded (HTTP-ERR-8); connect errors are connect failures", async () => {
+  it("5xx is delivered-no-response with Retry-After in failure message (HTTP-ERR-8); connect errors are connect failures", async () => {
     const t = new HttpTransport({
       url: URL1,
       fetchPort: capture(() => new Response("boom", { status: 503, headers: { "retry-after": "9" } })).fetchPort,
     });
     const { end } = await run(t, req(1, "tools/call", { name: "w" }));
-    expect(end).toMatchObject({ kind: "failure", failure: { kind: "http-status", status: 503 }, delivery: "delivered-no-response" });
-    expect(t.lastRetryAfter).toBe("9");
+    expect(end).toMatchObject({
+      kind: "failure",
+      failure: { kind: "http-status", status: 503, message: expect.stringContaining("Retry-After: 9") },
+      delivery: "delivered-no-response",
+    });
     const down = new HttpTransport({
       url: URL1,
       fetchPort: { fetch: async () => { throw new TypeError("fetch failed"); } },
@@ -400,6 +403,62 @@ describe("x-mcp-header mirroring (HTTP-PARAM-*)", () => {
     expect(calls[2]!.json["id"]).not.toBe(calls[0]!.json["id"]);
     expect(calls[2]!.headers["mcp-param-tenant"]).toBe("acme");
   });
+
+  it("processToolsList does not mutate the raw tool list response object in place", async () => {
+    const rawTools = Object.freeze([...toolList.tools]);
+    const rawResult = Object.freeze({ resultType: "complete", tools: rawTools });
+    const rawMessage: JsonRpcResponse = Object.freeze({ jsonrpc: "2.0", id: 1, result: rawResult });
+
+    const directTransport = new HttpTransport({ url: URL1 });
+    const processed = (
+      directTransport as unknown as {
+        processToolsList(msg: JsonRpcResponse, credentials: ReadonlySet<string>): JsonRpcResponse;
+      }
+    ).processToolsList(rawMessage, new Set());
+    expect(processed).not.toBe(rawMessage);
+    expect(processed.result).not.toBe(rawResult);
+    expect(processed.result["tools"]).not.toBe(rawTools);
+    expect((processed.result["tools"] as Array<{ name: string }>).map((x) => x.name)).toEqual(["good"]);
+    expect(rawTools.map((x) => x.name)).toEqual(["good", "bad"]);
+
+    // Verify JSON and SSE transport paths also succeed without mutating frozen parsed responses.
+    const realParse = JSON.parse;
+    const freezeDeep = <T>(val: T): T => {
+      if (typeof val === "object" && val !== null) {
+        Object.freeze(val);
+        for (const v of Object.values(val as Record<string, unknown>)) freezeDeep(v);
+      }
+      return val;
+    };
+    const parseSpy = vi.spyOn(JSON, "parse").mockImplementation((text, reviver) => freezeDeep(realParse(text, reviver)));
+    try {
+      const jsonTransport = new HttpTransport({
+        url: URL1,
+        fetchPort: capture((call) =>
+          jsonResponse(200, { jsonrpc: "2.0", id: call.json["id"], result: { resultType: "complete", ...toolList } }),
+        ).fetchPort,
+      });
+      const jsonRes = await run(jsonTransport, req(10, "tools/list"), ctx({ idempotent: true }));
+      expect(jsonRes.end.kind).toBe("response");
+      if (jsonRes.end.kind === "response" && !("error" in jsonRes.end.message)) {
+        expect((jsonRes.end.message.result["tools"] as Array<{ name: string }>).map((x) => x.name)).toEqual(["good"]);
+      }
+
+      const sseTransport = new HttpTransport({
+        url: URL1,
+        fetchPort: capture((call) =>
+          sseResponse(formatSseJson({ jsonrpc: "2.0", id: call.json["id"], result: { resultType: "complete", ...toolList } }), 64),
+        ).fetchPort,
+      });
+      const sseRes = await run(sseTransport, req(11, "tools/list"), ctx({ idempotent: true }));
+      expect(sseRes.end.kind).toBe("response");
+      if (sseRes.end.kind === "response" && !("error" in sseRes.end.message)) {
+        expect((sseRes.end.message.result["tools"] as Array<{ name: string }>).map((x) => x.name)).toEqual(["good"]);
+      }
+    } finally {
+      parseSpy.mockRestore();
+    }
+  });
 });
 
 describe("AuthProvider interceptor hook", () => {
@@ -435,7 +494,7 @@ describe("AuthProvider interceptor hook", () => {
   });
 });
 
-describe("synthetic HTTP server (fixtures/server/http-main.ts)", () => {
+describe("synthetic HTTP server", () => {
   it("serves JSON and SSE modes and records a POST-only, session-free wire", async () => {
     const srv = await createHttpTestServer({ mode: "sse-progress" });
     try {

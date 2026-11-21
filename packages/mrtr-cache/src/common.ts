@@ -1,4 +1,5 @@
 import type { Outcome, RequestOptions } from "@mcp-client/core";
+export { withAbort } from "@mcp-client/core";
 export type Obj = Record<string, unknown>;
 export const object = (v: unknown): v is Obj =>
   typeof v === "object" && v !== null && !Array.isArray(v);
@@ -15,17 +16,4 @@ export class Violation extends Error {
   ) {
     super(reason);
   }
-}
-export function withAbort<T>(
-  work: PromiseLike<T>,
-  signal: AbortSignal,
-): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const abort = () => reject(signal.reason);
-    if (signal.aborted) abort();
-    else signal.addEventListener("abort", abort, { once: true });
-    Promise.resolve(work)
-      .then(resolve, reject)
-      .finally(() => signal.removeEventListener("abort", abort));
-  });
 }

@@ -7,8 +7,7 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
-    },
-    "./conformance": "./dist/conformance.js"
+    }
   },
   "dependencies": {
     "@mcp-client/core": "*"

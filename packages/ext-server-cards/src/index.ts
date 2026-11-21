@@ -54,8 +54,6 @@ export interface DiscoverCardOptions {
   readonly allowInsecureDev?: boolean;
   readonly headers?: Record<string, string>;
   readonly cache?: ServerCardCache;
-  /** Conformance-only fault injection; never set in production. */
-  readonly testMutant?: string;
 }
 
 const rec = (v: unknown): Record<string, unknown> | undefined => (v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : undefined);
@@ -64,8 +62,9 @@ function safeUrl(input: string, o: DiscoverCardOptions): URL {
   let u: URL;
   try { u = new URL(input); } catch { return fail("invalid-url"); }
   const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(u.hostname);
-  if (u.protocol !== "https:" && !(u.protocol === "http:" && o.allowInsecureDev === true && loopback) && o.testMutant !== "allow-http") fail("insecure-url");
-  if (o.testMutant !== "forward-credentials") { u.username = ""; u.password = ""; }
+  if (u.protocol !== "https:" && !(u.protocol === "http:" && o.allowInsecureDev === true && loopback)) fail("insecure-url");
+  u.username = "";
+  u.password = "";
   u.hash = "";
   return u;
 }
@@ -74,7 +73,7 @@ function cleanHeaders(o: DiscoverCardOptions): Record<string, string> {
   const out: Record<string, string> = { accept: "application/json" };
   for (const [k, v] of Object.entries(o.headers ?? {})) {
     const lk = k.toLowerCase();
-    if ((lk === "authorization" || lk === "cookie") && o.testMutant !== "forward-credentials") continue;
+    if (lk === "authorization" || lk === "cookie") continue;
     out[lk] = v;
   }
   return out;
@@ -91,7 +90,7 @@ export function canonicalServerCardUrl(streamableHttpUrl: string): string {
 }
 
 /** Validate untrusted JSON against the pinned ServerCard shape. */
-export function parseServerCard(raw: unknown, url: string, mutant?: string): ParsedServerCard {
+export function parseServerCard(raw: unknown, url: string): ParsedServerCard {
   const r = rec(raw) ?? fail("card-not-object");
   for (const k of ["$schema", "name", "version", "description"]) if (typeof r[k] !== "string") fail(`card-field-${k}`);
   const ignoredFields = PRIMITIVES.filter((p) => p in r);
@@ -101,7 +100,6 @@ export function parseServerCard(raw: unknown, url: string, mutant?: string): Par
   if (r["icons"] !== undefined) card["icons"] = r["icons"];
   if (r["repository"] !== undefined) card["repository"] = r["repository"];
   if (rec(r["_meta"])) card["_meta"] = r["_meta"];
-  if (mutant === "expose-primitives") for (const p of ignoredFields) card[p] = r[p];
   const remotes: ServerCardRemote[] = [];
   if (r["remotes"] !== undefined) {
     if (!Array.isArray(r["remotes"])) fail("card-field-remotes");
@@ -115,11 +113,9 @@ export function parseServerCard(raw: unknown, url: string, mutant?: string): Par
     card["remotes"] = remotes;
   }
   const connectionCandidates = remotes
-    .filter((m) => mutant === "all-transports" || (m.type === "streamable-http" && (m.supportedVersions ?? []).includes(CORE_PROTOCOL_VERSION)))
+    .filter((m) => m.type === "streamable-http" && (m.supportedVersions ?? []).includes(CORE_PROTOCOL_VERSION))
     .map((m) => ({ url: m.url, supportedVersions: m.supportedVersions ?? [], ...(m.extensionsInfo !== undefined ? { extensionsInfo: m.extensionsInfo } : {}) }));
-  const inferred: Record<string, unknown> = {};
-  if (mutant === "infer-capabilities") for (const c of connectionCandidates) Object.assign(inferred, rec(c.extensionsInfo) ?? {});
-  return { url, card: card as unknown as ServerCard, connectionCandidates, inferredCapabilities: inferred as Record<string, never>, ignoredFields };
+  return { url, card: card as unknown as ServerCard, connectionCandidates, inferredCapabilities: {}, ignoredFields };
 }
 
 function maxAge(cc: string | null): { store: boolean; ms: number } {
@@ -136,11 +132,11 @@ async function getJson(url: string, o: DiscoverCardOptions, extra: Record<string
 /** Fetch an explicit card URL. Never opens an MCP session or calls server/discover (EXT-card-1, EXT-card-8). */
 export async function discoverCard(url: string, opts: DiscoverCardOptions = {}): Promise<ParsedServerCard> {
   const u = safeUrl(url, opts).href;
-  const cache = opts.testMutant === "ignore-cache" ? undefined : opts.cache;
+  const cache = opts.cache;
   const now = cache?.clock.now() ?? 0;
   const hit = cache?.get(u);
   if (hit && hit.freshUntil > now) return hit.parsed;
-  const cond: Record<string, string> = hit?.etag && opts.testMutant !== "no-etag" ? { "if-none-match": hit.etag } : {};
+  const cond: Record<string, string> = hit?.etag ? { "if-none-match": hit.etag } : {};
   const res = await getJson(u, opts, cond);
   const policy = maxAge(res.headers.get("cache-control"));
   if (res.status === 304 && hit) {
@@ -150,7 +146,7 @@ export async function discoverCard(url: string, opts: DiscoverCardOptions = {}):
   if (res.status !== 200) fail(`http-${res.status}`);
   let body: unknown;
   try { body = JSON.parse(await res.text()); } catch { return fail("invalid-json"); }
-  const parsed = parseServerCard(body, u, opts.testMutant);
+  const parsed = parseServerCard(body, u);
   if (cache) {
     if (policy.store) {
       const etag = res.headers.get("etag") ?? undefined;
@@ -177,7 +173,7 @@ export async function discoverFromDomain(domainOrOrigin: string, opts: DiscoverC
     const kind = String(e["type"] ?? e["kind"] ?? e["mediaType"] ?? "");
     if (kind && !/mcp|server-card/iu.test(kind)) continue;
     const data = rec(e["data"]);
-    if (data && opts.testMutant !== "skip-inline") out.push(parseServerCard(data, catalogUrl, opts.testMutant));
+    if (data) out.push(parseServerCard(data, catalogUrl));
     else if (typeof e["url"] === "string") out.push(await discoverCard(new URL(e["url"], origin).href, opts));
   }
   return out;
@@ -206,7 +202,6 @@ export function createServerCardsExtension(defaults: DiscoverCardOptions = {}): 
   return {
     id: SERVER_CARDS_EXTENSION_ID,
     capabilities: (): ExtensionCapabilities => ({}),
-    attach: () => ({ dispose() {} }),
     discoverCard: (url, o) => discoverCard(url, { ...defaults, ...o }),
     discoverFromDomain: (d, o) => discoverFromDomain(d, { ...defaults, ...o }),
   };

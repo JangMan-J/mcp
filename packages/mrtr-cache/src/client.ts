@@ -26,7 +26,6 @@ export function elicitationExtension(options: ElicitationOptions): Extension {
       working
         ? (elicitationCapabilities(options) as ExtensionCapabilities)
         : {},
-    attach: () => ({ dispose() {} }),
   };
 }
 export interface StatefulClientOptions extends MrtrOptions {

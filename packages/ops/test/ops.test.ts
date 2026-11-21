@@ -1,6 +1,6 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
-import type { JsonRpcRequest } from "@mcp-client/core";
-import { createOps, latestWins, measure, MAX_COMPLETION_VALUES, type ToolCallResult } from "../src/index.js";
+import type { JsonRpcRequest, Outcome } from "@mcp-client/core";
+import { createOps, latestWins, mapOutcome, measure, MAX_COMPLETION_VALUES, type ToolCallResult } from "../src/index.js";
 import { err, installNetworkSpy, makeClient, ok, paramsOf, settle } from "./helpers.js";
 
 installNetworkSpy();
@@ -388,5 +388,17 @@ describe("completion", () => {
     expect(signals[2]!.aborted).toBe(true);
     release();
     await pending;
+  });
+
+  it("mapOutcome preserves pure mrtr-interim data without attaching resume", () => {
+    const interim: Outcome<{ x: number }> = {
+      kind: "mrtr-interim",
+      inputRequests: { consent: { type: "object" } },
+      requestState: "state-1",
+      meta: { requestId: 1, method: "tools/call", binding: "stdio", attempts: 1 },
+    };
+    const mapped = mapOutcome<{ x: number }, number>(interim, (v, meta) => ({ kind: "ok", value: v.x + 1, meta }));
+    expect(mapped).toEqual(interim);
+    expect("resume" in mapped).toBe(false);
   });
 });

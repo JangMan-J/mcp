@@ -1,5 +1,5 @@
 import type { Outcome, RequestOptions } from "@mcp-client/core";
-import { object, type Diagnostic, type Obj, type RequestFn } from "./common.js";
+import { object, withAbort, type Diagnostic, type Obj, type RequestFn } from "./common.js";
 
 const methods = new Set([
   "server/discover",
@@ -10,6 +10,8 @@ const methods = new Set([
   "resources/read",
 ]);
 const lists = (method: string) => method.endsWith("/list");
+const WAITER_ABORTED = Symbol("cache-waiter-aborted");
+
 export interface CacheContext {
   serverRef: string;
   authContextId: string;
@@ -60,13 +62,17 @@ const mark = (
   o: Outcome<unknown>,
   cache: "hit" | "miss" | "bypass" | "stale",
 ): Outcome<unknown> => ({ ...o, meta: { ...o.meta, cache } });
+
 interface Flight extends CacheContext {
   method: string;
   uri: unknown;
   valid: boolean;
-  signal?: AbortSignal;
+  waiters: number;
+  aborted: boolean;
+  controller: AbortController;
   result: Promise<Outcome<unknown>>;
 }
+
 export class ResultCache {
   private readonly memory = new Map<string, CacheEntry>();
   private readonly stores: ResultCacheStore[];
@@ -171,12 +177,6 @@ export class ResultCache {
       if (out.kind === "jsonrpc-error") {
         if (out.code === -32021 || out.code === -32022)
           this.invalidate(serverRef, "server/discover");
-        if (
-          method === "tools/call" &&
-          out.code === -32602 &&
-          /unknown tool/i.test(out.message)
-        )
-          this.invalidate(serverRef, "tools/list");
       }
     };
     if (
@@ -202,120 +202,185 @@ export class ResultCache {
       }
       if (entry) break;
     }
+
     const active = this.flights.get(key) ?? new Set<Flight>();
-    for (const f of active)
-      if (f.valid && f.signal === opts.signal)
-        return f.result.then((o) => (o.kind === "ok" ? structuredClone(o) : o));
-    const flight: Flight = {
-      ...ctx,
-      method,
-      uri: params.uri,
-      valid: true,
-      ...(opts.signal && { signal: opts.signal }),
-      result: Promise.resolve().then(async () => {
-        const out = await request(method, params, opts);
-        inspect(out);
-        if (
-          out.kind === "jsonrpc-error" &&
-          out.code === -32602 &&
-          lists(method) &&
-          "cursor" in params
-        ) {
-          this.invalidate(serverRef, method);
-          const { cursor, ...first } = params;
-          return this.run(ctx, method, first, opts, request);
-        }
-        if (
-          flight.valid &&
-          entry &&
-          this.options.staleIfError &&
-          out.kind === "transport-failure" &&
-          (!out.failure.status || out.failure.status >= 500)
-        ) {
-          const result = {
-            ...structuredClone(entry.outcome),
-            stale: true,
-            staleReason: out.failure.kind,
-          };
-          return mark(result, "stale");
-        }
-        if (
-          !flight.valid ||
-          out.kind !== "ok" ||
-          !object(out.value) ||
-          out.value.resultType !== "complete" ||
-          out.meta.trace?.length
-        )
-          return mark(out, "miss");
-        const scope = out.value.cacheScope === "public" ? "public" : "private";
-        let mixed = false;
-        if (lists(method)) {
-          for (const s of this.stores)
-            for (const [, e] of s)
-              if (
-                e.serverRef === serverRef &&
-                e.method === method &&
-                (e.authContextId === authContextId || e.shared) &&
-                (e.scope !== scope || e.mixed)
-              )
-                mixed = true;
-          if (mixed) {
-            this.options.diagnostic?.("mixed-cache-scope", { method });
+    let flight: Flight | undefined;
+    for (const f of active) {
+      if (f.valid && !f.aborted) {
+        flight = f;
+        break;
+      }
+    }
+
+    const isCreator = flight === undefined;
+    if (!flight) {
+      const controller = new AbortController();
+      const newFlight: Flight = {
+        ...ctx,
+        method,
+        uri: params.uri,
+        valid: true,
+        waiters: 0,
+        aborted: false,
+        controller,
+        result: null!,
+      };
+      const flightOpts: RequestOptions = { ...opts, signal: controller.signal };
+      newFlight.result = Promise.resolve()
+        .then(async (): Promise<Outcome<unknown>> => {
+          if (newFlight.aborted) {
+            return {
+              kind: "cancelled",
+              wasSent: false,
+              phase: "queue",
+              meta: { requestId: 0, method, binding: "local", attempts: 0 },
+            };
+          }
+          const out = await request(method, params, flightOpts);
+          inspect(out);
+          if (
+            out.kind === "jsonrpc-error" &&
+            out.code === -32602 &&
+            lists(method) &&
+            "cursor" in params
+          ) {
+            this.invalidate(serverRef, method);
+            const { cursor, ...first } = params;
+            return this.run(ctx, method, first, flightOpts, request);
+          }
+          if (
+            newFlight.valid &&
+            entry &&
+            this.options.staleIfError &&
+            out.kind === "transport-failure" &&
+            (!out.failure.status || out.failure.status >= 500)
+          ) {
+            const result = {
+              ...structuredClone(entry.outcome),
+              stale: true,
+              staleReason: out.failure.kind,
+            };
+            return mark(result, "stale");
+          }
+          if (
+            !newFlight.valid ||
+            out.kind !== "ok" ||
+            !object(out.value) ||
+            out.value.resultType !== "complete" ||
+            out.meta.trace?.length
+          )
+            return mark(out, "miss");
+          const scope = out.value.cacheScope === "public" ? "public" : "private";
+          let mixed = false;
+          if (lists(method)) {
             for (const s of this.stores)
-              for (const [k, e] of s)
+              for (const [, e] of s)
                 if (
                   e.serverRef === serverRef &&
                   e.method === method &&
-                  (e.authContextId === authContextId || e.shared)
-                ) {
-                  if (e.shared) s.delete(k);
-                  else e.mixed = true;
-                }
+                  (e.authContextId === authContextId || e.shared) &&
+                  (e.scope !== scope || e.mixed)
+                )
+                  mixed = true;
+            if (mixed) {
+              this.options.diagnostic?.("mixed-cache-scope", { method });
+              for (const s of this.stores)
+                for (const [k, e] of s)
+                  if (
+                    e.serverRef === serverRef &&
+                    e.method === method &&
+                    (e.authContextId === authContextId || e.shared)
+                  ) {
+                    if (e.shared) s.delete(k);
+                    else e.mixed = true;
+                  }
+            }
           }
+          const shared =
+            scope === "public" && this.options.sharePublic === true && !mixed;
+          // A replacement that is stale or too large must not resurrect the previous value.
+          for (const s of this.stores) {
+            s.delete(key);
+            s.delete(pub);
+          }
+          const ttl =
+            typeof out.value.ttlMs === "number" &&
+            Number.isFinite(out.value.ttlMs)
+              ? Math.min(
+                  this.options.maxTtlMs ?? 86_400_000,
+                  Math.floor(out.value.ttlMs),
+                )
+              : 0;
+          if (ttl > 0) {
+            const size = new TextEncoder().encode(
+              JSON.stringify([base, out]),
+            ).length;
+            if (size <= (this.options.maxEntryBytes ?? 4 * 1024 * 1024))
+              this.insert({
+                ...ctx,
+                method,
+                uri: params.uri,
+                key: shared ? pub : key,
+                shared,
+                scope,
+                mixed,
+                expires: this.now() + ttl,
+                size,
+                outcome: structuredClone(out),
+              });
+          }
+          return mark(out, "miss");
+        })
+        .finally(() => {
+          active.delete(newFlight);
+          if (active.size === 0 && this.flights.get(key) === active) {
+            this.flights.delete(key);
+          }
+        });
+      // Prevent unhandled rejection when all attached callers leave early via withAbort.
+      newFlight.result.catch(() => {});
+      active.add(newFlight);
+      this.flights.set(key, active);
+      flight = newFlight;
+    }
+
+    flight.waiters += 1;
+    let detached = false;
+    const detach = (aborted: boolean) => {
+      if (detached) return;
+      detached = true;
+      flight!.waiters -= 1;
+      if (aborted && flight!.waiters === 0) {
+        flight!.aborted = true;
+        active.delete(flight!);
+        if (active.size === 0 && this.flights.get(key) === active) {
+          this.flights.delete(key);
         }
-        const shared =
-          scope === "public" && this.options.sharePublic === true && !mixed;
-        // A replacement that is stale or too large must not resurrect the previous value.
-        for (const s of this.stores) {
-          s.delete(key);
-          s.delete(pub);
-        }
-        const ttl =
-          typeof out.value.ttlMs === "number" &&
-          Number.isFinite(out.value.ttlMs)
-            ? Math.min(
-                this.options.maxTtlMs ?? 86_400_000,
-                Math.floor(out.value.ttlMs),
-              )
-            : 0;
-        if (ttl > 0) {
-          const size = new TextEncoder().encode(
-            JSON.stringify([base, out]),
-          ).length;
-          if (size <= (this.options.maxEntryBytes ?? 4 * 1024 * 1024))
-            this.insert({
-              ...ctx,
-              method,
-              uri: params.uri,
-              key: shared ? pub : key,
-              shared,
-              scope,
-              mixed,
-              expires: this.now() + ttl,
-              size,
-              outcome: structuredClone(out),
-            });
-        }
-        return mark(out, "miss");
-      }),
+        flight!.controller.abort(opts.signal?.reason);
+      }
     };
-    active.add(flight);
-    this.flights.set(key, active);
+
     try {
-      return await flight.result;
-    } finally {
-      active.delete(flight);
-      if (active.size === 0) this.flights.delete(key);
+      const out = opts.signal
+        ? await withAbort(flight.result, opts.signal, () => {
+            detach(true);
+            return WAITER_ABORTED;
+          })
+        : await flight.result;
+      detach(false);
+      return !isCreator && out.kind === "ok" ? structuredClone(out) : out;
+    } catch (err) {
+      if (err === WAITER_ABORTED) {
+        detach(true);
+        return {
+          kind: "cancelled",
+          wasSent: false,
+          phase: "queue",
+          meta: { requestId: 0, method, binding: "local", attempts: 0 },
+        };
+      }
+      detach(false);
+      throw err;
     }
   }
 }

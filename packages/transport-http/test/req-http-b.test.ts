@@ -195,7 +195,13 @@ describe("HTTP ambiguous breaks", () => {
       const first = await client.request("tools/call", { name: "w", arguments: {} });
       expect(first.kind).toBe("mrtr-interim");
       if (first.kind !== "mrtr-interim") return;
-      const second = await first.resume({ q: { action: "accept" } });
+      expect("resume" in first).toBe(false);
+      const second = await client.request("tools/call", {
+        name: "w",
+        arguments: {},
+        ...(first.requestState !== undefined ? { requestState: first.requestState } : {}),
+        inputResponses: { q: { action: "accept" } },
+      });
       expect(second.kind).toBe("uncertain-write");
       expect(calls).toHaveLength(2);
       const params = calls[1]!.json["params"] as Record<string, unknown>;

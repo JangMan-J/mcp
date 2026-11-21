@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { McpClient, type FetchPort, type JsonRpcNotification, type JsonRpcRequest } from "@mcp-client/core";
 import { HttpTransport, getHeaderCaseInsensitive } from "../src/index.js";
-import { createHttpTestServer } from "../../fixtures/server/http-main.ts";
-import { formatSseComment } from "../../fixtures/server/sse.ts";
+import { createHttpTestServer } from "./helpers/http-server.js";
+import { formatSseComment } from "./helpers/sse.js";
 
 interface CapturedCall {
   readonly url: string;
