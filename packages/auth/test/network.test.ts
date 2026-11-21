@@ -40,6 +40,30 @@ it('redeems a real single-use PKCE code via the loopback callback and test AS', 
   } finally { redirect.close(); await as.close(); }
 });
 
+it('[AUTH-DCR-1] forwards an opt-in JSON content-type, defaults to urlencoded, and rejects other types', async () => {
+  const seen: Array<{ contentType?: string; body: string }> = [];
+  const server = createServer((req, res) => {
+    let body = '';
+    req.on('data', (chunk: Buffer) => { body += chunk; });
+    req.on('end', () => { seen.push({ contentType: req.headers['content-type'], body }); res.end('{}'); });
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address() as { port: number };
+  const href = `http://127.0.0.1:${port}`;
+  const safe = new SafeFetch({ allowInsecureDev: true, allowAddress: host => host === '127.0.0.1' });
+  try {
+    const json = JSON.stringify({ client_name: 'test-client' });
+    expect((await safe.fetch(`${href}/register`, { method: 'POST', body: json,
+      headers: { 'content-type': 'application/JSON; charset=utf-8' } })).status).toBe(200);
+    expect(seen[0]).toEqual({ contentType: 'application/json', body: json });
+    expect((await safe.fetch(`${href}/token`, { method: 'POST', body: 'grant_type=x' })).status).toBe(200);
+    expect(seen[1]).toEqual({ contentType: 'application/x-www-form-urlencoded', body: 'grant_type=x' });
+    await expect(safe.fetch(`${href}/xml`, { method: 'POST', body: '<x/>',
+      headers: { 'content-type': 'text/xml' } })).rejects.toThrow('fetch-content-type');
+    expect(seen).toHaveLength(2);
+  } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
+});
+
 it('revalidates redirects and sends no ambient authentication, with a body cap and deadline', async () => {
   const seen: Array<{ host?: string; auth?: string; cookie?: string; path?: string }> = [];
   const server = createServer((req, res) => {

@@ -33,9 +33,11 @@ export class SafeFetch implements FetchPort {
     if (method === 'POST' && typeof init.body !== 'string') fail('fetch-body');
     try {
       let url = secureUrl(input, this.options.allowInsecureDev);
-      const auth = method === 'POST' ? new Headers(init.headers).get('authorization') : null;
+      const headers = new Headers(init.headers);
+      const auth = method === 'POST' ? headers.get('authorization') : null;
+      const contentType = method === 'POST' ? safeContentType(headers.get('content-type')) : null;
       for (let hop = 0; ; hop++) {
-        const response = await this.send(url, method, init.body as string | undefined, auth, signal);
+        const response = await this.send(url, method, init.body as string | undefined, auth, contentType, signal);
         if (![301, 302, 303, 307, 308].includes(response.status)) return response;
         const location = response.headers.get('location');
         if (method !== 'GET' || init.redirect === 'error' || hop >= 3 || !location) fail('fetch-redirect');
@@ -53,7 +55,7 @@ export class SafeFetch implements FetchPort {
     }
   }
 
-  private async send(url: URL, method: string, body: string | undefined, auth: string | null, signal: AbortSignal): Promise<Response> {
+  private async send(url: URL, method: string, body: string | undefined, auth: string | null, contentType: string | null, signal: AbortSignal): Promise<Response> {
     signal.throwIfAborted();
     const hostname = url.hostname.replace(/^\[|\]$/gu, '');
     const literal = isIP(hostname);
@@ -78,7 +80,7 @@ export class SafeFetch implements FetchPort {
         lookup: (_host, _opts, callback) => callback(null, address, family),
         ...(url.protocol === 'https:' ? { rejectUnauthorized: true } : {}),
         headers: { accept: 'application/json', ...(method === 'POST' ? {
-          'content-type': 'application/x-www-form-urlencoded', 'content-length': Buffer.byteLength(body!),
+          'content-type': contentType!, 'content-length': Buffer.byteLength(body!),
           ...(auth ? { authorization: auth } : {}),
         } : {}) },
       }, (res) => {
@@ -109,3 +111,11 @@ export class SafeFetch implements FetchPort {
 }
 
 const resolve = (host: string) => lookup(host, { all: true });
+
+/** Allow only the token-endpoint default or an RFC 7591 JSON body; compare media types, ignoring parameters. */
+function safeContentType(raw: string | null): string {
+  if (raw === null) return 'application/x-www-form-urlencoded';
+  const mediaType = raw.split(';', 1)[0]!.trim().toLowerCase();
+  if (mediaType !== 'application/x-www-form-urlencoded' && mediaType !== 'application/json') fail('fetch-content-type');
+  return mediaType;
+}
