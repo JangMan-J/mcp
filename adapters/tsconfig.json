@@ -11,7 +11,10 @@
     { "path": "../packages/auth" },
     { "path": "../packages/core" },
     { "path": "../packages/ext-events" },
-    { "path": "../packages/ops" }
+    { "path": "../packages/mrtr-cache" },
+    { "path": "../packages/ops" },
+    { "path": "../packages/transport-http" },
+    { "path": "../packages/transport-stdio" }
   ],
   "include": ["pi-coding-agent/**/*.ts", "pi-durable/**/*.ts"],
   "exclude": ["dist", "node_modules"]
