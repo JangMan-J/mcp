@@ -2647,8 +2647,8 @@
       "anchor": "specification/2026-07-28/deprecated.md#Deprecated",
       "role": "C",
       "strength": "n/a",
-      "condition": "Dynamic Client Registration deprecated (PR 2858) and still allowed for back-compat. PLAN N8: do not call it. Auth negative check is AUTH-DCR-1.",
-      "default": "do not call registration_endpoint",
+      "condition": "Dynamic Client Registration deprecated (PR 2858) and still allowed for back-compat. The default never calls registration_endpoint; explicit dynamicRegistration host opt-in is back-compat only. Auth negative check is AUTH-DCR-1.",
+      "default": "default never called; host opt-in for back-compat only",
       "disposition": "deprecated",
       "acceptanceCheck": "fixture dep/dcr-not-called",
       "openQuestion": null
@@ -3781,7 +3781,7 @@
       "role": "C",
       "strength": "SHOULD",
       "condition": "several mechanisms available",
-      "default": "priority: pre-registered, then CIMD, then prompt (DCR excluded)",
+      "default": "priority: pre-registered, then CIMD, then DCR when enabled, then prompt",
       "disposition": "required",
       "acceptanceCheck": "auth/registration-priority-order",
       "openQuestion": null
@@ -3802,10 +3802,10 @@
       "anchor": "specification/2026-07-28/basic/authorization/client-registration.md#Dynamic Client Registration",
       "role": "C",
       "strength": "MAY",
-      "condition": "DCR deprecated; AS advertises registration_endpoint",
-      "default": "registration_endpoint read, never POSTed",
-      "disposition": "excluded",
-      "acceptanceCheck": "auth/dcr-never-called",
+      "condition": "DCR deprecated; host enables dynamicRegistration and AS advertises registration_endpoint",
+      "default": "registration_endpoint never POSTed unless host enables dynamicRegistration",
+      "disposition": "conditional",
+      "acceptanceCheck": "auth/dcr-never-called; unit [AUTH-DCR-1]",
       "openQuestion": null
     },
     {
@@ -3813,10 +3813,10 @@
       "anchor": "specification/2026-07-28/basic/authorization/client-registration.md#Application Type and Redirect URI Constraints",
       "role": "C",
       "strength": "MUST",
-      "condition": "only for DCR users",
-      "default": "never sends application_type because DCR is never used",
-      "disposition": "excluded",
-      "acceptanceCheck": "auth/dcr-never-called",
+      "condition": "only when DCR is enabled",
+      "default": "application_type native (loopback) or web when DCR is enabled",
+      "disposition": "conditional",
+      "acceptanceCheck": "unit [AUTH-DCR-2]",
       "openQuestion": null
     },
     {
