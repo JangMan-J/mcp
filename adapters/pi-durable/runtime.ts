@@ -3,7 +3,7 @@ import { TasksExtension } from "@mcp-client/ext-tasks";
 import { StatefulClient, openListenStream } from "@mcp-client/mrtr-cache";
 import type { AuthProvider } from "@mcp-client/core";
 import { createEventsExtension, openEventsStream, type EventsExtension, type EventsOptions } from "@mcp-client/ext-events";
-import type { Extension } from "@mcp-client/core";
+import { AppsClient, AppsExtension, extractToolAppMeta, type AppRenderPort, type AppViewPayload } from "@mcp-client/ext-apps";
 import { createOps, type Ops, type OpsClient } from "@mcp-client/ops";
 import { StdioTransport } from "@mcp-client/transport-stdio";
 import { HttpTransport } from "@mcp-client/transport-http";
@@ -14,7 +14,8 @@ import { createLiveAuth, inspectServerCard } from "./auth.js";
 import type { McpToolDescriptor, McpCallToolResult } from "./extension.js";
 import type { ToolWire } from "./adapter.js";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { homedir } from "node:os";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { McpOutcomeError } from "@mcp-client/core";
 
@@ -27,8 +28,8 @@ export interface RuntimeOptions extends Partial<Parameters<typeof createLiveAuth
   readonly resolveProviderToken?: (provider: string) => Promise<string>;
   /** Overrides the descriptor-derived bearer provider (e.g. OAuth from createLiveAuth). */
   readonly authProvider?: AuthProvider;
-  /** Optional extra client extension, e.g. AppsExtension. */
-  readonly apps?: Extension;
+  /** Enables the MCP Apps extension; without it the extension is neither attached nor advertised. */
+  readonly appRenderer?: AppRenderPort;
   readonly telemetry?: TelemetryPort;
   /** OTel tracer/context source; used when `telemetry` is not given. Content capture stays off unless set. */
   readonly otel?: OtelTelemetryOptions;
@@ -44,6 +45,10 @@ export interface DurableRuntime {
   /** Tasks extension attached to the client before discovery. */
   readonly tasks: TasksExtension;
   readonly capabilities: Record<string, unknown> | undefined;
+  /** Present only when `appRenderer` was supplied. */
+  readonly apps: AppsClient | undefined;
+  /** Load and render a tool's `_meta.ui.resourceUri` view; undefined when apps are off or the tool has no UI. */
+  renderToolApp(tool: McpToolDescriptor, signal?: AbortSignal): Promise<Outcome<AppViewPayload> | undefined>;
   readonly transportClosed: AbortSignal;
   ready(signal?: AbortSignal): Promise<Outcome<DiscoverResult>>;
   /** Drop the cached discovery (e.g. after sign-in) and discover again. */
@@ -63,7 +68,18 @@ export async function openRuntime(
   const descriptor = input.source && input.trusted !== undefined && (input.transport === "stdio" || input.transport === "http")
     ? input as ServerDescriptor : normalizeServer(input.name, input);
   const closedCtrl = new AbortController();
-  const auth = await createLiveAuth(descriptor, { ...opts, stateDir: opts?.stateDir ?? join(homedir(), ".pi", "durable") });
+  // Never default into ~/.pi: without an explicit stateDir, credentials live in a private temp dir removed on close.
+  const tempDir = opts?.stateDir ? undefined : await mkdtemp(join(tmpdir(), "pi-durable-"));
+  const removeTemp = async () => { if (tempDir) await rm(tempDir, { recursive: true, force: true }); };
+  try {
+    return await build(descriptor, opts, closedCtrl, opts?.stateDir ?? tempDir!, removeTemp);
+  } catch (e) { await removeTemp(); throw e; }
+}
+
+async function build(
+  descriptor: ServerDescriptor, opts: RuntimeOptions | undefined, closedCtrl: AbortController, stateDir: string, removeTemp: () => Promise<void>,
+): Promise<DurableRuntime> {
+  const auth = await createLiveAuth(descriptor, { ...opts, stateDir });
   const inherit = descriptor.inheritEnv ?? opts?.inheritEnv;
   const authProvider = opts?.authProvider ?? auth.provider;
   const transport = (await opts?.createTransport?.(descriptor)) ?? (descriptor.transport === "http"
@@ -106,7 +122,8 @@ export async function openRuntime(
   });
   const eventsExt = createEventsExtension({ enabled: true });
   client.use(eventsExt);
-  if (opts?.apps) client.use(opts.apps);
+  const appsExt = opts?.appRenderer && new AppsExtension({ renderer: opts.appRenderer });
+  if (appsExt) client.use(appsExt);
   const stateful = new StatefulClient({
     request: (m, p, o) => client.request(m, p, o),
     serverRef: descriptor.name,
@@ -160,22 +177,37 @@ export async function openRuntime(
   let readyPromise: Promise<Outcome<DiscoverResult>> | undefined;
   const discover = async (signal: AbortSignal): Promise<Outcome<DiscoverResult>> => {
     const out = await client.discover({ signal });
-    if (!(descriptor.allowLegacyInitialize ?? opts?.allowLegacyInitialize) || out.kind !== "jsonrpc-error" || out.code !== -32601) return out;
-    const init = await client.request("initialize", { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "pi-durable", version: "1" } }, { signal });
+    // Legacy initialize is an opt-in stdio-only fallback for servers that predate server/discover.
+    const legacy = descriptor.transport === "stdio" && (descriptor.allowLegacyInitialize ?? opts?.allowLegacyInitialize) === true;
+    if (!legacy || out.kind !== "jsonrpc-error" || out.code !== -32601) return out;
+    const capabilities = appsExt ? appsExt.capabilities(appsExt.health() === "working") : {};
+    const init = await client.request("initialize", { protocolVersion: "2025-11-25", capabilities, clientInfo: { name: "pi-durable", version: "1" } }, { signal });
     if (init.kind === "mrtr-interim") return { kind: "protocol-violation", detail: "unexpected interim initialize result", meta: init.meta };
     if (init.kind !== "ok") return init;
-    const { capabilities, protocolVersion } = init.value;
-    if (!capabilities || typeof capabilities !== "object" || Array.isArray(capabilities) || typeof protocolVersion !== "string")
+    const { capabilities: serverCaps, protocolVersion } = init.value;
+    if (!serverCaps || typeof serverCaps !== "object" || Array.isArray(serverCaps) || typeof protocolVersion !== "string")
       return { kind: "protocol-violation", detail: "invalid initialize result", meta: init.meta };
     await transport.notify({ jsonrpc: "2.0", method: "notifications/initialized" }, { signal, idempotent: false, timeoutMs: timeoutMs ?? 30_000 });
-    return { ...init, value: { ...init.value, capabilities, supportedVersions: [protocolVersion], cacheScope: "private", ttlMs: 0, resultType: "complete" } as DiscoverResult };
+    return { ...init, value: { ...init.value, capabilities: serverCaps, supportedVersions: [protocolVersion], cacheScope: "private", ttlMs: 0, resultType: "complete" } as DiscoverResult };
   };
   const ready = (signal?: AbortSignal): Promise<Outcome<DiscoverResult>> => (readyPromise ??= discover(signal ? AbortSignal.any([lifetime, signal]) : lifetime).then((disc) => {
     caps = disc.kind === "ok" ? (disc.value.capabilities as Record<string, unknown>) : undefined;
     return disc;
   }));
   const rediscover = (signal?: AbortSignal) => { readyPromise = undefined; return ready(signal); };
-  const close = async () => { closedCtrl.abort(); try { await client.close(); } finally { await auth.close?.(); } };
+  const close = async () => {
+    closedCtrl.abort();
+    try { await client.close(); } finally { try { await auth.close?.(); } finally { await removeTemp(); } }
+  };
+  const apps = opts?.appRenderer && new AppsClient({
+    ops, renderer: opts.appRenderer, serverLabel: descriptor.name, ...(consent ? { consent } : {}),
+  });
+  const renderToolApp = async (tool: McpToolDescriptor, signal?: AbortSignal) => {
+    const meta = extractToolAppMeta(tool as unknown as Record<string, unknown>);
+    if (!apps || !meta) return undefined;
+    await ready(signal);
+    return apps.loadAppResource(meta, { toolName: tool.name, signal: signal ? AbortSignal.any([signal, lifetime]) : lifetime });
+  };
   const signIn = async (signal: AbortSignal = lifetime) => {
     if (!auth.signIn) throw new Error("Server has no interactive sign-in configured");
     await auth.signIn(signal);
@@ -212,6 +244,6 @@ export async function openRuntime(
     })().catch(() => {}).finally(() => { lifetime.removeEventListener("abort", stop); stop(); });
     return stop;
   };
-  return { listTools, callTool, onToolsChanged, signIn, inspectCard, client, stateful, eventsExtension: eventsExt, openEventsStream: eventsStream, ops, tasks, get capabilities() { return caps; }, transportClosed: closedCtrl.signal, ready, rediscover, close };
+  return { listTools, callTool, onToolsChanged, signIn, inspectCard, client, stateful, eventsExtension: eventsExt, openEventsStream: eventsStream, ops, tasks, get capabilities() { return caps; }, apps, renderToolApp, transportClosed: closedCtrl.signal, ready, rediscover, close };
 }
 
