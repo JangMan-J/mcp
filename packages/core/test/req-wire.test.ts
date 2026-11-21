@@ -6,7 +6,7 @@ import { InprocTransport } from '@mcp-client/fixtures';
 import { StdioTransport } from '@mcp-client/transport-stdio';
 import { HttpTransport } from '@mcp-client/transport-http';
 import { createCoreAdapter } from '../../conformance/src/adapter.js';
-import { runExchange as runAuth } from '../../auth/dist/conformance.js';
+import { runExchange as runAuth } from '../../auth/src/conformance.js';
 import { StatefulClient } from '../../mrtr-cache/src/index.js';
 import {
   McpClient, McpOutcomeError, META_CLIENT_CAPABILITIES, META_CLIENT_INFO,
