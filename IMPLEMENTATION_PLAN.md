@@ -19,7 +19,7 @@ This plan expands `PLAN.md` into executable work. It is planning only: no code, 
 | N5 | The protocol library imports **no Pi package**. | Enforced by a dependency-cruiser/lint rule and a gate scenario that runs in a process whose module resolution has no Pi packages (deny-list in `packages/conformance/deny-pi.json`) (14.2). Pi code lives only under `adapters/`. |
 | N6 | Primary profile **MCP 2026-07-28**, tag `5f5440bb26a62e2cf3440b92da5a667efa03b267`. | Every applicable client requirement has a row in section 3 with a disposition. |
 | N7 | Lookback anchored **2026-11-19**; earliest eligible compatibility revision **2026-05-19**. `2025-11-25` predates it. | No `initialize`/`notifications/initialized` fallback, no `Mcp-Session-Id` handling, no GET/DELETE session endpoints, no `Last-Event-ID`/SSE event-id resume, no HTTP+SSE (2024-11-05) transport. A legacy peer yields an actionable `unsupported-version` diagnostic (5.5). No intermediate revision between 2026-05-19 and 2026-07-28 is known to exist in the wiki: UNRESOLVED (see 17, Q1) - verify against the upstream tag list before declaring the lookback set is `{2026-07-28}` only. |
-| N8 | Deprecated/excluded: Roots, Sampling (incl. `includeContext`), MCP Logging (`logging/setLevel`, `notifications/message`, `io.modelcontextprotocol/logLevel`), Dynamic Client Registration, HTTP+SSE. | Listed explicitly in 3.3 with the exact deprecation registry (`S/deprecated.md`, `S/changelog.md#Deprecated`). Not implemented, not advertised, not stubbed. |
+| N8 | Deprecated/excluded: Roots, Sampling (incl. `includeContext`), MCP Logging (`logging/setLevel`, `notifications/message`, `io.modelcontextprotocol/logLevel`), HTTP+SSE. Dynamic Client Registration is **deprecated; opt-in only (host enables), default off**. | Listed explicitly in 3.3 with the exact deprecation registry (`S/deprecated.md`, `S/changelog.md#Deprecated`). Roots, Sampling, Logging, and HTTP+SSE are not implemented, advertised, or stubbed. DCR reads `registration_endpoint` without POSTing by default; explicit host opt-in enables it for back-compat. |
 | N9 | Preserve separately: active transport progress (`notifications/progress`), stdio stderr diagnostics, OpenTelemetry. | Three distinct interfaces in 4.5; no code path funnels one into another. |
 | N10 | Optionals (Tasks, Skills, Client Credentials, Enterprise-Managed Authorization, Apps, Server Cards) and SEP-3415 Events are independent, opt-in packages advertised only when working. | Section 12; each has a removal test. |
 | N11 | **Events** stays draft-labeled and off by default; may be enabled only by explicit request. Not core conformance evidence. | `packages/ext-events` ships `defaultEnabled: false`; gate excludes it from core claims (14.4). |
@@ -117,7 +117,7 @@ Confirmed from `S/deprecated.md` and `S/changelog.md#Deprecated`/`#Major changes
 | Roots (`roots/list`, `notifications/roots/list_changed`) | Deprecated (SEP-2577); `notifications/roots/list_changed` removed | `S/deprecated.md`; changelog major 5 | **excluded**: no capability, no handling; `roots/list` input request => `unsupported-input-request` | `DEP-ROOTS-1`, `MRTR-C-8` |
 | Sampling (`sampling/createMessage`) incl. `includeContext: "thisServer"/"allServers"` | Deprecated (SEP-2577; SEP-2596 for includeContext) | same | **excluded** | `DEP-SAMPLING-1`, `MRTR-C-8` |
 | MCP Logging (`logging/setLevel` removed; `notifications/message`; `_meta` `logLevel`) | Deprecated (SEP-2577); `logging/setLevel` removed | same; changelog major 5 | **excluded**: never send `logLevel`; stray notifications dropped | `WIRE-LOG-1` |
-| Dynamic Client Registration (RFC 7591) | Deprecated (PR #2858): remains for back-compat | `S/deprecated.md`; changelog Deprecated 4 | **excluded**: CIMD / pre-registered only; `registration_endpoint` read but never used | `AUTH-DCR-1` |
+| Dynamic Client Registration (RFC 7591) | Deprecated (PR #2858): remains for back-compat | `S/deprecated.md`; changelog Deprecated 4 | **deprecated; opt-in only (host enables), default off**: pre-registered, then CIMD, then DCR when enabled, then client-info prompt; `registration_endpoint` read but never POSTed by default | `AUTH-DCR-1` |
 | HTTP+SSE transport (2024-11-05) | Deprecated since 2025-03-26; SEP-2596 | `S/deprecated.md`; `SH#HTTP+SSE Transport` | **excluded** | `HTTP-SSEOLD-1` |
 | `initialize` / `notifications/initialized` handshake | Removed (SEP-2575) | changelog major 2 | **excluded** (also outside lookback, N7) | `VER-NOFALLBACK-1`, `LIFE-1` |
 | `Mcp-Session-Id`, GET stream, DELETE | Removed (SEP-2567, SEP-2575) | changelog major 1, 4; `SH#Earlier Streamable HTTP Revisions` | **excluded** | `HTTP-NOGET-1`, `HTTP-NOSESS-1` |
@@ -128,7 +128,7 @@ Confirmed from `S/deprecated.md` and `S/changelog.md#Deprecated`/`#Major changes
 | Server-initiated requests (`roots/list`, `sampling/createMessage`, `elicitation/create`) | Replaced by MRTR | changelog major 7 | **excluded** (violation if received) | `WIRE-DIR-2` |
 | `notifications/elicitation/complete`, `elicitationId`, error `-32042` | Removed | changelog minor 11; `S/basic/index.md#Error Codes` | **excluded** | `ELIC-REM-1`, `EDGE-34` |
 | Resource-not-found `-32002` | Replaced by `-32602`; clients SHOULD still accept `-32002` | changelog minor 6; `S/server/resources.md#Error Handling` | **accepted on receive only** | `OPS-RES-ERR-1` |
-| `application_type` requirement for DCR (SEP-837) | applies to DCR users only | changelog minor 8 | n/a (DCR excluded) | none |
+| `application_type` requirement for DCR (SEP-837) | applies to DCR users only | changelog minor 8 | **conditional**: send `application_type` native/web when DCR is enabled | `AUTH-DCR-2` |
 | Missing `resultType` from earlier servers | clients MUST treat as `complete` | `S/basic/index.md#ResultType` | **required** (cheap, spec-mandated; not a legacy fallback) | `WIRE-RT-2` |
 | Initialization-based legacy peers (2025-11-25 and earlier) | outside six-month lookback (earliest eligible 2026-05-19) | PLAN.md | **excluded**; diagnostic only | `VER-DIAG-1` |
 | Experimental items without pin: interceptors, variants, tool-annotations | Experimental | 12.8 | **excluded (no pin)** | `EXT-EXP-*` |
@@ -364,7 +364,7 @@ Rows from sections 4-15 follow in section order. Server-role statements (`HTTP-S
 | AUTH-REG-2 | same#Client ID Metadata Documents | C | SHOULD | AS advertises CIMD | client_id URL | required | fixture `auth/cimd-flow` |
 | AUTH-REG-3 | same#Implementation Requirements | C | MUST | CIMD shape | https+path, doc match | required | unit + fixture |
 | AUTH-REG-4 | same (priority 4) | C | derived | none available | prompt or fail | required | fixture |
-| AUTH-DCR-1 | S/deprecated.md; client-registration.md#Dynamic Client Registration | C | MAY (deprecated) | DCR | never used | excluded (deprecated) | fixture `auth/dcr-never-called` |
+| AUTH-DCR-1 | S/deprecated.md; client-registration.md#Dynamic Client Registration | C | MAY (deprecated) | host enables `dynamicRegistration` | never POSTed by default; opt-in POSTs once per issuer after pre-registration and CIMD and before client-info prompt | conditional | fixture `auth/dcr-never-called`; unit [AUTH-DCR-1] |
 | AUTH-BIND-1 | same#Authorization Server Binding; changelog minor 9 | C | MUST | credentials | keyed by issuer; no reuse | required | fixture `auth/as-change-reregisters` |
 | AUTH-BIND-2 | same | C | SHOULD | AS changed | surface notice | required | fixture |
 | AUTH-FLOW-1 | S/basic/authorization/index.md#Authorization Flow Steps | C | - | auth request | params | required | fixture |
@@ -451,7 +451,7 @@ Rows from sections 4-15 follow in section order. Server-role statements (`HTTP-S
 | CUT-ROLLBACK-1 | PLAN.md Modules 5 | host | derived | migration rollback | single-edit rollback proven | required (Wave 3) | rollback drill in scratch dir |
 | DEP-CONFIRM-1 | S/deprecated.md; S/changelog.md#Deprecated | - | derived | tag re-check | confirm exact deprecated list at tag | required (Wave 0 task) | RECONCILIATION entry for both pages |
 | DEP-LOG-1 | S/server/utilities/logging.md; S/deprecated.md | C | n/a | MCP Logging | not implemented | excluded (deprecated) | covered by WIRE-LOG-1 |
-| DEP-DCR-1 | S/deprecated.md | C | n/a | DCR | not implemented | excluded (deprecated) | covered by AUTH-DCR-1 |
+| DEP-DCR-1 | S/deprecated.md | C | n/a | DCR | never called by default; host opt-in is back-compat only | deprecated | fixture `dep/dcr-not-called`; covered by AUTH-DCR-1 |
 | DEP-HTTPSSE-1 | S/deprecated.md | C | n/a | HTTP+SSE | not implemented | excluded (deprecated) | covered by HTTP-SSEOLD-1 |
 | DEP-INCLUDECTX-1 | S/deprecated.md | C | n/a | includeContext | not implemented (sampling excluded) | excluded (deprecated) | covered by DEP-SAMPLING-1 |
 
