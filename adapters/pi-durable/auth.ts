@@ -65,12 +65,14 @@ async function createPiLiveAuth(descriptor: LegacyServerConfig, options: PiLiveA
   }
   const { credentials, resolveProviderToken } = options;
   if (auth) {
-    if (descriptor.source !== "global" || !resolveProviderToken) throw unavailable("provider-token-resolver");
+    // Trust is the descriptor's explicit `trusted` flag (checked above), not Pi's global config source.
+    if (!resolveProviderToken) throw unavailable("provider-token-resolver");
     return { provider: new ConfiguredBearer({ resource, token: () => resolveProviderToken(auth.provider), allowInsecureDev: true }) };
   }
   const safe = new SafeFetch({ allowInsecureDev: true });
   const local = loopback(url) ? new SafeFetch({ allowInsecureDev: true,
-    allowAddress: (host, ip) => host === url.hostname && (ip === "127.0.0.1" || ip === "::1"),
+    // SafeFetch passes IPv6 hosts unbracketed; only the resource's own loopback host may bypass the address blocklist.
+    allowAddress: (host, ip) => host === url.hostname.replace(/^\[|\]$/gu, "") && (ip === "127.0.0.1" || ip === "::1"),
   }) : undefined;
   const fetcher: FetchPort = { fetch: (input, init) =>
     (local && new URL(input).origin === url.origin ? local : safe).fetch(input, init),
@@ -205,6 +207,18 @@ function createOAuth(resource: string, serverLabel: string, config: LegacyOAuthC
   } };
 }
 
+async function abortable<T>(signal: AbortSignal, run: () => Promise<T>): Promise<T> {
+  signal.throwIfAborted();
+  let abort!: () => void;
+  const cancelled = new Promise<never>((_resolve, reject) => {
+    abort = () => reject(signal.reason);
+    signal.addEventListener("abort", abort, { once: true });
+  });
+  try {
+    return await Promise.race([run(), cancelled]);
+  } finally { signal.removeEventListener("abort", abort); }
+}
+
 function registrationKey(key: string, redirectUri: string): string {
   return key.startsWith('["registration",') ? JSON.stringify([key, redirectUri]) : key;
 }
@@ -220,7 +234,7 @@ export interface LegacyOAuthConfig {
   readonly clientId?: string; readonly clientSecret?: string; readonly callbackPort?: number;
   readonly callbackUrl?: string; readonly clientName?: string;
   readonly clientRegistration?: "auto" | "dcr" | "cimd"; readonly authServerMetadataUrl?: string;
-  readonly [key: string]: unknown;
+  readonly issuer?: string; readonly scope?: string;
 }
 export interface LegacyServerConfig {
   readonly name: string; readonly source: string; readonly trusted: boolean;
