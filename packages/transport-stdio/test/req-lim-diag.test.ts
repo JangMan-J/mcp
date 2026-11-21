@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { TransportDiagnostic } from "@mcp-client/core";
-import { DEFAULT_MAX_DIAGNOSTICS, DiagnosticChannel } from "../src/diagnostics.js";
+import { DEFAULT_MAX_DIAGNOSTICS, DiagnosticChannel, type TransportDiagnostic } from "@mcp-client/core";
 
 const diag = (i: number): TransportDiagnostic => ({ kind: "noise", message: `n${i}`, atMs: i });
 

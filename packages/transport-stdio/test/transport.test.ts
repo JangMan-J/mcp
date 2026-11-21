@@ -9,7 +9,7 @@ import { McpClient, type Exchange, type RequestId, type TransportCall } from "@m
 import { afterEach, expect, test } from "vitest";
 import { META_PROGRESS_TOKEN, META_SUBSCRIPTION_ID, StdioTransport, type StdioTransportOptions } from "../src/index.js";
 
-const server = fileURLToPath(new URL("../../fixtures/server/stdio-main.ts", import.meta.url));
+const server = fileURLToPath(new URL("./helpers/stdio-server.ts", import.meta.url));
 const children: Array<{ child: ChildProcess; closed: boolean; done: Promise<void> }> = [];
 const transports: StdioTransport[] = [];
 const dirs: string[] = [];

@@ -1,7 +1,11 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { clearTimeout, setTimeout } from "node:timers";
 import {
+  DEFAULT_MAX_DIAGNOSTICS,
+  DiagnosticChannel,
+  isReadOnlyMethod,
   JSONRPC_VERSION,
+  NotificationQueue,
   parseInboundMessage,
   systemClock,
   type Clock,
@@ -15,7 +19,6 @@ import {
   type TransportDiagnostic,
   type TransportFailure,
 } from "@mcp-client/core";
-import { DEFAULT_MAX_DIAGNOSTICS, DiagnosticChannel } from "./diagnostics.js";
 import { DEFAULT_MAX_LINE_BYTES, encodeStdioMessage, LineSplitter } from "./framing.js";
 import {
   DEFAULT_STDERR_MAX_BYTES,
@@ -35,25 +38,7 @@ export const DEFAULT_MAX_RESTARTS = 3;
 export const DEFAULT_RESTART_WINDOW_MS = 60_000;
 export const DEFAULT_RESTART_BACKOFF_MS = 100;
 
-/**
- * Default read-only methods eligible for retry after crash (IMPLEMENTATION_PLAN §6.5, STDIO-RECOVER-1).
- * `tools/call` is NEVER on this list.
- */
-export const READ_ONLY_METHODS: ReadonlySet<string> = new Set([
-  "server/discover",
-  "tools/list",
-  "prompts/list",
-  "prompts/get",
-  "resources/list",
-  "resources/templates/list",
-  "resources/read",
-  "completion/complete",
-  "subscriptions/listen",
-]);
-
-export function isReadOnlyMethod(method: string): boolean {
-  return READ_ONLY_METHODS.has(method);
-}
+export { isReadOnlyMethod };
 
 export type StdioTransportState = "idle" | "spawning" | "ready" | "closing" | "closed" | "failed";
 
@@ -86,53 +71,12 @@ export interface StdioTransportOptions {
   readonly spawnFn?: typeof spawn;
 }
 
-class NotificationQueue implements AsyncIterable<JsonRpcNotification> {
-  private readonly items: JsonRpcNotification[] = [];
-  private readonly waiters: Array<(res: IteratorResult<JsonRpcNotification>) => void> = [];
-  private ended = false;
-
-  push(n: JsonRpcNotification): void {
-    if (this.ended) return;
-    const waiter = this.waiters.shift();
-    if (waiter) {
-      waiter({ value: n, done: false });
-    } else {
-      this.items.push(n);
-    }
-  }
-
-  close(): void {
-    if (this.ended) return;
-    this.ended = true;
-    while (this.waiters.length > 0) {
-      const w = this.waiters.shift()!;
-      w({ value: undefined, done: true });
-    }
-  }
-
-  [Symbol.asyncIterator](): AsyncIterator<JsonRpcNotification> {
-    return {
-      next: (): Promise<IteratorResult<JsonRpcNotification>> => {
-        if (this.items.length > 0) {
-          return Promise.resolve({ value: this.items.shift()!, done: false });
-        }
-        if (this.ended) {
-          return Promise.resolve({ value: undefined, done: true });
-        }
-        return new Promise((resolve) => {
-          this.waiters.push(resolve);
-        });
-      },
-    };
-  }
-}
-
 interface PendingRequest {
   readonly key: string;
   readonly id: RequestId;
   readonly method: string;
   readonly progressTokenKey?: string;
-  readonly notifications: NotificationQueue;
+  readonly notifications: NotificationQueue<JsonRpcNotification>;
   readonly resolve: (end: ExchangeEnd) => void;
   readonly onAbort?: () => void;
   readonly signal: AbortSignal;
@@ -283,7 +227,7 @@ export class StdioTransport implements Transport {
   }
 
   start(msg: JsonRpcRequest, ctx: TransportCall): Exchange {
-    const notifications = new NotificationQueue();
+    const notifications = new NotificationQueue<JsonRpcNotification>();
 
     // Validate outbound message shape & framing before doing anything (WIRE-DIR-1, STDIO-FRAME-1, STDIO-STDIN-1)
     const payload = encodeStdioMessage(msg);

@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { AuthError, LifecycleClient, McpClient, type AuthProvider } from "@mcp-client/core";
+import { AuthError, McpClient, type AuthProvider } from "@mcp-client/core";
 import { HttpTransport } from "../src/index.js";
 
 const url = "https://mcp.example.test/rpc";
@@ -73,7 +73,7 @@ it("cancels a rejected write during the auth wait without replay or uncertain ex
     authProvider: provider(async () => { entered.resolve(); return release.promise; }),
     fetchFn: async () => { sent++; return rejection(401); },
   });
-  const client = new LifecycleClient({ transport, server: { key: url } });
+  const client = new McpClient({ transport, server: { key: url } });
   const call = client.request("tools/call", { name: "write" });
   await entered.promise;
   call.cancel();
@@ -97,7 +97,7 @@ it("does not reuse an authorization header across resources on the same origin",
   expect(headers).toEqual(["Bearer rpc-token", null]);
 });
 
-it.each([McpClient, LifecycleClient])("passes host consent to auth and never replays a declined or cancelled write (%s)", async Client => {
+it("passes host consent to auth and never replays a declined or cancelled write", async () => {
   const bodies: unknown[] = [];
   const decisions = ["decline", "cancel"] as const;
   let prompts = 0;
@@ -110,7 +110,7 @@ it.each([McpClient, LifecycleClient])("passes host consent to auth and never rep
       return true;
     },
   }, fetchFn: async (_, init) => { bodies.push(JSON.parse(String(init.body))); return rejection(401); } });
-  const client = new Client({ transport, server: { key: url, label: "Example" }, ports: { consent: {
+  const client = new McpClient({ transport, server: { key: url, label: "Example" }, ports: { consent: {
     async request(prompt) {
       expect(prompt).toEqual({ kind: "authorize", serverLabel: "Example", resource: url });
       return { decision: decisions[prompts++]! };

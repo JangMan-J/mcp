@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { HttpTransport } from "../src/index.js";
-import { createHttpTestServer } from "../../fixtures/server/http-main.ts";
-import { formatSseComment } from "../../fixtures/server/sse.ts";
+import { createHttpTestServer } from "./helpers/http-server.js";
+import { formatSseComment } from "./helpers/sse.js";
 
 describe("http edge cases", () => {
   it("[EDGE-7] abort mid-SSE closes the stream and sends no notifications/cancelled", async () => {
