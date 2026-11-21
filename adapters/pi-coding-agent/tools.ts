@@ -5,9 +5,28 @@ import { renderOutcome } from "./results.ts";
 import { toolName } from "./tool-name.ts";
 
 export type Exposure = "direct" | "codemode" | "deferred";
+export type ExposureWithHidden = Exposure | "hidden";
 export type Disposable = { dispose(): void };
 
-export interface RemoteTool extends SearchableTool { readonly inputSchema?: unknown }
+export interface ToolAnnotations {
+  readonly readOnlyHint?: boolean;
+  readonly destructiveHint?: boolean;
+  readonly idempotentHint?: boolean;
+  readonly openWorldHint?: boolean;
+}
+
+export interface ToolNamespace {
+  readonly name: string;
+  readonly aliases?: readonly string[];
+  readonly description?: string;
+  readonly instructions?: string;
+}
+
+export interface RemoteTool extends SearchableTool {
+  readonly inputSchema?: unknown;
+  readonly outputSchema?: unknown;
+  readonly annotations?: ToolAnnotations;
+}
 export interface ToolClient {
   ready(signal?: AbortSignal): Promise<void>;
   list(signal?: AbortSignal): Promise<readonly RemoteTool[]>;
@@ -16,15 +35,23 @@ export interface ToolClient {
 export interface ToolSourceDescriptor {
   readonly server: string;
   readonly client: ToolClient;
-  readonly exposure?: Exposure;
+  readonly exposure?: ExposureWithHidden;
   /** Per-tool overrides keyed by remote tool name. */
-  readonly tools?: Readonly<Record<string, { alias?: string; exposure?: Exposure }>>;
+  readonly tools?: Readonly<Record<string, { alias?: string; exposure?: ExposureWithHidden }>>;
+  readonly toolExposure?: Readonly<Record<string, ExposureWithHidden>>;
+  readonly aliases?: readonly string[];
+  readonly description?: string;
+  readonly instructions?: string;
 }
 
 export type ToolResult = Awaited<ReturnType<typeof renderOutcome>>;
 export interface HostToolDefinition {
   readonly name: string;
   readonly description?: string;
+  readonly parameters?: unknown;
+  readonly outputSchema?: unknown;
+  readonly annotations?: ToolAnnotations;
+  readonly namespace?: ToolNamespace;
   readonly exposure: Exposure | "builtin";
   /** Destinations (tool names) a call may reach, resolved before execution for permission checks. */
   reachesTools?(args: unknown, signal: AbortSignal): Promise<readonly string[]>;
@@ -39,12 +66,44 @@ export interface CodingToolsHost {
 
 interface Entry { name: string; remote: string; source: ToolSourceDescriptor; tool: RemoteTool; exposure: Exposure }
 
+function globToRegExp(pattern: string): RegExp {
+  const escaped = pattern.split("*").map(s => s.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*");
+  return new RegExp(`^${escaped}$`);
+}
+
+export function resolveToolConfig(
+  source: ToolSourceDescriptor,
+  tool: RemoteTool,
+): { alias: string; exposure: ExposureWithHidden } {
+  const exact = source.tools?.[tool.name];
+  const alias = exact?.alias ?? tool.name;
+
+  const exactExposure = exact?.exposure ?? source.toolExposure?.[tool.name];
+  if (exactExposure !== undefined) return { alias, exposure: exactExposure };
+
+  if (source.tools) {
+    for (const [pattern, override] of Object.entries(source.tools)) {
+      if (!pattern.includes("*") || override.exposure === undefined) continue;
+      if (globToRegExp(pattern).test(tool.name)) return { alias, exposure: override.exposure };
+    }
+  }
+
+  if (source.toolExposure) {
+    for (const [pattern, exposure] of Object.entries(source.toolExposure)) {
+      if (!pattern.includes("*")) continue;
+      if (globToRegExp(pattern).test(tool.name)) return { alias, exposure };
+    }
+  }
+
+  return { alias, exposure: source.exposure ?? "direct" };
+}
+
+function matchesNamespace(source: ToolSourceDescriptor, ns: string): boolean {
+  return source.server === ns || `mcp__${source.server}` === ns || source.aliases?.includes(ns) === true;
+}
+
 export function installCodingTools(host: CodingToolsHost, sources: readonly ToolSourceDescriptor[]): Disposable {
   const disposables: Disposable[] = [];
-  const cfg = (s: ToolSourceDescriptor, t: RemoteTool) => {
-    const o = s.tools?.[t.name];
-    return { alias: o?.alias ?? t.name, exposure: o?.exposure ?? s.exposure ?? "direct" };
-  };
 
   const abort = new AbortController();
   const live = () => {
@@ -66,15 +125,25 @@ export function installCodingTools(host: CodingToolsHost, sources: readonly Tool
 
   const define = (e: Entry) => {
     if (abort.signal.aborted) return;
+    const namespace: ToolNamespace = {
+      name: `mcp__${e.source.server}`,
+      ...(e.source.aliases ? { aliases: e.source.aliases } : {}),
+      ...(e.source.description !== undefined ? { description: e.source.description } : {}),
+      ...(e.source.instructions !== undefined ? { instructions: e.source.instructions } : {}),
+    };
     disposables.push(host.registerTool({
       name: e.name, exposure: e.exposure,
       ...(e.tool.description !== undefined ? { description: e.tool.description } : {}),
+      ...(e.tool.inputSchema !== undefined ? { parameters: e.tool.inputSchema } : {}),
+      ...(e.tool.outputSchema !== undefined ? { outputSchema: e.tool.outputSchema } : {}),
+      ...(e.tool.annotations !== undefined ? { annotations: e.tool.annotations } : {}),
+      namespace,
       execute: async (_id, args, signal) => {
         live();
         return renderOutcome(await e.source.client.call(e.remote, args, signal), { server: e.source.server });
       },
     }));
-    // Every tool is callable from codemode, whatever its model-facing exposure.
+    // Every non-hidden tool is callable from codemode, whatever its model-facing exposure.
     disposables.push(host.sandbox.bind(e.name, async (args, ctx) => {
       live();
       const call = { parentToolCallId: ctx.parentToolCallId, name: e.name, arguments: args };
@@ -85,35 +154,46 @@ export function installCodingTools(host: CodingToolsHost, sources: readonly Tool
     }));
   };
 
-  const entryFor = (source: ToolSourceDescriptor, tool: RemoteTool): Entry => {
-    const { alias, exposure } = cfg(source, tool);
-    return { name: toolName(source.server, alias), remote: tool.name, source, tool, exposure };
+  const registries = sources.map(source => ({
+    source,
+    registry: createDeferredToolRegistry<RemoteTool & { remote: string }>(
+      [{
+        server: source.server,
+        ready: signal => source.client.ready(signal),
+        async listDeferredTools(signal) {
+          const tools = await source.client.list(signal);
+          return tools
+            .map(t => ({ tool: t, cfg: resolveToolConfig(source, t) }))
+            .filter(({ cfg }) => cfg.exposure === "deferred")
+            .map(({ tool, cfg }) => ({ ...tool, name: cfg.alias, remote: tool.name }));
+        },
+      }],
+      ({ server, tool }) => {
+        define({ name: toolName(server, tool.name), remote: tool.remote, source, tool, exposure: "deferred" });
+      },
+    ),
+  }));
+
+  const searchArgs = (args: unknown): { query: string; namespace?: string } => {
+    const obj = args as { query?: unknown; namespace?: unknown } | null | undefined;
+    const q = String(obj?.query ?? "");
+    const ns = typeof obj?.namespace === "string" && obj.namespace.length > 0 ? obj.namespace : undefined;
+    return ns !== undefined ? { query: q, namespace: ns } : { query: q };
+  };
+  const searchDeferred = (args: unknown, signal: AbortSignal) => {
+    const { query: q, namespace } = searchArgs(args);
+    const targets = namespace !== undefined
+      ? registries.filter(r => matchesNamespace(r.source, namespace))
+      : registries;
+    return Promise.all(targets.map(r => r.registry.search(q, signal))).then(lists => lists.flat());
   };
 
-  const registry = createDeferredToolRegistry<RemoteTool & { remote: string }>(
-    sources.map(source => ({
-      server: source.server,
-      ready: signal => source.client.ready(signal),
-      async listDeferredTools(signal) {
-        const tools = await source.client.list(signal);
-        return tools.filter(t => cfg(source, t).exposure === "deferred")
-          .map(t => ({ ...t, name: cfg(source, t).alias, remote: t.name }));
-      },
-    })),
-    ({ server, tool }) => {
-      const source = sources.find(s => s.server === server);
-      if (!source) return;
-      define({ name: toolName(server, tool.name), remote: tool.remote, source, tool, exposure: "deferred" });
-    },
-  );
-
-  const query = (args: unknown) => String((args as { query?: unknown } | null)?.query ?? "");
   disposables.push(host.registerTool({
     name: "tool_search", description: "Search deferred MCP tools by name or description.", exposure: "builtin",
-    reachesTools: async (args, signal) => (await registry.search(query(args), signal)).map(d => d.name),
+    reachesTools: async (args, signal) => (await searchDeferred(args, signal)).map(d => d.name),
     execute: async (_id, args, signal) => {
       live();
-      const found = await registry.search(query(args), signal);
+      const found = await searchDeferred(args, signal);
       const text = found.map(d => `${d.name}${d.tool.description ? `: ${d.tool.description}` : ""}`).join("\n");
       return renderOutcome({ kind: "ok", value: text || "No matching tools.", meta: { requestId: 0, method: "tool_search", binding: "local", attempts: 0 } } as Outcome<string>);
     },
@@ -125,8 +205,9 @@ export function installCodingTools(host: CodingToolsHost, sources: readonly Tool
     void (async () => {
       await source.client.ready(abort.signal);
       for (const tool of await source.client.list(abort.signal)) {
-        const e = entryFor(source, tool);
-        if (e.exposure !== "deferred") define(e);
+        const { alias, exposure } = resolveToolConfig(source, tool);
+        if (exposure === "hidden" || exposure === "deferred") continue;
+        define({ name: toolName(source.server, alias), remote: tool.name, source, tool, exposure });
       }
     })().catch(() => {});
   }
