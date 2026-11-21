@@ -1,10 +1,19 @@
 # Pi Coding Agent adapter
 Status: typed entrypoint implemented; live fork trial pending.
 
-## Entrypoint
-`installCodingAgentAdapter` in `adapter.ts` is the typed entrypoint. It
-wires the host ports (`host.ts` `installHost`), branch persistence,
-config, credentials, tools and results modules, and returns a disposer.
+## Entrypoints
+- `createPiMcpExtension` (`pi-extension.ts`): the Pi extension factory. It
+  registers `/mcp`, so Pi's `omitReplacedExtensions` drops `builtin:mcp`
+  when it loads (see `docs/decisions/pi-target.md`, Q21).
+- `installCodingAgentAdapter` (`adapter.ts`): the typed entrypoint. It
+  wires the host ports (`host.ts` `installHost`), branch persistence,
+  config, credentials, tools and results modules, and returns a disposer.
+- `loadLayeredMcpConfig` / `resolveServerVariables` (`config.ts`): global
+  plus project `mcp.json` layering with override entries, and opt-in
+  `${NAME}` / `cwd` expansion. `readLegacyConfig` stays pure and literal and
+  never runs `!cmd`.
+- `bin/mcp-cli.ts`: optional standalone CLI (D7 Option C). It does not
+  change `pi mcp`, which stays on the old stack.
 
 ## CI commands (fake host, no Pi, no live config)
 - `npm run build`
@@ -28,8 +37,9 @@ fork. No entrypoint script launches it.
 - Node `>=22.19.0`; spec-gate report for the commit under test recorded.
 - A synthetic MCP server as the only test server; no real server,
   credential, or production data.
-- Q21 verification done against the pinned checkout (extension API names,
-  `replaces builtin:mcp` declaration) before any test is attempted.
+- Q21 verification is recorded in `docs/decisions/pi-target.md`
+  (extension API names, `builtin:mcp` replacement via `/mcp`,
+  `tool_search`, or `codemode`). Re-check it if the pin moves.
 ## Clean config isolation
 - Create fresh `SCRATCH=$(mktemp -d)`; launch Pi with
   `PI_CODING_AGENT_DIR="$SCRATCH/agent"` (plus

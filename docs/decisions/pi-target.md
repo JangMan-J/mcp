@@ -29,19 +29,55 @@ not a library baseline; D2's floor is Node >= 22.
 |---|---|---|
 | PLAN.md checkout | `e903c27bbd864a81f40941ae1d93b42585b20c6d` (2026-11-18 19:57:21 +0000) | Divergent line, not an ancestor of HEAD: `e903c27bb..HEAD` is 105 commits, `HEAD..e903c27bb` is 94. Observed, not selected. Q28 is closed by not selecting it |
 
-## Open verification before adapter code (Q21, deferred)
+## Q21 verification (answered)
 
-The Pi extension API names were not re-read in the pin pass. Before any adapter
-code is written, verify against the pinned checkout only:
+Read against the pinned commit `7d80b45f62f8a8b8cd0f91a71d78ba56f229b1ec` in
+`~/pi/packages` with `git -C ~/pi show <pin>:<path>` (the working checkout HEAD
+had moved to `ca5859412c966fcf52a48b0772801d0092a9d486` at read time; the pin
+was not retargeted). Paths below are relative to `~/pi/packages`.
 
-- exact extension API names/types (`ToolDefinition.exposure`, `reachesTools`
-  signature, `registerToolRenderer`),
-- how a replacement extension declares it replaces `builtin:mcp`,
-- whether `pi mcp` can be served by an extension at all (see
-  `docs/cutover.md`: it cannot, per `main.ts:659-663`),
-- the durable `ToolTask` lifecycle hooks an MCP bridge needs.
+- **`ToolDefinition`** (`coding-agent/src/core/extensions/types.ts`):
+  - `exposure?: ToolExposure`, one of `"direct" | "model-only" | "codemode" |
+    "deferred" | "hidden"` (line 638).
+  - synchronous `reachesTools?: (input: Record<string, unknown>) => "all" |
+    readonly string[]` (line 650). The adapter's `pi.on("tool_call")` handler
+    uses it to await pending server connections before the reached tools run.
+  - `outputSchema?: TSchema` (line 633) with `structuredContent`: codemode
+    scripts get the raw `CallToolResult` with `_meta` stripped, while `content`
+    carries bounded model text and images.
+  - `namespace?: ToolNamespace` (line 641), `annotations?: ToolAnnotations`
+    (line 653).
+  - `pi.registerToolRenderer(resolver: ToolRendererResolver)` (line 1781).
+- **Replacing `builtin:mcp`** (`coding-agent/src/extensions/index.ts:9-14`,
+  `coding-agent/src/core/resource-loader.ts:146-175`): the built-in `mcp`
+  entry has `replaceable: true`. `omitReplacedExtensions` drops `builtin:mcp`
+  whenever a loaded extension registers `/mcp` (`pi.registerCommand("mcp",
+  ...)`), `tool_search`, or `codemode`. No separate "replaces" declaration
+  exists. `-builtin:mcp` in scratch or active settings disables it explicitly,
+  as described in `docs/cutover.md`.
+- **Dynamic server registration**: `pi.registerMcpServer` /
+  `pi.unregisterMcpServer` (`types.ts:1951`, `1954`) emit `mcp_servers_change`
+  (`types.ts:1673`). An `mcp.json` entry wins over a same-named
+  extension-registered entry. `before_agent_start` fills
+  `event.systemPromptOptions.sections["mcp_servers"]`.
+- **Standalone `pi mcp`**: dispatched in `coding-agent/src/main.ts:659-663`
+  (`runMcpCommand`) before extensions load, so an extension cannot replace it.
+  D7 Option A keeps `pi mcp` on the old stack. Option C is
+  `adapters/pi-coding-agent/bin/mcp-cli.ts`.
+- **Durable `ToolTask` / `Extension` hooks** (`durable/src/harness/types.ts`):
+  - `Extension<ToolRegistration>` declares `name`, `namespace`, `tools`,
+    `sections`, `hooks`, `wraps`, `tasks`.
+  - `ToolRegistration` declares `replay?: "safe" | "unsafe"` (default
+    `"unsafe"`; MCP `tools/call` stays `"unsafe"` unless the tool is
+    explicitly read-only), `callers?: readonly ("model" | "tools")[]`
+    (`["tools"]` for codemode-only tools), `deferred?: true`,
+    `structuredOutputSchema`, `execute(args, api, context)`, and an idempotent
+    `cancel?(args, api, context)` for parked calls.
+  - Nested `api.executeTool` uses positional keys `1, 2, ...` by default and
+    needs an explicit key (not numeric, no slash) after `wake`.
 
-Requirement rows `PICA-1, -2, -5, -6, -7, -9, -10` stay blocked on this read.
+Requirement rows `PICA-1, -2, -5, -6, -7, -9, -10` are no longer blocked on this
+read. No live fork trial has been run.
 
 ## Re-verify
 
