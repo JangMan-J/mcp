@@ -126,7 +126,8 @@ export function restoreEntry(branch: readonly unknown[], server: string): Events
 }
 
 interface LocalSub {
-  id: number;
+  client: EventsClient;
+  poll(): ReturnType<EventsClient["poll"]>;
   name: string;
   arguments: Obj;
   accepted: string | null;
@@ -146,6 +147,21 @@ function names(list: Obj): string[] {
   return ev.map((e) => (e as Obj)?.name).filter((n): n is string => typeof n === "string");
 }
 
+async function listNames(ec: EventsClient): Promise<string[]> {
+  const all: string[] = [];
+  let page: string | undefined;
+  const seen = new Set<string>();
+  for (let i = 0; i < 20; i++) {
+    const list = await ec.list(page);
+    all.push(...names(list));
+    if (typeof list.nextCursor !== "string" || !list.nextCursor) return all;
+    page = list.nextCursor;
+    if (seen.has(page)) throw new Error("Repeated events/list cursor");
+    seen.add(page);
+  }
+  throw new Error("Events discovery exceeded 20 pages");
+}
+
 function hasEventsCapability(caps: unknown): boolean {
   if (typeof caps !== "object" || caps === null || Array.isArray(caps)) return false;
   const exts = (caps as Obj).extensions;
@@ -158,7 +174,8 @@ function hasEventsCapability(caps: unknown): boolean {
 
 interface ServerEntry {
   ec: EventsClient;
-  subs: Map<number, LocalSub>;
+  options: EventsOptions;
+  subs: Set<LocalSub>;
   queue: Queued[];
   rt: LiveMcpServerRuntime;
   signal: AbortSignal;
@@ -184,7 +201,7 @@ export function createEventFeatures(host: EventFeaturesHost) {
 
   const enqueue = (server: string, sub: LocalSub, e: Occurrence) => {
     const s = servers.get(server);
-    if (!s || !s.subs.has(sub.id) || sub.dedup.has(e.eventId)) return;
+    if (!s || !s.subs.has(sub) || sub.dedup.has(e.eventId)) return;
     if (sub.maxAgeMs !== undefined && sub.maxAgeMs > 0) {
       const ts = Date.parse(e.timestamp);
       if (Number.isFinite(ts) && Date.now() - ts > sub.maxAgeMs) return;
@@ -205,9 +222,23 @@ export function createEventFeatures(host: EventFeaturesHost) {
   ) => {
     const s = get(server);
     for (const x of s.subs.values()) if (x.name === name && JSON.stringify(x.arguments) === JSON.stringify(args)) return x;
-    const id = s.ec.subscription(name, args);
+    // Scope the replay seed to this subscription, including retries before catch-up succeeds.
+    let seed = restored?.cursor;
+    const seeded = (params: Obj) => params.cursor === null && seed != null ? { ...params, cursor: seed } : params;
+    const open = s.options.openStream;
+    const client = new EventsClient({
+      ...s.options,
+      request: (m, p, o) => s.options.request(m, seeded(p), o),
+      ...(open ? { openStream: (m, p, o) => open(m, seeded(p), o) } : {}),
+    });
+    const id = client.subscription(name, args);
     const sub: LocalSub = {
-      id,
+      client,
+      async poll() {
+        const result = await client.poll(id);
+        seed = undefined;
+        return result;
+      },
       name,
       arguments: args,
       accepted: restored?.cursor ?? null,
@@ -216,15 +247,12 @@ export function createEventFeatures(host: EventFeaturesHost) {
       ...(opts?.holdSettle !== undefined ? { holdSettle: opts.holdSettle } : {}),
       ...(opts?.maxAgeMs !== undefined ? { maxAgeMs: opts.maxAgeMs } : {}),
     };
-    // ## YAGNI: EventsClient has no cursor setter; seed the accepted cursor into its private state for resume.
-    const internal = (s.ec as unknown as { subs: Map<number, { cursor: string | null }> }).subs.get(id);
-    if (internal) internal.cursor = sub.accepted;
-    s.subs.set(id, sub);
-    const isAlive = () => !s.rt.transportClosed.aborted && !s.signal.aborted && s.subs.has(id);
+    s.subs.add(sub);
+    const isAlive = () => !s.rt.transportClosed.aborted && !s.signal.aborted && s.subs.has(sub);
     const catchUp = async (): Promise<number> => {
       let nextMs = MIN_POLL_MS;
       for (let i = 0; i < 20 && isAlive(); i++) {
-        const r = await s.ec.poll(id);
+        const r = await sub.poll();
         for (const e of r.events) enqueue(server, sub, e);
         nextMs = r.nextDelayMs;
         if (r.nextDelayMs > 0) break;
@@ -247,10 +275,17 @@ export function createEventFeatures(host: EventFeaturesHost) {
       if (!isAlive()) return;
       if (sub.delivery !== "poll") {
         try {
-          sub.push = s.ec.push(id, (m: PushMessage) => {
+          const push = client.push(id, (m: PushMessage) => {
+            if (m.type === "active") seed = undefined;
             if (m.type === "event") enqueue(server, sub, m.event);
-            else if (m.type === "terminated") sub.push = undefined;
+            if (m.type === "terminated" || m.type === "error") {
+              sub.push?.close();
+              sub.push = undefined;
+              schedulePoll(nextMs);
+            }
           });
+          // An open failure can be reported synchronously, before push() returns.
+          if (!sub.timer) sub.push = push;
           return;
         } catch { /* no live stream port: fall through to bounded scheduled polling */ }
       }
@@ -262,11 +297,11 @@ export function createEventFeatures(host: EventFeaturesHost) {
   const unsubscribe = (server: string, name: string) => {
     const s = get(server);
     let n = 0;
-    for (const [id, x] of s.subs) {
+    for (const x of s.subs) {
       if (x.name === name) {
         if (x.timer) { clearTimeout(x.timer); x.timer = undefined; }
-        s.ec.forget(id);
-        s.subs.delete(id);
+        x.client.dispose();
+        s.subs.delete(x);
         s.queue = s.queue.filter((q) => q.sub !== x);
         n++;
       }
@@ -278,7 +313,7 @@ export function createEventFeatures(host: EventFeaturesHost) {
   const drain = async (server: string) => {
     const s = get(server);
     await Promise.all([...s.subs.values()].filter((x) => !x.push).map(async (x) => {
-      const r = await s.ec.poll(x.id).catch(() => undefined);
+      const r = await x.poll().catch(() => undefined);
       for (const e of r?.events ?? []) enqueue(server, x, e);
     }));
     const out: Occurrence[] = [];
@@ -288,7 +323,7 @@ export function createEventFeatures(host: EventFeaturesHost) {
       if (event.cursor !== null) sub.accepted = event.cursor;
     }
     for (const x of s.subs.values()) {
-      const c = s.ec.subscriptions().find((y) => y.id === x.id)?.cursor;
+      const c = x.client.subscriptions()[0]?.cursor;
       if (c !== undefined && c !== null && !s.queue.some((q) => q.sub === x)) x.accepted = c;
     }
     persist(server);
@@ -307,7 +342,7 @@ export function createEventFeatures(host: EventFeaturesHost) {
         properties: {
           action: { type: "string", enum: ["servers", "list", "subscribe", "unsubscribe", "subscriptions", "poll"] },
           server: { type: "string", description: "Server name" },
-          name: { type: "string", description: "Event name (subscribe/unsubscribe)" },
+          name: { type: "string", description: "Event name (subscribe also accepts * and ? globs)" },
           arguments: { type: "object", description: "Event subscription arguments" },
         },
         required: ["action"],
@@ -323,11 +358,15 @@ export function createEventFeatures(host: EventFeaturesHost) {
               if (p.arguments !== undefined && (typeof p.arguments !== "object" || p.arguments === null || Array.isArray(p.arguments))) {
                 throw new Error("arguments must be an object");
               }
-              const restored = typeof p.server === "string"
-                ? restoreEntry(host.getBranch(), p.server)?.subs.find((r) => r.name === p.name)
-                : undefined;
-              const x = subscribe(p.server!, p.name, p.arguments ?? {}, restored); persist(p.server!);
-              return text(`Subscribed to ${x.name} on ${p.server}.`, { name: x.name });
+              const s = get(p.server);
+              const glob = /[*?]/.test(p.name);
+              const matches = glob ? matchRules(await listNames(s.ec), [p.name]).map((m) => m.name) : [p.name];
+              if (get(p.server) !== s) throw new Error("Server reconnected during discovery");
+              if (!matches.length) throw new Error(`No events match ${p.name}`);
+              const restored = restoreEntry(host.getBranch(), p.server!);
+              for (const name of matches) subscribe(p.server!, name, p.arguments ?? {}, restored?.subs.find((r) => r.name === name));
+              persist(p.server!);
+              return text(`Subscribed to ${matches.join(", ")} on ${p.server}.`, glob ? { names: matches } : { name: p.name });
             }
             case "unsubscribe": {
               if (!p.name || typeof p.name !== "string") throw new Error("name required");
@@ -358,7 +397,7 @@ export function createEventFeatures(host: EventFeaturesHost) {
       const ert = rt as EventsRuntime;
       const ext = ert.eventsExtension ?? createEventsExtension({ enabled: true });
       const reqSignal = AbortSignal.any([signal, rt.transportClosed]);
-      const ec = new EventsClient({
+      const options: EventsOptions = {
         extension: ext,
         peerCapabilities: () => rt.capabilities,
         request: (m, params, o) => rt.client.request(m, params, {
@@ -366,13 +405,15 @@ export function createEventFeatures(host: EventFeaturesHost) {
           signal: o?.signal ? AbortSignal.any([o.signal, reqSignal]) : reqSignal,
         }),
         ...(ert.openEventsStream ? { openStream: ert.openEventsStream } : {}),
-      });
+      };
+      const ec = new EventsClient(options);
       const cleanup = () => {
         rt.transportClosed.removeEventListener("abort", cleanup);
         signal.removeEventListener("abort", cleanup);
         const cur = servers.get(server);
         if (cur?.ec === ec) {
-          for (const x of cur.subs.values()) {
+          for (const x of cur.subs) {
+            x.client.dispose();
             if (x.timer) { clearTimeout(x.timer); x.timer = undefined; }
           }
           cur.subs.clear();
@@ -393,7 +434,7 @@ export function createEventFeatures(host: EventFeaturesHost) {
         if (disc.kind !== "ok" || rt.transportClosed.aborted || signal.aborted) return;
         if (ext.health() !== "working" || !hasEventsCapability(rt.capabilities)) return;
         servers.get(server)?.cleanup();
-        servers.set(server, { ec, subs: new Map(), queue: [], rt, signal, cleanup });
+        servers.set(server, { ec, options, subs: new Set(), queue: [], rt, signal, cleanup });
         registerTool();
         const rules = (descriptor as EventsServerConfig).subscribe;
         const hasRules = Array.isArray(rules) ? rules.length > 0 : Boolean(rules && Object.keys(rules).length > 0);
@@ -403,15 +444,8 @@ export function createEventFeatures(host: EventFeaturesHost) {
           if (rule) subscribe(server, r.name, rule.arguments, r, rule);
         }
         if (hasRules) {
-          const allNames: string[] = [];
-          let page: string | undefined;
-          for (let i = 0; i < 20 && !rt.transportClosed.aborted && !signal.aborted; i++) {
-            const list = await ec.list(page);
-            allNames.push(...names(list));
-            if (typeof list.nextCursor !== "string" || !list.nextCursor || list.nextCursor === page) break;
-            page = list.nextCursor;
-          }
-          if (rt.transportClosed.aborted || signal.aborted) return;
+          const allNames = await listNames(ec);
+          if (servers.get(server)?.ec !== ec) return;
           for (const m of matchRules(allNames, rules)) subscribe(server, m.name, m.arguments, restored?.subs.find((x) => x.name === m.name), m);
         }
       })().catch(() => {});

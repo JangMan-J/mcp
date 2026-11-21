@@ -26,7 +26,7 @@ import type { LegacyServerConfig } from "./config.js";
 
 const tick = () => new Promise((r) => setTimeout(r, 5));
 
-function fakeServer(events: { eventId: string; name: string; data: unknown }[]) {
+function fakeServer(events: { eventId: string; name: string; data: unknown }[], failFirstPoll = false) {
   const calls: { method: string; params: Record<string, unknown> }[] = [];
   const closed = new AbortController();
   const caps = { extensions: { [EVENTS_EXTENSION_ID]: {} } };
@@ -37,8 +37,11 @@ function fakeServer(events: { eventId: string; name: string; data: unknown }[]) 
     client: {
       request: async (method: string, params: Record<string, unknown>) => {
         calls.push({ method, params });
-        if (method === "events/list") return { kind: "ok", value: { events: [{ name: "build.done" }, { name: "build.fail" }, { name: "deploy" }] } };
+        if (method === "events/list") return { kind: "ok", value: params.cursor === "next"
+          ? { events: [{ name: "build.fail" }] }
+          : { events: [{ name: "build.done" }, { name: "deploy" }], nextCursor: "next" } };
         if (method === "events/poll") {
+          if (failFirstPoll) { failFirstPoll = false; return { kind: "error" }; }
           const start = params.cursor ? Number(params.cursor) : 0;
           const evs = events.slice(start).filter((e) => e.name === params.name).map((e) => ({ ...e, timestamp: "t" }));
           return { kind: "ok", value: { events: evs, cursor: String(events.length), nextPollMs: 1000 } };
@@ -148,13 +151,47 @@ describe("createEventFeatures", () => {
     const t = tools.get("mcp_events");
     expect((await t.execute("1", { action: "servers" })).details.servers).toEqual(["srv"]);
     expect((await t.execute("1", { action: "list", server: "srv" })).content[0].text).toContain("deploy");
-    await t.execute("1", { action: "subscribe", server: "srv", name: "deploy" });
+    expect((await t.execute("1", { action: "subscribe", server: "srv", name: "deploy" })).details).toEqual({ name: "deploy" });
     await tick();
     expect((await t.execute("1", { action: "poll", server: "srv" })).details.events.map((e: any) => e.eventId)).toEqual(["e3"]);
     expect((await t.execute("1", { action: "unsubscribe", server: "srv", name: "deploy" })).details.removed).toBe(1);
     closed.abort();
     const r = await t.execute("1", { action: "poll", server: "srv" });
     expect(r.isError).toBe(true);
+  });
+
+  it("expands manual globs across pages and replays from each concrete accepted cursor", async () => {
+    const { rt, calls, closed } = fakeServer(evs);
+    const { host, branch, tools } = fakeHost([{ type: EVENTS_ENTRY_TYPE, data: { server: "srv", subs: [{ name: "build.done", cursor: "1", seen: ["e1"] }] } }]);
+    createEventFeatures(host).connect(rt, desc(), closed.signal);
+    await tick();
+    const exec = (action: string, name?: string) => tools.get("mcp_events").execute("1", { action, name, server: "srv", arguments: { a: 1 } });
+    expect((await exec("subscribe", "unknown?*")).isError).toBe(true);
+    expect((await exec("subscribe", "build.*")).details).toEqual({ names: ["build.done", "build.fail"] });
+    expect(calls.filter((c) => c.method === "events/poll").map((c) => c.params)).toEqual([
+      { name: "build.done", arguments: { a: 1 }, cursor: "1" },
+      { name: "build.fail", arguments: { a: 1 }, cursor: null },
+    ]);
+    expect(restoreEntry(branch, "srv")?.subs[0]?.cursor).toBe("1");
+    expect((await exec("poll")).details.events.map((e: any) => e.eventId)).toEqual(["e2"]);
+    expect(restoreEntry(branch, "srv")?.subs[0]?.cursor).toBe("3");
+    closed.abort();
+  });
+
+  it("keeps the replay seed across failed catch-up, stream open and scheduled fallback", async () => {
+    vi.useFakeTimers();
+    try {
+      const { rt, calls, closed } = fakeServer([], true);
+      const openEventsStream = vi.fn(() => { throw new Error("stream unavailable"); });
+      const { host } = fakeHost([{ type: EVENTS_ENTRY_TYPE, data: { server: "srv", subs: [{ name: "deploy", cursor: "resumed", seen: [] }] } }]);
+      createEventFeatures(host).connect(Object.assign(rt, { openEventsStream }), desc(["deploy"]), closed.signal);
+      await vi.advanceTimersByTimeAsync(1_001);
+      expect(openEventsStream).toHaveBeenCalledWith("events/stream", { name: "deploy", cursor: "resumed", arguments: {} }, expect.anything());
+      expect(calls.filter((c) => c.method === "events/poll").map((c) => c.params.cursor)).toEqual(["resumed", "resumed"]);
+      closed.abort();
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(calls.filter((c) => c.method === "events/poll")).toHaveLength(2);
+    } finally { vi.useRealTimers(); }
   });
 
   it("skips servers without the events capability", async () => {
