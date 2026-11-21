@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { generateKeyPairSync } from "node:crypto";
+import { generateKeyPairSync, verify } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ClientCredentialsAuth } from "@mcp-client/ext-client-credentials";
 import { EnterpriseManagedAuth } from "@mcp-client/ext-enterprise-auth";
@@ -36,6 +36,45 @@ it("wires client-secret, private-key and credential-backed enterprise auth witho
   const credentials = { get: vi.fn(), set: vi.fn(), delete: vi.fn() };
   expect((await createLiveAuth(descriptor, { credentials })).provider).toBeInstanceOf(EnterpriseManagedAuth);
   expect(credentials.set).not.toHaveBeenCalled();
+});
+
+it("signs a private_key_jwt assertion through WebCrypto and rejects mismatched key shapes", async () => {
+  const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const privateKeyPem = privateKey.export({ format: "pem", type: "pkcs8" });
+  const ec = generateKeyPairSync("ec", { namedCurve: "prime256v1" }).privateKey.export({ format: "pem", type: "pkcs8" });
+  await expect(createLiveAuth({ ...server, clientCredentials: { clientId: "id", privateKeyPem: ec, alg: "RS256" } }, {}))
+    .rejects.toThrow("invalid-signing-key");
+  await expect(createLiveAuth({ ...server, clientCredentials: { clientId: "id", privateKeyPem: "nope", alg: "ES256" } }, {}))
+    .rejects.toThrow("invalid-signing-key");
+  let assertion: string | null = null;
+  let origin = "";
+  const http = createServer(async (req, res) => {
+    const json = (obj: object) => { res.setHeader("Content-Type", "application/json"); res.end(JSON.stringify(obj)); };
+    if (req.url === "/.well-known/oauth-protected-resource/mcp") json({ resource: `${origin}/mcp`, authorization_servers: [origin] });
+    else if (req.url === "/.well-known/oauth-authorization-server") json({ issuer: origin, token_endpoint: `${origin}/token`,
+      token_endpoint_auth_methods_supported: ["private_key_jwt"], token_endpoint_auth_signing_alg_values_supported: ["RS256"] });
+    else if (req.url === "/token") {
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      assertion = new URLSearchParams(Buffer.concat(chunks).toString()).get("client_assertion");
+      json({ token_type: "Bearer", access_token: "cc-token" });
+    } else res.writeHead(404).end();
+  });
+  await new Promise<void>(resolve => http.listen(0, "127.0.0.1", resolve));
+  origin = `http://127.0.0.1:${(http.address() as { port: number }).port}`;
+  try {
+    const { provider } = await createLiveAuth({ ...server, url: `${origin}/mcp`,
+      clientCredentials: { clientId: "id", privateKeyPem, alg: "RS256", kid: "k1" } }, {});
+    expect(provider).toBeInstanceOf(ClientCredentialsAuth);
+    expect(await provider?.headerFor(`${origin}/mcp`)).toMatchObject({ authorization: "Bearer cc-token" });
+    const [header, payload, sig] = assertion!.split(".");
+    expect(JSON.parse(Buffer.from(header!, "base64url").toString())).toEqual({ alg: "RS256", typ: "JWT", kid: "k1" });
+    expect(JSON.parse(Buffer.from(payload!, "base64url").toString())).toMatchObject({ iss: "id", sub: "id", aud: origin });
+    expect(verify("sha256", Buffer.from(`${header}.${payload}`), publicKey, Buffer.from(sig!, "base64url"))).toBe(true);
+  } finally {
+    http.closeAllConnections();
+    await new Promise<void>(resolve => http.close(() => resolve()));
+  }
 });
 
 it("signs in against the real resource challenge and callback without authorizing ordinary requests first", async () => {

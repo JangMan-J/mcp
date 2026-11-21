@@ -1,10 +1,10 @@
-import { createPrivateKey, sign } from "node:crypto";
+import { createPrivateKey } from "node:crypto";
 import {
   AuthError, ConfiguredBearer, OAuthAuthorization, SafeFetch, openSystemBrowser,
   parseBearerChallenges, startLoopbackRedirect, type AuthorizationConsent, type AuthorizationPrompt,
 } from "@mcp-client/auth";
 import { JSONRPC_VERSION, type AuthProvider, type BrowserPort, type ConsentPort, type ConsentPrompt, type CredentialStore, type FetchPort } from "@mcp-client/core";
-import { ClientCredentialsAuth, type AssertionSigner } from "@mcp-client/ext-client-credentials";
+import { ClientCredentialsAuth, createWebCryptoAssertionSigner, type AssertionSigner } from "@mcp-client/ext-client-credentials";
 import { EnterpriseManagedAuth } from "@mcp-client/ext-enterprise-auth";
 import type { LegacyOAuthConfig, LegacyServerConfig } from "./config.js";
 
@@ -31,17 +31,21 @@ const loopback = (url: URL) => url.protocol === "http:" && ["localhost", "127.0.
 const systemBrowser: BrowserPort = { open: openSystemBrowser };
 const uiAvailable = new WeakMap<AuthorizationConsent, () => boolean>();
 
-function privateKeySigner(pem: string, alg: unknown, kid: string | undefined): AssertionSigner {
+async function privateKeySigner(pem: string, alg: unknown, kid: string | undefined): Promise<AssertionSigner> {
   if (alg !== "RS256" && alg !== "ES256") throw unavailable("invalid-signing-algorithm");
+  let der: Buffer;
   try {
     const key = createPrivateKey(pem);
     if (alg === "RS256" ? key.asymmetricKeyType !== "rsa"
-      : key.asymmetricKeyType !== "ec" || key.asymmetricKeyDetails?.namedCurve !== "prime256v1") {
-      throw unavailable("invalid-signing-key");
-    }
-    return { alg, ...(kid ? { kid } : {}), sign: (input) => sign("sha256", input,
-      alg === "ES256" ? { key, dsaEncoding: "ieee-p1363" } : key) };
+      : key.asymmetricKeyType !== "ec" || key.asymmetricKeyDetails?.namedCurve !== "prime256v1") throw 0;
+    der = key.export({ format: "der", type: "pkcs8" });
   } catch { throw unavailable("invalid-signing-key"); }
+  const params = alg === "ES256" ? { name: "ECDSA", namedCurve: "P-256" } : { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" };
+  try {
+    const key = await crypto.subtle.importKey("pkcs8", new Uint8Array(der), params, false, ["sign"]);
+    return createWebCryptoAssertionSigner(alg, key, kid);
+  } catch { throw unavailable("invalid-signing-key"); }
+  finally { der.fill(0); }
 }
 
 export async function createLiveAuth(descriptor: LegacyServerConfig, options: LiveAuthOptions): Promise<LiveAuth> {
@@ -81,7 +85,7 @@ export async function createLiveAuth(descriptor: LegacyServerConfig, options: Li
     }
     return { provider: new ClientCredentialsAuth({ ...common, clientId,
       ...(secret ? { secret } : {}), ...(credentialKey && credentials ? { credentialKey, credentials } : {}),
-      ...(pem ? { signer: privateKeySigner(pem, c.alg, text(c.kid)) } : {}),
+      ...(pem ? { signer: await privateKeySigner(pem, c.alg, text(c.kid)) } : {}),
       ...(expectedIssuer ? { expectedIssuer } : {}), ...(requestedScopes ? { scopes: requestedScopes } : {}),
     }) };
   }
