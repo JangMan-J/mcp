@@ -32,19 +32,19 @@ export async function getDocument(fetcher: FetchPort, url: string, signal: Abort
 }
 
 export async function discover(fetcher: FetchPort, resource: string, requestUrl: string, location: string | undefined,
-  options: DiscoveryOptions, signal: AbortSignal): Promise<{ metadata: Metadata; scopes: string[] }> {
+  options: DiscoveryOptions, signal: AbortSignal): Promise<{ metadata: Metadata; scopes: string[]; resource: string }> {
   const url = secureUrl(resource, options.allowInsecureDev);
   const root = `${url.origin}/.well-known/oauth-protected-resource`;
   const locations = location !== undefined ? [secureUrl(location, options.allowInsecureDev).href] :
     [...new Set([`${root}${url.pathname === '/' ? '' : url.pathname}${url.search}`, root])];
-  let prm: JsonObject | undefined;
+  let prm: (JsonObject & { resource: string }) | undefined;
   for (const candidate of locations) {
     const doc = await getDocument(fetcher, candidate, signal);
     if (doc === undefined) continue;
     // Root fallback is the metadata for the origin, not for the nested endpoint.
     const expected = location !== undefined ? requestUrl : candidate === root && locations.length > 1 ? url.origin : resource;
     if (doc['resource'] !== expected) fail('prm-resource-mismatch');
-    prm = doc;
+    prm = { ...doc, resource: expected };
     break;
   }
   const issuers = [...new Set(strings(prm?.['authorization_servers']))];
@@ -53,7 +53,7 @@ export async function discover(fetcher: FetchPort, resource: string, requestUrl:
   if (selected !== undefined && !issuers.includes(selected)) fail('as-selection-invalid');
   let lastError: AuthError | undefined;
   for (const issuer of selected === undefined ? issuers : [selected]) {
-    try { return { metadata: await discoverIssuer(fetcher, issuer, options, signal), scopes: strings(prm['scopes_supported']) }; }
+    try { return { resource: prm.resource, metadata: await discoverIssuer(fetcher, issuer, options, signal), scopes: strings(prm['scopes_supported']) }; }
     catch (error) { if (!(error instanceof AuthError)) throw error; lastError = error; }
   }
   throw lastError ?? new AuthError('auth-failure', 'as-metadata-missing');
@@ -70,7 +70,7 @@ export async function discoverIssuer(fetcher: FetchPort, issuer: string, options
     if (!doc) continue;
     if (doc['issuer'] !== issuer) fail('as-issuer-mismatch');
     if (!strings(doc['code_challenge_methods_supported']).includes('S256')) fail('pkce-s256-required');
-    const authorizationEndpoint = secureUrl(doc['authorization_endpoint'] as string); // D6: browser URLs are HTTPS only.
+    const authorizationEndpoint = secureUrl(doc['authorization_endpoint'] as string, options.allowInsecureDev);
     const tokenEndpoint = secureUrl(doc['token_endpoint'] as string, options.allowInsecureDev);
     if (authorizationEndpoint.hash || tokenEndpoint.hash) fail('invalid-url');
     return { issuer, authorizationEndpoint, tokenEndpoint,

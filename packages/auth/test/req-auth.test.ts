@@ -4,6 +4,8 @@ import { createServer as createHttpServer, type IncomingMessage } from 'node:htt
 import { createServer, type RequestOptions } from 'node:https';
 import type { TLSSocket } from 'node:tls';
 import { beforeEach, expect, it, vi } from 'vitest';
+import { discoverIssuer } from '../src/discovery.js';
+import { runExchange } from '../src/conformance.js';
 import { OAuthAuthorization, SafeFetch, openSystemBrowser } from '../src/index.js';
 
 // Control the policy lookup, but leave Node to open a real TLS socket.
@@ -107,6 +109,31 @@ it('[AUTH-SSRF-4] [AUTH-SSRF-5] [AUTH-SSRF-6] revalidates redirects and sends no
   } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
 });
 
+
+it('[AUTH-URL-1] permits HTTP authorization endpoints only on loopback with explicit dev mode', async () => {
+  const issuer = 'https://as.test';
+  const endpoint = (host: string, options: { allowInsecureDev?: boolean }) => discoverIssuer({
+    fetch: async () => Response.json({ issuer, authorization_endpoint: `http://${host}/authorize`,
+      token_endpoint: `${issuer}/token`, code_challenge_methods_supported: ['S256'] }),
+  }, issuer, options, new AbortController().signal);
+  await expect(endpoint('localhost', {})).rejects.toThrow('invalid-url');
+  await expect(endpoint('localhost', { allowInsecureDev: false })).rejects.toThrow('invalid-url');
+  expect((await endpoint('localhost', { allowInsecureDev: true })).authorizationEndpoint.href).toBe('http://localhost/authorize');
+  await expect(endpoint('as.test', { allowInsecureDev: true })).rejects.toThrow('invalid-url');
+});
+
+it('[AUTH-RES-1] sends the root PRM identifier for authorization, code exchange, and refresh', async () => {
+  const resource = 'https://mcp.test';
+  await runExchange({ client: { prmLocation: 'root', tokenReplies: [{ body: {
+    access_token: 'first', token_type: 'Bearer', refresh_token: 'refresh', expires_in: 1,
+  } }] }, script: [
+    { do: 'challenge' }, { expect: 'open', url: 'https://as.test/authorize', match: { resource } },
+    { expect: 'form', match: { resource, grant_type: 'authorization_code' } },
+    { do: 'advance', ms: 1000 }, { expect: 'header', value: 'Bearer fixture-token-2' },
+    { expect: 'form', index: 1, match: { resource, grant_type: 'refresh_token' } },
+    { expect: 'header', url: `${resource}/other`, value: null },
+  ] });
+});
 
 // Observe process creation without opening a desktop application.
 const spawn = vi.hoisted(() => vi.fn());

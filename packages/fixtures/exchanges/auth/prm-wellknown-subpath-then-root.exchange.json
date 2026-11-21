@@ -17,6 +17,15 @@
       "do": "challenge"
     },
     {
+      "expect": "open",
+      "url": "https://as.test/authorize",
+      "match": { "resource": "https://mcp.test" }
+    },
+    {
+      "expect": "form",
+      "match": { "resource": "https://mcp.test" }
+    },
+    {
       "expect": "fetches",
       "values": [
         "GET https://mcp.test/.well-known/oauth-protected-resource/rpc",

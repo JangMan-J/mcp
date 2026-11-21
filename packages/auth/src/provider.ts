@@ -93,6 +93,7 @@ export interface OAuthOptions extends ResourceOptions, DiscoveryOptions {
   readonly onDiagnostic?: (message: string) => void;
 }
 interface Session {
+  readonly resource: string; // Validated PRM identifier; may differ from the configured MCP endpoint.
   readonly metadata: Metadata;
   readonly registration: ClientRegistration;
 }
@@ -184,25 +185,28 @@ export class OAuthAuthorization implements AuthProvider {
     const previous = this.#grant;
     const step = challenge.status === 403;
     if (!step) this.#grant = undefined;
-    const { metadata, scopes } = await discover(this.#fetch, this.#resource, challenge.resource ?? new URL(this.#options.resource).href,
+    const { metadata, scopes, resource } = await discover(this.#fetch, this.#resource, challenge.resource ?? new URL(this.#options.resource).href,
       bearer?.resource_metadata, this.#options, signal);
-    const sameIssuer = previous?.metadata.issuer === metadata.issuer;
-    if (previous && !sameIssuer) this.#grant = undefined;
-    const selected = [...new Set([...(step && sameIssuer ? previous.scopes : []),
-      ...(bearer?.scope !== undefined ? scopesOf(bearer.scope) : step && sameIssuer ? [] : scopes.flatMap(scopesOf)),
+    const sameBinding = previous?.metadata.issuer === metadata.issuer && previous.resource === resource;
+    if (previous && !sameBinding) this.#grant = undefined;
+    const selected = [...new Set([...(step && sameBinding ? previous.scopes : []),
+      ...(bearer?.scope !== undefined ? scopesOf(bearer.scope) : step && sameBinding ? [] : scopes.flatMap(scopesOf)),
     ])].filter(scope => scope !== 'offline_access');
     if (this.#options.offlineAccess && metadata.scopes.includes('offline_access')) selected.push('offline_access');
-    const session = { metadata, registration: await this.registration(metadata, signal, context) };
-    if (!step && (!previous || sameIssuer)) {
-      await this.renew(session, selected, signal, context, sameIssuer ? previous : undefined);
+    const session = { metadata, resource, registration: await this.registration(metadata, signal, context) };
+    if (!step && (!previous || sameBinding)) {
+      await this.renew(session, selected, signal, context, sameBinding ? previous : undefined);
     } else {
       await this.interactive(session, selected, signal, context);
     }
     this.#resourceMetadataHint = bearer?.resource_metadata;
   }
 
-  private key(session: Session, type: 'registration' | 'refresh') {
-    return JSON.stringify([type, this.#resource, session.metadata.issuer, type === 'refresh' ? session.registration.clientId : null]);
+  private refreshKey(session: Session) {
+    const key = ['refresh', this.#resource, session.metadata.issuer, session.registration.clientId];
+    // Preserve existing keys for grants whose audience is the configured endpoint.
+    if (session.resource !== this.#resource) key.push(session.resource);
+    return JSON.stringify(key);
   }
 
   private validateRegistration(reg: ClientRegistration): ClientRegistration {
@@ -260,11 +264,11 @@ export class OAuthAuthorization implements AuthProvider {
   }
 
   private async renew(session: Session, scopes: readonly string[], signal: AbortSignal, context?: AuthRequestContext, previous = this.#grant) {
-    const refresh = await this.#store.get(this.key(session, 'refresh'));
+    const refresh = await this.#store.get(this.refreshKey(session));
     if (refresh) {
       const form = new URLSearchParams({ grant_type: 'refresh_token', refresh_token: refresh });
       if (await this.token(session, form, previous?.scopes ?? scopes, signal, refresh, previous)) return;
-      await this.#store.delete(this.key(session, 'refresh'));
+      await this.#store.delete(this.refreshKey(session));
       this.#grant = undefined;
     }
     await this.interactive(session, scopes, signal, context);
@@ -280,12 +284,12 @@ export class OAuthAuthorization implements AuthProvider {
     const { browser, redirect, redirectUri } = this.#options;
     if (!browser || !redirect) throw new AuthError('auth-unavailable', 'authorize');
     await this.consent({ kind: 'authorize', serverLabel: this.#options.serverLabel ?? context?.serverLabel ?? this.#resource,
-      issuerHost: new URL(metadata.issuer).hostname, resource: this.#resource, scopes: Object.freeze([...scopes]),
+      issuerHost: new URL(metadata.issuer).hostname, resource: session.resource, scopes: Object.freeze([...scopes]),
       redirectHost: this.#redirect.hostname, localhostWarning: isLoopback(this.#redirect.hostname) }, signal, context);
     const verifier = this.nonce(32), state = this.nonce(24);
     const url = new URL(metadata.authorizationEndpoint);
     const parameters = { response_type: 'code', client_id: registration.clientId, redirect_uri: redirectUri,
-      code_challenge: pkceChallenge(verifier), code_challenge_method: 'S256', state, resource: this.#resource };
+      code_challenge: pkceChallenge(verifier), code_challenge_method: 'S256', state, resource: session.resource };
     for (const [key, value] of Object.entries(parameters)) url.searchParams.set(key, value);
     url.searchParams.delete('scope');
     if (scopes.length) url.searchParams.set('scope', scopes.join(' '));
@@ -308,7 +312,7 @@ export class OAuthAuthorization implements AuthProvider {
   private async token(session: Session, form: URLSearchParams, scopes: readonly string[], signal: AbortSignal, refresh?: string, previous?: Grant) {
     const { metadata, registration } = session;
     form.set('client_id', registration.clientId);
-    form.set('resource', this.#resource);
+    form.set('resource', session.resource);
     const headers = new Headers({ 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' });
     if (registration.clientSecret !== undefined) {
       if (!metadata.clientAuthMethods.length || metadata.clientAuthMethods.includes('client_secret_basic')) {
@@ -336,7 +340,7 @@ export class OAuthAuthorization implements AuthProvider {
     if (lifetime !== undefined && (typeof lifetime !== 'number' || !Number.isFinite(lifetime) || lifetime <= 0 || lifetime > Number.MAX_SAFE_INTEGER / 1000)) fail('invalid-token-expiry');
     const issuedRefresh = doc['refresh_token'];
     if (issuedRefresh !== undefined && (typeof issuedRefresh !== 'string' || !issuedRefresh)) fail('invalid-refresh-token');
-    const key = this.key(session, 'refresh');
+    const key = this.refreshKey(session);
     signal.throwIfAborted();
     if (issuedRefresh !== undefined) await this.#store.set(key, issuedRefresh);
     else if (!refresh) await this.#store.delete(key);
