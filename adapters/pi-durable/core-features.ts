@@ -1,6 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 import type { ListenFilter, Subscription } from '@mcp-client/mrtr-cache';
-import type { DurableRuntime } from './runtime.js';
+import type { DurableRuntime, ServerDescriptor } from './runtime.js';
+import { DurableHandles } from './handles.js';
 
 /** Common per-server feature contract consumed by the durable host. */
 export interface DurableFeature {
@@ -12,13 +13,12 @@ export interface DurableFeature {
 export interface DurableFeatureContext {
   readonly id: string;
   readonly runtime: DurableRuntime;
-  readonly descriptor: { readonly name: string; readonly aliases?: readonly string[]; readonly [key: string]: unknown };
+  readonly descriptor: Pick<ServerDescriptor, 'name' | 'aliases' | 'subscribe'>;
   readonly db: DatabaseSync;
   readonly options: {
     readonly wake?: (server: string, reason: string) => void | Promise<void>;
     readonly refreshTools?: () => void | Promise<void>;
-    readonly deliver?: (event: unknown) => void | Promise<void>;
-    readonly [key: string]: unknown;
+    readonly deliver?: (event: Record<string, unknown>) => void | Promise<void>;
   };
 }
 
@@ -47,12 +47,27 @@ function value<T>(out: Outcome<T>, project: (v: T) => unknown): unknown {
   return out.kind === 'ok' ? project((out as { value: T }).value) : out;
 }
 
+/** Acknowledged resource URIs, persisted per server so a reopened host can resubscribe. */
+function resourceHandles(ctx: DurableFeatureContext): DurableHandles {
+  ctx.db.exec('CREATE TABLE IF NOT EXISTS durable_resource_handles (server TEXT PRIMARY KEY, handle TEXT NOT NULL)');
+  return new DurableHandles({
+    storage: {
+      read: () => {
+        const row = ctx.db.prepare('SELECT handle FROM durable_resource_handles WHERE server = ?').get(ctx.id) as { handle: string } | undefined;
+        return row ? JSON.parse(row.handle) : null;
+      },
+      write: data => { ctx.db.prepare('INSERT OR REPLACE INTO durable_resource_handles (server, handle) VALUES (?, ?)').run(ctx.id, JSON.stringify(data)); },
+    },
+    send: async () => { throw new Error('resource handles are restored locally'); },
+  });
+}
+
 /** Prompts/resources and MCP subscriptions/listen for one already-connected server. */
 export async function createCoreFeatures(ctx: DurableFeatureContext): Promise<DurableFeature> {
   const { runtime: rt } = ctx;
   const discovered = await rt.ready();
   if (discovered.kind !== 'ok') return {
-    names: ['mcp_prompts', 'mcp_resources'],
+    names: [],
     async run() { return discovered; },
     async close() {},
   };
@@ -115,8 +130,16 @@ export async function createCoreFeatures(ctx: DurableFeatureContext): Promise<Du
     }
   }
 
+  const handles = resourceHandles(ctx);
+  const canSubscribe = supports(rt, 'resources', 'subscribe') && !!rt.stateful.subscriptions;
+  const saveUris = () => handles.save({ kind: 'subscription', subscriptions: [...uris] });
   // Background interest is best effort and must not delay tool availability.
-  queue = listen([], signal).catch(() => {});
+  queue = (async () => {
+    const handle = canSubscribe ? await handles.load().catch(() => null) : null;
+    const stored = handle?.kind === 'subscription' ? handle.subscriptions.filter((u): u is string => typeof u === 'string') : [];
+    if (stored.length) try { await listen(stored, signal); return; } catch { /* fall back to list-changed interest only */ }
+    await listen([], signal);
+  })().catch(() => {});
   const serverName = ctx.descriptor.name || ctx.id;
   const checkServer = (args: Obj) => {
     if (args.server !== undefined && args.server !== ctx.id && args.server !== serverName && !ctx.descriptor.aliases?.includes(field(args, 'server')))
@@ -184,7 +207,7 @@ export async function createCoreFeatures(ctx: DurableFeatureContext): Promise<Du
         const next = new Set(uris);
         const had = next.has(uri);
         if (action === 'subscribe') next.add(uri); else next.delete(uri);
-        if (had !== next.has(uri)) await listen([...next], active);
+        if (had !== next.has(uri)) { await listen([...next], active); await saveUris(); }
         return { server: ctx.id, uris: [...uris] };
       });
       queue = update.catch(() => {});
@@ -203,7 +226,7 @@ export async function createCoreFeatures(ctx: DurableFeatureContext): Promise<Du
   else signal.addEventListener('abort', () => { void close(); }, { once: true });
 
   return {
-    names: ['mcp_prompts', 'mcp_resources'],
+    names: [...(supports(rt, 'prompts') ? ['mcp_prompts'] : []), ...(supports(rt, 'resources') ? ['mcp_resources'] : [])],
     async run(name, args, active) {
       active.throwIfAborted(); signal.throwIfAborted(); checkServer(args);
       const combined = AbortSignal.any([active, signal]);

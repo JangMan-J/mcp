@@ -131,7 +131,7 @@ export async function createStreamFeatures(ctx: DurableFeatureContext): Promise<
     conversation.deliver(sub.id, event);
     if (event.cursor !== null) sub.accepted = event.cursor;
     queued.push({ sub, event });
-    try { void Promise.resolve(ctx.options.deliver?.(event)).catch(() => {}); } catch { /* delivery is best effort after commit */ }
+    try { void Promise.resolve(ctx.options.deliver?.({ ...event })).catch(() => {}); } catch { /* delivery is best effort after commit */ }
     try { void Promise.resolve(ctx.options.wake?.(ctx.id, `event ${event.name}`)).catch(() => {}); } catch { /* host wake is best effort */ }
   };
 
@@ -205,7 +205,7 @@ export async function createStreamFeatures(ctx: DurableFeatureContext): Promise<
 
   if (capable && !signal.aborted) {
     // Manual and automatic subscriptions are both durable. Auto rules update options on restore.
-    const rules = normalizeRules(ctx.descriptor.subscribe as SubscribeRules | undefined);
+    const rules = normalizeRules(ctx.descriptor.subscribe);
     for (const row of restoredRows()) {
       try {
         const args = JSON.parse(row.arguments) as Obj;
@@ -229,7 +229,7 @@ export async function createStreamFeatures(ctx: DurableFeatureContext): Promise<
   else signal.addEventListener('abort', () => { void close(); }, { once: true });
 
   return {
-    names: ['mcp_events'],
+    names: capable ? ['mcp_events'] : [],
     async run(name, args, active) {
       active.throwIfAborted(); signal.throwIfAborted(); checkServer(args);
       if (name !== 'mcp_events') throw new Error(`Unknown tool: ${name}`);
