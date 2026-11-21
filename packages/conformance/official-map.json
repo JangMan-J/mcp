@@ -5,7 +5,7 @@
     "version": "0.2.0-alpha.12",
     "tag": "main",
     "commit": "96a6f9478b7f2e125cf0360a213383cf57533893",
-    "source": "README.md, SDK_INTEGRATION.md and requirements/2026-07-28.yaml at 96a6f9478b7f2e125cf0360a213383cf57533893 (permitted upstream docs only; upstream src not read)",
+    "source": "README.md, SDK_INTEGRATION.md and requirements/2026-07-28.yaml at 96a6f9478b7f2e125cf0360a213383cf57533893 (permitted upstream docs only; upstream src not read), plus observed `client --help` output (-o, --output-dir <path>)",
     "checkoutDir": ".cache/conformance/checkout",
     "clientArgs": [
       "client",
@@ -15,10 +15,10 @@
       "{scenario}",
       "--spec-version",
       "2026-07-28",
-      "--output",
-      "json"
+      "-o",
+      "{outputDir}"
     ],
-    "readmeNote": "Documented invocation also supports --requirements 2026-07-28, --timeout and --verbose; runner appends <server-url> as final argument to the CUT command and passes MCP_CONFORMANCE_SCENARIO, MCP_CONFORMANCE_CONTEXT and MCP_CONFORMANCE_PROTOCOL_VERSION to the CUT."
+    "readmeNote": "Documented invocation also supports --requirements 2026-07-28, --timeout and --verbose; client results are written under the -o/--output-dir directory as <scenario>-<timestamp>/checks.json with stdout.txt/stderr.txt. The runner appends <server-url> as final argument to the CUT command and passes MCP_CONFORMANCE_SCENARIO, MCP_CONFORMANCE_CONTEXT and MCP_CONFORMANCE_PROTOCOL_VERSION to the CUT."
   },
   "targetSpecVersion": "2026-07-28",
   "cut": {
@@ -32,11 +32,13 @@
     "reason": "Exactly the 32 required 2026-07-28 client scenarios from requirements/2026-07-28.yaml are mapped; not_scored entries are listed under notScored and excluded from core claims."
   },
   "resultSchema": {
-    "source": "README.md --output json summary (passed, failed, total, not_scored) and SDK_INTEGRATION.md results/<scenario>-<timestamp>/checks.json (array of conformance check results with pass/fail status, plus stdout.txt/stderr.txt) at 96a6f9478b7f2e125cf0360a213383cf57533893",
-    "passedField": "passed",
-    "failedField": "failed",
-    "totalField": "total",
-    "notScoredField": "not_scored"
+    "source": "README.md and SDK_INTEGRATION.md at 96a6f9478b7f2e125cf0360a213383cf57533893: client results saved to <output-dir>/<scenario>-<timestamp>/checks.json (array of conformance check results with pass/fail status, plus stdout.txt/stderr.txt)",
+    "file": "checks.json",
+    "statusField": "status",
+    "passStatus": "SUCCESS",
+    "failStatuses": [
+      "FAILURE"
+    ]
   },
   "eligibility": {
     "specVersion": "2026-07-28",

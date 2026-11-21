@@ -8,11 +8,13 @@
  *
  * Fails closed: `blocked` is a human-readable string whenever any precondition
  * is missing (catalog, CUT, checkout, pin, result schema); `reasons` keeps the
- * individual codes. A scenario passes only when its parsed result JSON says so
- * under a declared schema; exit codes alone are never evidence.
+ * individual codes. A scenario passes only when the runner exits 0 and writes
+ * exactly one checks.json (declared schema) with >= 1 check and no failing
+ * status; exit codes alone are never evidence.
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 export interface EligibilityFlags {
@@ -29,13 +31,14 @@ export interface OfficialScenarioMapping extends Partial<EligibilityFlags> {
   readonly reason?: string;
 }
 
-/** Declared shape of one scenario's result JSON (from a documented contract only). */
+/** Declared shape of one scenario's checks file (from a documented contract only). */
 export interface ResultSchema {
   readonly source: string;
-  readonly passedField: string;
-  readonly failedField: string;
-  readonly totalField: string;
-  readonly notScoredField: string;
+  /** File name written under the per-scenario output dir. */
+  readonly file: string;
+  readonly statusField: string;
+  readonly passStatus: string;
+  readonly failStatuses: readonly string[];
 }
 
 export interface OfficialMap {
@@ -139,19 +142,37 @@ function inspectCheckout(dir: string, map: OfficialMap): Checkout {
   return { head, bin, problems };
 }
 
-function lastJsonObject(text: string): Record<string, unknown> | undefined {
-  const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const l = lines[i]!;
-    if (!l.startsWith("{")) continue;
-    try {
-      const v: unknown = JSON.parse(l);
-      if (v && typeof v === "object" && !Array.isArray(v)) return v as Record<string, unknown>;
-    } catch {
-      /* not JSON */
-    }
+function validSchema(rs: ResultSchema | null): rs is ResultSchema {
+  return !!rs && !!rs.source && rs.file === "checks.json" && !!rs.statusField && !!rs.passStatus &&
+    Array.isArray(rs.failStatuses) && rs.failStatuses.length > 0 && !rs.failStatuses.includes(rs.passStatus);
+}
+
+interface ChecksSummary {
+  readonly checks: number;
+  readonly passed: number;
+  readonly failed: number;
+  readonly statuses: Record<string, number>;
+}
+
+/** Reads the single checks file under `dir`; returns an error string when the contract is not met. */
+function readChecks(dir: string, schema: ResultSchema): { summary?: ChecksSummary; error?: string } {
+  const files = (readdirSync(dir, { recursive: true }) as string[]).filter((f) => f.split(/[\\/]/).pop() === schema.file);
+  if (files.length !== 1) return { error: `expected exactly one ${schema.file}, found ${files.length}` };
+  let checks: unknown;
+  try { checks = JSON.parse(readFileSync(join(dir, files[0]!), "utf8")); } catch { return { error: `${schema.file} is not valid JSON` }; }
+  if (!Array.isArray(checks)) return { error: `${schema.file} is not an array` };
+  const statuses: Record<string, number> = {};
+  for (const c of checks) {
+    const st = c && typeof c === "object" ? (c as Record<string, unknown>)[schema.statusField] : undefined;
+    const key = typeof st === "string" ? st : "<missing>";
+    statuses[key] = (statuses[key] ?? 0) + 1;
   }
-  return undefined;
+  const passed = statuses[schema.passStatus] ?? 0;
+  const failed = schema.failStatuses.reduce((n, f) => n + (statuses[f] ?? 0), 0) + (statuses["<missing>"] ?? 0);
+  const summary = { checks: checks.length, passed, failed, statuses };
+  if (checks.length === 0) return { summary, error: `${schema.file} has no checks` };
+  if (failed > 0) return { summary, error: `${failed} failing check(s)` };
+  return { summary };
 }
 
 export async function runOfficial(root: string): Promise<OfficialResult> {
@@ -178,7 +199,7 @@ export async function runOfficial(root: string): Promise<OfficialResult> {
   }
   if (!cutPath) reasons.push(`cut-not-authorized: ${map.cut.reason}`);
   else if (!existsSync(cutPath)) reasons.push(`cut-missing: ${cutPath} absent`);
-  if (!map.resultSchema || map.resultSchema.passedField !== "passed" || map.resultSchema.failedField !== "failed" || map.resultSchema.totalField !== "total" || map.resultSchema.notScoredField !== "not_scored" || !map.resultSchema.source) reasons.push(`result-schema-unavailable: ${map.resultSchemaReason ?? "no documented result JSON schema"}`);
+  if (!validSchema(map.resultSchema)) reasons.push(`result-schema-unavailable: ${map.resultSchemaReason ?? "no documented result JSON schema"}`);
   reasons.push(...checkout.problems);
 
   const evidence: Record<string, unknown> = {
@@ -205,20 +226,22 @@ export async function runOfficial(root: string): Promise<OfficialResult> {
   const schema = map.resultSchema!;
   const bin = checkout.bin!;
   const scenarios: OfficialScenarioResult[] = applicable.map((s) => {
-    const args = fill(map.runner.clientArgs, { cut: `${process.execPath} ${cutPath!}`, scenario: s.id });
-    const r = spawnSync(process.execPath, [bin, ...args], {
-      cwd: checkoutDir,
-      encoding: "utf8",
-      timeout: 120_000,
-      env: { ...process.env, npm_config_offline: "true" },
-    });
-    const out = `${r.stdout ?? ""}${r.stderr ?? ""}${r.error ? String(r.error) : ""}`;
-    const parsed = lastJsonObject(r.stdout ?? "");
-    let error: string | undefined;
-    if (!parsed) error = "no result JSON in stdout";
-    else if (parsed[schema.passedField] !== 1 || parsed[schema.failedField] !== 0 || parsed[schema.totalField] !== 1 || parsed[schema.notScoredField] !== 0) error = "result is not exactly one passed scored scenario";
-    else if (r.status !== 0) error = `exit ${String(r.status)} despite passing result`;
-    return { id: s.id, requirements: s.requirements, ok: !error, exitCode: r.status, result: parsed ?? null, evidence: clip(out), ...(error ? { error } : {}) };
+    const outputDir = mkdtempSync(join(tmpdir(), "mcp-official-"));
+    try {
+      const args = fill(map.runner.clientArgs, { cut: `${process.execPath} ${cutPath!}`, scenario: s.id, outputDir });
+      const r = spawnSync(process.execPath, [bin, ...args], {
+        cwd: checkoutDir,
+        encoding: "utf8",
+        timeout: 120_000,
+        env: { ...process.env, npm_config_offline: "true" },
+      });
+      const out = `${r.stdout ?? ""}${r.stderr ?? ""}${r.error ? String(r.error) : ""}`;
+      const { summary, error: checksError } = readChecks(outputDir, schema);
+      const error = checksError ?? (r.status !== 0 ? `exit ${String(r.status)} despite passing checks` : undefined);
+      return { id: s.id, requirements: s.requirements, ok: !error, exitCode: r.status, result: summary ?? null, evidence: clip(out), ...(error ? { error } : {}) };
+    } finally {
+      rmSync(outputDir, { recursive: true, force: true });
+    }
   });
 
   const failed = scenarios.filter((s) => !s.ok).map((s) => `scenario-failed: ${s.id}: ${s.error ?? ""}`);

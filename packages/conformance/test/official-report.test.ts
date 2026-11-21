@@ -67,6 +67,18 @@ function runGateWithOfficialOutput(officialRes: { code: number; stdout: string; 
   }
 }
 
+/** Fake runner body: writes `checks` (a JS expression using `sc`) to <-o dir>/<scenario>-1/checks.json. */
+function fakeRunner(checksExpr: string, extra = ""): string {
+  return [
+    'const fs = require("node:fs"), path = require("node:path");',
+    'const a = process.argv, o = a[a.indexOf("-o") + 1], sc = a[a.indexOf("--scenario") + 1];',
+    extra,
+    'const d = path.join(o, sc.replace(/\\//g, "-") + "-1");',
+    "fs.mkdirSync(d, { recursive: true });",
+    `fs.writeFileSync(path.join(d, "checks.json"), JSON.stringify(${checksExpr}));`,
+  ].join("\n");
+}
+
 function makeOfficialFixture(opts: { runnerScript: string; scenarioIds: readonly string[]; pinMismatch?: boolean }) {
   const root = mkdtempSync(join(tmpdir(), "official-report-"));
   const checkout = join(root, "checkout");
@@ -85,17 +97,9 @@ function makeOfficialFixture(opts: { runnerScript: string; scenarioIds: readonly
     version: "1",
     commit: opts.pinMismatch ? "0".repeat(40) : commit,
     checkoutDir: "checkout",
-    clientArgs: ["client", "--command", "{cut}", "--scenario", "{scenario}", "--spec-version", "2026-07-28", "--output", "json"],
   });
   map.catalog = { selected: true, authorizedBy: "test", reason: "" };
   map.cut = { authorized: true, path: "cut.js", reason: "" };
-  map.resultSchema = {
-    source: "README",
-    passedField: "passed",
-    failedField: "failed",
-    totalField: "total",
-    notScoredField: "not_scored",
-  };
   map.scenarios = opts.scenarioIds.map((id) => ({
     id,
     specVersion: map.eligibility.specVersion,
@@ -111,12 +115,7 @@ function makeOfficialFixture(opts: { runnerScript: string; scenarioIds: readonly
 describe("official --json CLI report alignment with gate.ts", () => {
   it("pass: derives total from observed scenarios only, preserves per-scenario evidence, and passes gate.ts", async () => {
     const fixture = makeOfficialFixture({
-      runnerScript: [
-        'const idx = process.argv.indexOf("--scenario");',
-        'const sc = idx >= 0 ? process.argv[idx + 1] : "unknown";',
-        'console.log("runner-evidence:" + sc);',
-        'console.log(JSON.stringify({ passed: 1, failed: 0, total: 1, not_scored: 0, scenario: sc }));',
-      ].join("\n"),
+      runnerScript: fakeRunner('[{ id: sc, status: "SUCCESS" }, { id: "x", status: "SUCCESS" }]', 'console.log("runner-evidence:" + sc);'),
       scenarioIds: ["alpha", "beta"],
     });
     const prevCheckout = process.env.MCP_CONFORMANCE_CHECKOUT;
@@ -137,7 +136,7 @@ describe("official --json CLI report alignment with gate.ts", () => {
         requirements: ["REQ-1"],
         ok: true,
         exitCode: 0,
-        result: { passed: 1, failed: 0, total: 1, not_scored: 0, scenario: "alpha" },
+        result: { checks: 2, passed: 2, failed: 0, statuses: { SUCCESS: 2 } },
       });
       expect((formatted.scenarios[0] as { evidence: string }).evidence).toContain("runner-evidence:alpha");
       expect(formatted.scenarios[1]).toMatchObject({ id: "beta", ok: true });
@@ -163,7 +162,7 @@ describe("official --json CLI report alignment with gate.ts", () => {
 
   it("blocked: exposes blocked reason, reports total=0, preserves metadata, and blocks gate.ts", async () => {
     const fixture = makeOfficialFixture({
-      runnerScript: 'console.log(JSON.stringify({ passed: 1, failed: 0, total: 1, not_scored: 0 }));',
+      runnerScript: fakeRunner('[{ id: "a", status: "SUCCESS" }]'),
       scenarioIds: ["alpha"],
       pinMismatch: true,
     });
@@ -198,15 +197,7 @@ describe("official --json CLI report alignment with gate.ts", () => {
 
   it("scenario failure: preserves per-scenario evidence and exposes failure reason to gate.ts", async () => {
     const fixture = makeOfficialFixture({
-      runnerScript: [
-        'const idx = process.argv.indexOf("--scenario");',
-        'const sc = idx >= 0 ? process.argv[idx + 1] : "unknown";',
-        'if (sc === "bad-one") {',
-        '  console.log(JSON.stringify({ passed: 1, failed: 0, total: 1, not_scored: 1 }));',
-        "} else {",
-        '  console.log(JSON.stringify({ passed: 1, failed: 0, total: 1, not_scored: 0 }));',
-        "}",
-      ].join("\n"),
+      runnerScript: fakeRunner('[{ id: "a", status: "SUCCESS" }].concat(sc === "bad-one" ? [{ id: "b", status: "FAILURE" }] : [])'),
       scenarioIds: ["good-one", "bad-one"],
     });
     const prevCheckout = process.env.MCP_CONFORMANCE_CHECKOUT;
@@ -223,7 +214,7 @@ describe("official --json CLI report alignment with gate.ts", () => {
       expect(formatted.scenarios[1]).toMatchObject({
         id: "bad-one",
         ok: false,
-        result: { passed: 1, failed: 0, total: 1, not_scored: 1 },
+        result: { checks: 2, passed: 1, failed: 1, statuses: { SUCCESS: 1, FAILURE: 1 } },
       });
 
       const gateRep = runGateWithOfficialOutput({

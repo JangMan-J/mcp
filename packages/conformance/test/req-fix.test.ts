@@ -232,11 +232,13 @@ describe("[FIX-5] official runner is a subprocess only (static grep no-runner-im
     if (rs === null) expect(typeof map.resultSchemaReason).toBe("string");
     else expect(rs).toMatchObject({
       source: expect.any(String),
-      passedField: "passed",
-      failedField: "failed",
-      totalField: "total",
-      notScoredField: "not_scored",
+      file: "checks.json",
+      statusField: "status",
+      passStatus: "SUCCESS",
+      failStatuses: expect.arrayContaining(["FAILURE"]),
     });
+    expect(map.runner.clientArgs).toEqual(expect.arrayContaining(["-o", "{outputDir}"]));
+    expect(map.runner.clientArgs).not.toContain("--output");
     const el = map.eligibility as { specVersion: unknown; requires: Record<string, unknown> };
     expect(el.specVersion).toBe(map.targetSpecVersion);
     for (const f of ["legacy", "experimental", "extension", "disputed"]) expect(typeof el.requires[f], f).toBe("boolean");
