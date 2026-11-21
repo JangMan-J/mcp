@@ -1,10 +1,10 @@
 # Decisions
 
-Wave 0 ledger. D1–D11 record the §17.2 defaults unless a row says the default was narrowed by an observation. Q1–Q30 are the §17.3 ledger. Q31–Q38 are the supplemental ids the operations and authorization lanes already used. Answered means a choice or a sourced fact is recorded. Deferred means a fixture or a symbol is still blocked. Recording a default does not move an `unresolved` lane row to `required`. Pin values are in `PINS.md`. Semantic gaps are in `RECONCILIATION.md`.
+Wave 0 ledger. D1–D12 record the §17.2 defaults and later amendments unless a row says the default was narrowed by an observation. Q1–Q30 are the §17.3 ledger. Q31–Q38 are the supplemental ids the operations and authorization lanes already used. Answered means a choice or a sourced fact is recorded. Deferred means a fixture or a symbol is still blocked. Recording a default does not move an `unresolved` lane row to `required`. Pin values are in `PINS.md`. Semantic gaps are in `RECONCILIATION.md`.
 
 Events: the explicit request is planning, not enabling. D4 does not implement Events and does not turn it on. PLAN.md N11 wins over an Accepted label.
 
-## D1–D11
+## D1–D12
 
 | Id | Status | Recorded choice | Row impact | Next evidence |
 |---|---|---|---|---|
@@ -19,6 +19,7 @@ Events: the explicit request is planning, not enabling. D4 does not implement Ev
 | D9 | answered, fixture gated | Unsupported form `requestedSchema`: fail the round with `protocol-violation` and do not send `decline` | `ELIC-FORM-2` stays `unresolved`. The spec lists decline, cancel, or failure to process and does not pick one | Same gate as D5: do not encode the fixture until a later slice lifts it |
 | D10 | answered | Auto-retry after ambiguous failure is on for the read-only list and off for everything else. `prompts/get` stays on that list only as a host-overridable default | `STDIO-RECOVER-1` and `HTTP-RETRY-1` stay as the wire lane wrote them. Q8 is not closed | A spec sentence, or a test that the host can take `prompts/get` off the list |
 | D11 | answered | No publication, remote repository, or deployment in any wave covered by this plan | No package is created here | A separate plan if that changes |
+| D12 | answered | 2026-11-21: Ring 1 / user approved option B. Dynamic Client Registration (RFC 7591) is an explicit host opt-in (`OAuthOptions.dynamicRegistration = { clientName, softwareId? }`), default off, for back-compat only. With it off, `registration_endpoint` is read but never POSTed. With it on, register once per issuer after pre-registration and CIMD and before the consent client-info prompt; send `application_type` native/web (SEP-837) and select `token_endpoint_auth_method` from the AS list. Rationale: 20 of the 32 required official 2026-07-28 client scenarios use DCR against the runner's mock AS. This amends N8 for DCR only; Roots, Sampling, Logging, and HTTP+SSE are unchanged. The separate D6 loopback amendment exists and is unchanged. | `AUTH-DCR-1` and `AUTH-DCR-2` become `conditional`; `DEP-DCR-1` stays `deprecated`; the conformance CUT enables the opt-in | `auth/dcr-never-called`; unit [AUTH-DCR-1] and [AUTH-DCR-2] |
 
 ## Q1–Q30
 
