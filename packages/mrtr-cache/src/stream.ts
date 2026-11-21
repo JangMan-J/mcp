@@ -11,8 +11,8 @@ export function openListenStream(
   return (method, params): StreamHandle => {
     const req = client.request(method, params, {
       ...options,
+      stream: true,
       idempotent: options.idempotent ?? true,
-      timeoutMs: options.timeoutMs ?? Number.POSITIVE_INFINITY,
     });
     return {
       id: req.id,

@@ -27,6 +27,7 @@ import {
 import {
   systemClock,
   type Clock,
+  type ExchangeEnd,
   type LoggerPort,
   type PortRegistry,
   type ProgressEvent,
@@ -64,6 +65,7 @@ export const DEFAULT_LIMITS: Limits = {
 export interface RequestOptions {
   readonly signal?: AbortSignal;
   readonly timeoutMs?: number;
+  readonly stream?: boolean;
   readonly onProgress?: (p: ProgressEvent) => void;
   readonly idempotent?: boolean;
   /** HTTP-AMBIG-3: required (true) to re-issue a request after an uncertain-write. */
@@ -434,7 +436,17 @@ export class RequestManager {
       }
     }
 
-    const timeoutMs = Math.min(opts.timeoutMs ?? this.limits.defaultTimeoutMs, this.limits.hardMaxTimeoutMs);
+    const isStream = opts.stream === true;
+    const hasStreamTimeout =
+      isStream &&
+      opts.timeoutMs !== undefined &&
+      Number.isFinite(opts.timeoutMs) &&
+      opts.timeoutMs > 0;
+    const timeoutMs = isStream
+      ? hasStreamTimeout
+        ? opts.timeoutMs!
+        : 0
+      : Math.min(opts.timeoutMs ?? this.limits.defaultTimeoutMs, this.limits.hardMaxTimeoutMs);
     const idempotent = opts.idempotent ?? this.isReadOnly(method);
 
     let attempts = 0;
@@ -563,16 +575,21 @@ export class RequestManager {
           }
         })();
 
-        const timeoutPromise = new Promise<"timeout">((resolve) => {
-          cancelTimer = this.clock.setTimeout(() => {
-            timedOut = true;
-            ac.abort("timeout");
-            resolve("timeout");
-          }, timeoutMs);
-        });
-
-        const race = await Promise.race([guarded.done, timeoutPromise]);
-        cancelTimer?.();
+        const armTimeout = !isStream || hasStreamTimeout;
+        let race: ExchangeEnd | "timeout";
+        if (armTimeout) {
+          const timeoutPromise = new Promise<"timeout">((resolve) => {
+            cancelTimer = this.clock.setTimeout(() => {
+              timedOut = true;
+              ac.abort("timeout");
+              resolve("timeout");
+            }, timeoutMs);
+          });
+          race = await Promise.race([guarded.done, timeoutPromise]);
+          cancelTimer?.();
+        } else {
+          race = await guarded.done;
+        }
         markSettled();
         await pump;
         releaseToken();

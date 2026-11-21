@@ -417,7 +417,7 @@ export class TaskHandle {
             if (out.kind !== "ok") throw new McpOutcomeError(out);
             current = out.value as TaskState;
           }
-          yield current;
+          yield structuredClone(current);
           if (isTerminal(current.status)) return;
 
           const iter = queue[Symbol.asyncIterator]();
@@ -446,7 +446,7 @@ export class TaskHandle {
               if (signal?.aborted) return;
               if (out.kind !== "ok") throw new McpOutcomeError(out);
               current = out.value as TaskState;
-              yield current;
+              yield structuredClone(current);
               if (isTerminal(current.status)) return;
               continue;
             }
@@ -455,14 +455,14 @@ export class TaskHandle {
             if (step.value) {
               self.state = step.value;
               current = step.value;
-              yield current;
+              yield structuredClone(current);
               if (isTerminal(current.status)) return;
             } else {
               const out = await self.send("tasks/get", {}, signal ? { signal } : undefined);
               if (signal?.aborted) return;
               if (out.kind !== "ok") throw new McpOutcomeError(out);
               current = out.value as TaskState;
-              yield current;
+              yield structuredClone(current);
               if (isTerminal(current.status)) return;
             }
           }

@@ -214,4 +214,56 @@ describe("cancel and timeout semantics through McpClient", () => {
     expect("code" in out).toBe(false);
     if (out.kind === "uncertain-write") expect(out.uncertain.evidence).toBe("timeout");
   });
+
+  it("stream: true survives past hardMaxTimeoutMs and handles timeoutMs: 0 or Infinity without tick-0 abort", async () => {
+    const clock = fakeClock();
+    const t = manualTransport();
+    const client = new McpClient({ transport: t.transport, server: { key: "s" }, ports: { clock } });
+
+    const sDefault = client.request("subscriptions/listen", {}, { stream: true, idempotent: true });
+    const sZero = client.request("subscriptions/listen", {}, { stream: true, idempotent: true, timeoutMs: 0 });
+    const sInf = client.request(
+      "subscriptions/listen",
+      {},
+      { stream: true, idempotent: true, timeoutMs: Number.POSITIVE_INFINITY },
+    );
+
+    expect(t.pending.map((p) => p.ctx.timeoutMs)).toEqual([0, 0, 0]);
+    expect(clock.timers()).toBe(0);
+
+    await tick();
+    clock.advance(0);
+    clock.advance(600_000);
+    clock.advance(10_000_000);
+    await tick();
+
+    for (const p of t.pending) {
+      expect(p.ctx.signal.aborted).toBe(false);
+    }
+
+    // Stream terminates only on caller abort / cancel / client.close() / transport settlement.
+    t.respond(0, { resultType: "complete" });
+    expect((await sDefault).kind).toBe("ok");
+
+    sZero.cancel("done");
+    expect((await sZero).kind).toBe("cancelled");
+
+    await client.close();
+    expect((await sInf).kind).toBe("cancelled");
+  });
+
+  it("stream: true honors an explicit finite positive timeoutMs > 0 even above hardMaxTimeoutMs", async () => {
+    const clock = fakeClock();
+    const t = manualTransport();
+    const client = new McpClient({ transport: t.transport, server: { key: "s" }, ports: { clock } });
+    const s = client.request("subscriptions/listen", {}, { stream: true, idempotent: true, timeoutMs: 900_000 });
+    expect(t.pending[0]!.ctx.timeoutMs).toBe(900_000);
+    expect(clock.timers()).toBe(1);
+    clock.advance(600_000);
+    await tick();
+    expect(t.pending[0]!.ctx.signal.aborted).toBe(false);
+    clock.advance(300_000);
+    expect(await s).toMatchObject({ kind: "transport-failure", failure: { kind: "timeout" } });
+    expect(clock.timers()).toBe(0);
+  });
 });

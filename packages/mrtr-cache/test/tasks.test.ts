@@ -312,4 +312,53 @@ describe("push-first tasks runtime", () => {
     expect(out).toMatchObject({ kind: "cancelled", wasSent: false, phase: "input" });
     expect(request).not.toHaveBeenCalled();
   });
+
+  it("TaskHandle.watch() yields cloned state so caller mutations do not corrupt cached TaskState", async () => {
+    const ext = createTasksExtension({
+      peerCapabilities: { extensions: { [TASKS_ID]: {} } },
+    });
+    const accepted = ext.accept({
+      resultType: "task",
+      taskId: "t-immut",
+      status: "working",
+      result: { nested: { count: 1 } },
+    });
+    if (accepted.kind !== "task-handle") throw Error(accepted.kind);
+    const handle = accepted.handle as TaskHandle;
+
+    const observed: TaskState[] = [];
+    const watching = (async () => {
+      for await (const state of handle.watch()) {
+        observed.push(state);
+        state.status = "failed";
+        if (state.result && typeof state.result === "object") {
+          (state.result as { nested: { count: number } }).nested.count = 999;
+        }
+      }
+    })();
+
+    await new Promise((r) => setImmediate(r));
+    // Mutating the yielded initial state must not affect cached runtime or handle state.
+    expect(handle.status()).toBe("working");
+    expect(ext.latestState("t-immut")).toMatchObject({
+      taskId: "t-immut",
+      status: "working",
+      result: { nested: { count: 1 } },
+    });
+
+    ext.notify({
+      jsonrpc: "2.0",
+      method: "notifications/tasks",
+      params: { taskId: "t-immut", status: "completed", result: { nested: { count: 2 } } },
+    });
+    await watching;
+
+    expect(observed).toHaveLength(2);
+    expect(handle.status()).toBe("completed");
+    expect(ext.latestState("t-immut")).toMatchObject({
+      taskId: "t-immut",
+      status: "completed",
+      result: { nested: { count: 2 } },
+    });
+  });
 });

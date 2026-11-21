@@ -3,6 +3,7 @@ import {
   McpClient,
   NotificationQueue,
   META_CLIENT_CAPABILITIES,
+  type Clock,
   type Transport,
   type JsonRpcRequest,
   type Outcome,
@@ -267,6 +268,89 @@ describe("core integration", () => {
     sub.close();
     await reader;
     expect(cancelled).toEqual([String(sub.id)]);
+    await client.close();
+  });
+
+  it("openListenStream(client) stays alive past hardMaxTimeoutMs under fake clock", async () => {
+    let now = 0;
+    const timers = new Map<number, { due: number; fn: () => void }>();
+    let nextTimer = 1;
+    const clock: Clock & { advance(ms: number): void } = {
+      now: () => now,
+      setTimeout(fn, ms) {
+        const id = nextTimer++;
+        timers.set(id, { due: now + ms, fn });
+        return () => timers.delete(id);
+      },
+      advance(ms) {
+        now += ms;
+        for (const [id, t] of [...timers]) {
+          if (t.due <= now) {
+            timers.delete(id);
+            t.fn();
+          }
+        }
+      },
+    };
+    const queue = new NotificationQueue<{ jsonrpc: "2.0"; method: string; params?: Record<string, unknown> }>();
+    const seenTimeoutMs: number[] = [];
+    let streamSignal: AbortSignal | undefined;
+    const transport: Transport = {
+      binding: "stdio",
+      diagnostics: new NotificationQueue(),
+      start(_msg, ctx) {
+        seenTimeoutMs.push(ctx.timeoutMs);
+        streamSignal = ctx.signal;
+        return {
+          notifications: queue,
+          done: new Promise(() => {}),
+        };
+      },
+      async notify() {},
+      async close() {},
+    };
+    const client = new McpClient({ transport, server: { key: "s" }, ports: { clock } });
+    const mgr = new SubscriptionManager({
+      open: openListenStream(client),
+      binding: "stdio",
+      serverRef: "s",
+      clock,
+    });
+    const sub = mgr.listen({ tools: true });
+    expect(seenTimeoutMs).toEqual([0]);
+    expect(timers.size).toBe(1); // only SubscriptionManager's ackTimeoutMs timer
+
+    queue.push({
+      jsonrpc: "2.0",
+      method: "notifications/subscriptions/acknowledged",
+      params: { notifications: { toolsListChanged: true }, _meta: { [SUBSCRIPTION_ID]: sub.id } },
+    });
+    await sub.acknowledged;
+    expect(timers.size).toBe(0);
+
+    // Advance well past Core's 10-minute (600_000ms) hardMaxTimeoutMs.
+    clock.advance(600_000);
+    clock.advance(600_000);
+    await new Promise((r) => setImmediate(r));
+
+    expect(sub.state).toBe("active");
+    expect(streamSignal?.aborted).toBe(false);
+
+    const events: string[] = [];
+    const reader = (async () => {
+      for await (const ev of sub.events) events.push(ev.method);
+    })();
+    queue.push({
+      jsonrpc: "2.0",
+      method: "notifications/tools/list_changed",
+      params: { _meta: { [SUBSCRIPTION_ID]: sub.id } },
+    });
+    await new Promise((r) => setImmediate(r));
+    expect(events).toEqual(["notifications/tools/list_changed"]);
+
+    sub.close();
+    await reader;
+    expect(streamSignal?.aborted).toBe(true);
     await client.close();
   });
 });
