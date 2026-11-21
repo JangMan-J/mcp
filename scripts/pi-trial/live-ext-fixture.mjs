@@ -5,7 +5,7 @@ import {createServer} from 'node:http';
 import {createHash, randomBytes} from 'node:crypto';
 
 export const PROTOCOL = '2026-07-28';
-export const RESOURCE = 'fixture://clock', EVENT = 'clock.changed', TASK = 'fixture-task', SKILL = 'skill://fixture/live-check';
+export const RESOURCE = 'fixture://clock', EVENT = 'jing.clock.changed', TASK = 'fixture-task', SKILL = 'skill://fixture/live-check';
 export const SKILL_FILE = `${SKILL}/SKILL.md`, SKILL_BODY = '---\nname: live-check\ndescription: Live fixture skill\n---\nFixture skill instructions.\n';
 const SUB_ID = 'io.modelcontextprotocol/subscriptionId';
 const complete = fields => ({resultType:'complete', ...fields});
@@ -25,7 +25,7 @@ export async function startFixture({browserShim = false} = {}) {
   const resource = {uri:RESOURCE, name:'clock', mimeType:'text/plain'};
   const skill = {uri:SKILL, name:'live-check', description:'Live fixture skill', resources:'static',
     files:[{uri:SKILL_FILE, size:Buffer.byteLength(SKILL_BODY), sha256:digest(SKILL_BODY).digest('hex')}]};
-  const capabilities = {tools:{}, prompts:{}, resources:{}, completions:{},
+  const capabilities = {tools:{}, prompts:{}, resources:{subscribe:true}, completions:{},
     extensions:Object.fromEntries(['events', 'tasks', 'skills'].map(name => [`io.modelcontextprotocol/${name}`, {}]))};
   const serverInfo = {name:'live-ext-fixture', version:'0'};
   const rpc = {

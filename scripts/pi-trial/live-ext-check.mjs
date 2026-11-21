@@ -34,7 +34,7 @@ export function discoverPi() {
   const fb = join(homedir(), 'pi', 'packages', 'coding-agent');
   if (existsSync(join(fb, 'package.json'))) {
     const j = JSON.parse(readFileSync(join(fb, 'package.json'), 'utf8'));
-    if (j.version === VERSION && existsSync(join(fb, 'dist/index.js'))) return {root:fb, version:j.version, via:'~/pi fallback'};
+    if (j.name === PKG && j.version === VERSION && existsSync(join(fb, 'dist/index.js'))) return {root:fb, version:j.version, via:'~/pi fallback'};
   }
   throw new Error(`${PKG} ${VERSION} not found; tried ${tried.join(', ')}`);
 }
@@ -90,7 +90,11 @@ async function liveSession(sdk, resourceLoader, settingsManager, cwd, agentDir, 
   const contains = (value, expected) => assert(JSON.stringify(value).includes(expected), `expected ${expected} in ${JSON.stringify(value)}`);
   const waitOutput = (value, description = value) => until(() => JSON.stringify([messages, session.messages, sessionManager.getEntries()]).includes(value), description);
   const run = async (name, fn) => {
-    try { await fn(); steps[name] = 'pass'; } catch (e) { steps[name] = `fail: ${e.message}`; }
+    // A hung step reports and the remaining steps still run.
+    try { await Promise.race([fn(), sleep(8000, undefined, {ref:false}).then(() => { throw new Error('step timed out after 8s'); })]); steps[name] = 'pass'; }
+    catch (e) { steps[name] = `fail: ${e.message.slice(0, 600)}`; }
+    // Keep completed steps visible even if a later SDK call hangs and the child is killed.
+    console.error(`${name}: ${steps[name]}`);
   };
   const tool = async (name, args) => {
     assert(session.getActiveToolNames().includes(name), `tool not active: ${name}`);
@@ -109,7 +113,7 @@ async function liveSession(sdk, resourceLoader, settingsManager, cwd, agentDir, 
     assert.equal(errors.length, before, errors.at(-1));
   };
   try {
-    await session.bindExtensions({mode:'interactive', onError:error => errors.push(String(error.error ?? error)), uiContext:{
+    await session.bindExtensions({mode:'rpc', onError:error => errors.push(String(error.error ?? error)), uiContext:{
       notify: message => messages.push(message),
       confirm: async title => (dialogs.push(title), true),
       select: async (title, options) => (dialogs.push(title), options.find(o => /accept|allow|yes/i.test(o)) ?? options[0]),
@@ -239,7 +243,7 @@ async function main() {
       fx = await startFixture({browserShim:true});
       writeFileSync(join(agentDir, 'settings.json'), JSON.stringify({packages:[pkg], defaultTools:['+codemode', '+tool_search']}));
       writeFileSync(join(agentDir, 'mcp.json'), JSON.stringify({mcpServers:{fixture:{url:fx.mcpUrl, timeout:4, exposure:'direct',
-        oauth:{clientId:'pi'}, toolExposure:{ask:'deferred'}, events:{subscribe:[{name:'clock.*'}]}}}}));
+        oauth:{clientId:'pi'}, toolExposure:{ask:'deferred'}, subscribe:[{name:'jing.*'}]}}}));
       writeBrowserShim(bin, fx.base);
       argv.push(JSON.stringify({entry:realpathSync(entry), base:fx.base}));
     }
@@ -248,7 +252,7 @@ async function main() {
     let strace; try { strace = execFileSync('which', ['strace'], {encoding:'utf8'}).trim(); } catch {}
     let out;
     try {
-      ({stdout:out} = await promisify(execFile)(strace ?? argv[0], strace ? ['-f', '-qq', '-e', 'trace=%file', '-o', trace, ...argv] : argv.slice(1),
+      ({stdout:out} = await promisify(execFile)(strace ?? argv[0], strace ? ['-f', '-qq', '--kill-on-exit', '-e', 'trace=%file', '-o', trace, ...argv] : argv.slice(1),
         {cwd:scratch, encoding:'utf8', timeout:45000, env}));
     } catch (e) {
       throw new Error(e.stderr?.trim() || e.message, {cause:e});
