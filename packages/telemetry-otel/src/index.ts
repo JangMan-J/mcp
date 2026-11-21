@@ -2,7 +2,6 @@ import type {
   Exchange,
   JsonRpcNotification,
   JsonRpcRequest,
-  McpClient,
   TelemetryPort,
   TelemetrySpan,
   Transport,
@@ -56,54 +55,6 @@ export interface OtelTracer {
 export interface OtelContextSource {
   activeSpanContext(): OtelSpanContext | undefined;
   activeBaggage?(): string | undefined;
-}
-
-export interface RecordedSpan extends OtelSpan {
-  readonly name: string;
-  readonly kind: OtelSpanKindValue | undefined;
-  readonly attributes: Record<string, OtelAttributeValue>;
-  readonly exceptions: unknown[];
-  readonly events: Array<{ readonly name: string; readonly attributes?: Record<string, OtelAttributeValue> }>;
-  status: { readonly code: OtelSpanStatusCodeValue; readonly message?: string } | undefined;
-  ended: boolean;
-}
-
-export class RecordingTracer implements OtelTracer {
-  readonly spans: RecordedSpan[] = [];
-
-  startSpan(
-    name: string,
-    options?: {
-      readonly kind?: OtelSpanKindValue;
-      readonly attributes?: Record<string, OtelAttributeValue>;
-    },
-  ): RecordedSpan {
-    const attributes: Record<string, OtelAttributeValue> = { ...(options?.attributes ?? {}) };
-    const exceptions: unknown[] = [];
-    const span: RecordedSpan = {
-      name,
-      kind: options?.kind,
-      attributes,
-      exceptions,
-      events: [],
-      status: undefined,
-      ended: false,
-      setAttribute(key, value) {
-        attributes[key] = value;
-      },
-      recordException(exception) {
-        exceptions.push(exception);
-      },
-      setStatus(status) {
-        span.status = status;
-      },
-      end() {
-        span.ended = true;
-      },
-    };
-    this.spans.push(span);
-    return span;
-  }
 }
 
 const SECRET_KEY_RE =
@@ -319,50 +270,4 @@ export function instrumentTransport(
       };
     },
   };
-}
-
-export function instrumentClient(
-  client: McpClient,
-  telemetry: TelemetryPort,
-  opts?: InstrumentOptions,
-): McpClient {
-  return new Proxy(client, {
-    get(target, prop, receiver) {
-      if (prop === "request" || prop === "discover") {
-        return (...args: unknown[]) => {
-          const method = prop === "discover" ? "server/discover" : String(args[0] ?? "unknown");
-          const spanName = opts?.spanName ? opts.spanName(method) : `mcp.client ${method}`;
-          const span = telemetry.startClientSpan(spanName, {
-            "mcp.method.name": method,
-            ...(opts?.protocolVersion !== undefined ? { "mcp.protocol.version": opts.protocolVersion } : {}),
-          });
-          const req =
-            prop === "discover"
-              ? target.discover(args[0] as Parameters<McpClient["discover"]>[0])
-              : target.request(
-                  args[0] as string,
-                  args[1] as Record<string, unknown> | undefined,
-                  args[2] as Parameters<McpClient["request"]>[2],
-                );
-          void req.then(
-            (outcome) => {
-              span.setAttribute("mcp.outcome.kind", outcome.kind);
-              if (outcome.kind === "ok") {
-                span.end({ ok: true });
-              } else {
-                span.end({ ok: false, errorKind: outcome.kind });
-              }
-            },
-            (err: unknown) => {
-              span.setAttribute("mcp.outcome.kind", "exception");
-              span.recordException(err);
-              span.end({ ok: false, errorKind: "exception" });
-            },
-          );
-          return req;
-        };
-      }
-      return Reflect.get(target, prop, receiver);
-    },
-  });
 }

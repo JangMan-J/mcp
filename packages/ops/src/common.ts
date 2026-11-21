@@ -26,12 +26,9 @@ export function local<T>(
   return { kind, detail, meta: localMeta(method) } as Outcome<T>;
 }
 
-/** Re-type a non-ok outcome, wrapping mrtr resume so it keeps mapping. */
+/** Re-type an outcome by mapping its `ok` branch. */
 export function mapOutcome<T, U>(o: Outcome<T>, f: (value: T, meta: OutcomeMeta) => Outcome<U>): Outcome<U> {
   if (o.kind === "ok") return f(o.value, o.meta);
-  if (o.kind === "mrtr-interim") {
-    return { ...o, resume: (r) => Promise.resolve(o.resume(r)).then((x) => mapOutcome(x, f)) } as Outcome<U>;
-  }
   return o as unknown as Outcome<U>;
 }
 
