@@ -71,6 +71,7 @@ interface ServerEntry {
   readonly tasks?: TasksRuntime;
   readonly skills?: SkillsClient;
   readonly handles: Map<string, TaskHandle>;
+  dispose?(): void;
 }
 
 export function createExtendedFeatures(host: ExtendedFeaturesHost) {
@@ -88,6 +89,9 @@ export function createExtendedFeatures(host: ExtendedFeaturesHost) {
     if (!host.consent) return undefined;
     const requests = (state.inputRequests ?? {}) as Record<string, { method: string; params: Obj }>;
     const responses: Obj = {};
+    // Fail closed: only form elicitation can be answered through consent; anything else is left to the model.
+    const valid = Object.values(requests).every(r => r?.method === "elicitation/create" && (r.params?.mode === undefined || r.params.mode === "form"));
+    if (!valid || Object.keys(requests).length === 0) return undefined;
     for (const [key, req] of Object.entries(requests)) {
       const res = await host.consent.request({
         kind: "form-elicitation",
@@ -103,16 +107,19 @@ export function createExtendedFeatures(host: ExtendedFeaturesHost) {
   /** Background tracker: polls tasks/get, routes input_required through consent, wakes Pi on terminal state. */
   async function track(server: string, entry: ServerEntry, handle: TaskHandle, signal: AbortSignal) {
     let last: string | undefined = handle.status();
+    // Initial input_required is handled like a transition (asked once before polling).
+    let asked: string | undefined = "working";
     try {
       while (!signal.aborted && !entry.rt.transportClosed.aborted) {
         if (last !== "working" && last !== "input_required") break;
         const out = await handle.get();
         if (out.kind !== "ok" || !isTaskState(out.value)) { host.wake(server, `task ${handle.id} poll failed: ${out.kind}`); return; }
         const status = out.value.status;
-        if (status === "input_required" && status !== last) {
+        if (status === "input_required" && asked !== "input_required") {
           const upd = await askInput(server, handle, out.value as Obj, signal);
           if (!upd) host.wake(server, `task ${handle.id} input_required`);
         }
+        asked = status;
         last = handle.status() ?? status;
       }
       if (last && last !== "working" && last !== "input_required") host.wake(server, `task ${handle.id} ${last}`);
@@ -214,11 +221,14 @@ export function createExtendedFeatures(host: ExtendedFeaturesHost) {
       const server = descriptor.name;
       const caps = rt.capabilities as Obj | undefined;
       const consent = host.consent;
+      const prev = servers.get(server);
       const entry: ServerEntry = {
         rt,
-        handles: new Map(),
+        // Reconnect (e.g. after sign-in) keeps tracked task handles and replaces the rest.
+        handles: prev?.handles ?? new Map(),
         ...(hasExt(caps, TASKS_ID) ? {
-          tasks: new TasksRuntime({
+          // Reuse the client-attached extension so result-type tracking shares one store; fakes fall back.
+          tasks: rt.tasks ?? new TasksRuntime({
             serverKey: server,
             peerCapabilities: () => (rt.capabilities ?? {}) as Obj,
             request: (method, params, options) => rt.stateful.request(method, params, options) as PromiseLike<Outcome<unknown>>,
@@ -242,6 +252,7 @@ export function createExtendedFeatures(host: ExtendedFeaturesHost) {
           }),
         } : {}),
       };
+      prev?.dispose?.();
       const disposeApps = host.appRenderer ? rt.client.use(createAppsExtension({ renderer: host.appRenderer })) : undefined;
       servers.set(server, entry);
       ensureTools();
@@ -250,6 +261,7 @@ export function createExtendedFeatures(host: ExtendedFeaturesHost) {
         entry.handles.clear();
         disposeApps?.dispose();
       };
+      entry.dispose = () => disposeApps?.dispose();
       if (rt.transportClosed.aborted || signal.aborted) cleanup();
       else {
         rt.transportClosed.addEventListener("abort", cleanup, { once: true });

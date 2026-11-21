@@ -1,4 +1,5 @@
-import { McpClient, type ConsentPort, type DiscoverResult, type Outcome, type RequestOptions, type Transport } from "@mcp-client/core";
+import { McpClient, META_CLIENT_CAPABILITIES, META_PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSION, type ConsentPort, type DiscoverResult, type Outcome, type RequestOptions, type TelemetryPort, type Transport } from "@mcp-client/core";
+import { TasksExtension } from "@mcp-client/ext-tasks";
 import { StatefulClient, openListenStream } from "@mcp-client/mrtr-cache";
 import type { AuthProvider } from "@mcp-client/core";
 import { createEventsExtension, openEventsStream, type EventsExtension, type EventsOptions } from "@mcp-client/ext-events";
@@ -25,6 +26,7 @@ export interface LiveRuntimeOptions {
   readonly authProvider?: AuthProvider;
   /** Optional extra client extension, e.g. AppsExtension. */
   readonly apps?: Extension;
+  readonly telemetry?: TelemetryPort;
 }
 
 export interface LiveMcpServerRuntime {
@@ -34,6 +36,8 @@ export interface LiveMcpServerRuntime {
   /** events/stream opener sharing the client ID space and transport. */
   readonly openEventsStream: NonNullable<EventsOptions["openStream"]>;
   readonly ops: Ops;
+  /** Tasks extension attached to the client before discovery. */
+  readonly tasks?: TasksExtension;
   readonly capabilities: Record<string, unknown> | undefined;
   readonly transportClosed: AbortSignal;
   ready(signal?: AbortSignal): Promise<Outcome<DiscoverResult>>;
@@ -69,7 +73,10 @@ export async function createLiveMcpServerRuntime(
     transport,
     idGenerator,
     server: { key: descriptor.name },
-    ...(opts?.consent ? { ports: { consent: cancellableConsentPort(opts.consent, opts.signal) } } : {}),
+    ...(opts?.consent || opts?.telemetry ? { ports: {
+      ...(opts.consent ? { consent: cancellableConsentPort(opts.consent, opts.signal) } : {}),
+      ...(opts.telemetry ? { telemetry: opts.telemetry } : {}),
+    } } : {}),
     ...(timeoutMs !== undefined ? { defaults: { timeoutMs } } : {}),
   });
   const eventsExt = createEventsExtension({ enabled: true });
@@ -98,6 +105,12 @@ export async function createLiveMcpServerRuntime(
     } : {}),
   });
   let caps: Record<string, unknown> | undefined;
+  const tasks = new TasksExtension({
+    serverKey: descriptor.name,
+    peerCapabilities: () => caps ?? {},
+    request: (method, params, options) => stateful.request(method, params, options) as PromiseLike<Outcome<unknown>>,
+  });
+  client.use(tasks);
   const mrtrMethods = new Set(["tools/call", "prompts/get", "resources/read"]);
   // MRTR-capable methods go through StatefulClient (input_required -> consent -> retry); the rest stay on the raw client.
   const opsClient: OpsClient = {
@@ -109,7 +122,15 @@ export async function createLiveMcpServerRuntime(
       return { id: 0, progress: none, notifications: none, signal: ac.signal, cancel: () => ac.abort(), then: p.then.bind(p) };
     }) as OpsClient["request"],
   };
-  const eventsStream = openEventsStream(transport, idGenerator, () => eventsExt.capabilities(true) as Record<string, unknown>);
+  const eventsStream = openEventsStream(transport, idGenerator, () => {
+    // Merge extension maps explicitly so events and tasks both appear in the side-stream capabilities.
+    const ev = eventsExt.capabilities(true) as { extensions?: Record<string, unknown> };
+    const tk = tasks.capabilities(true) as { extensions?: Record<string, unknown> };
+    return {
+      [META_PROTOCOL_VERSION]: SUPPORTED_PROTOCOL_VERSION,
+      [META_CLIENT_CAPABILITIES]: { ...ev, ...tk, extensions: { ...ev.extensions, ...tk.extensions } },
+    };
+  });
   const ops = createOps(opsClient, { capabilities: () => caps, serverTrusted: descriptor.trusted });
   let readyPromise: Promise<Outcome<DiscoverResult>> | undefined;
   const ready = (signal?: AbortSignal): Promise<Outcome<DiscoverResult>> => (readyPromise ??= Promise.resolve(client.discover(signal ? { signal } : undefined)).then((disc) => {
@@ -118,7 +139,7 @@ export async function createLiveMcpServerRuntime(
   }));
   const rediscover = (signal?: AbortSignal) => { readyPromise = undefined; return ready(signal); };
   const close = async () => { closedCtrl.abort(); await client.close(); };
-  return { client, stateful, eventsExtension: eventsExt, openEventsStream: eventsStream, ops, get capabilities() { return caps; }, transportClosed: closedCtrl.signal, ready, rediscover, close };
+  return { client, stateful, eventsExtension: eventsExt, openEventsStream: eventsStream, ops, tasks, get capabilities() { return caps; }, transportClosed: closedCtrl.signal, ready, rediscover, close };
 }
 
 export interface PiExtensionAPI {
@@ -130,6 +151,8 @@ export interface PiExtensionAPI {
   getAllTools?(): readonly { name: string; reachesTools?: (input: Record<string, unknown>) => "all" | readonly string[] }[];
   sendMessage?(message: { customType: string; content: string; display: boolean }, options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" }): void;
   appendEntry?(customType: string, data?: unknown): void;
+  /** Host-registered MCP servers; changes arrive as the `mcp_servers_change` event. */
+  getMcpServers?(): readonly ({ name: string } & Record<string, unknown>)[];
 }
 
 /** Host handed to feature factories (core/events/extended); each returns a per-server connector. */
@@ -164,6 +187,8 @@ export interface PiMcpExtensionOptions {
   readonly card?: (descriptor: LegacyServerConfig, signal: AbortSignal) => Promise<unknown>;
   /** Receives the latest Pi context (commands/events) for UI-bound ports. */
   readonly onContext?: (ctx: unknown) => void;
+  /** Optional telemetry port per server (e.g. createOtelTelemetry); receives the latest Pi context. */
+  readonly createOtelTelemetry?: (descriptor: LegacyServerConfig, options: { context: unknown }) => TelemetryPort | undefined;
   readonly createTransport?: (descriptor: LegacyServerConfig) => Transport | Promise<Transport>;
   readonly resolveProviderToken?: (provider: string) => Promise<string>;
   readonly consent?: ConsentPort;
@@ -180,16 +205,22 @@ export function createPiMcpExtension(options: PiMcpExtensionOptions): (pi: PiExt
     const pendingReady = new Set<Promise<unknown>>();
     const seen = (ctx: unknown) => { if (ctx) options.onContext?.(ctx); lastCtx = ctx; };
     let lastCtx: any;
+    let installed: { refreshTools(): void; refreshServers(): Promise<void> } | undefined;
+    // Pi passes (toolCallId, params, signal, onUpdate, ctx); surface ctx to UI-bound ports.
+    const withCtx = <F extends (...a: any[]) => unknown>(exec: F) =>
+      (id: string, params: unknown, signal: AbortSignal | undefined, onUpdate?: unknown, ctx?: unknown) => { if (ctx) seen(ctx); return exec(id, params, signal ?? new AbortController().signal, onUpdate, ctx); };
     const featureHost: PiFeatureHost = {
-      registerTool: (def) => pi.registerTool({ label: (def as { name?: unknown }).name, ...def }),
+      registerTool: (def) => {
+        const exec = (def as { execute?: (...a: any[]) => unknown }).execute;
+        pi.registerTool({ label: (def as { name?: unknown }).name, ...def, ...(exec ? { execute: withCtx(exec) } : {}) });
+      },
       registerCommand: (name, def) => pi.registerCommand(name, {
         description: def.description,
         handler: (args, ctx) => { seen(ctx); return def.handler(args, { notify: (m, k) => ctx.ui.notify(m, k), ...(ctx.signal ? { signal: ctx.signal } : {}) }); },
       }),
       // Server notifications wake the agent: start a turn when idle, otherwise follow up after the current one.
       wake: (server, reason) => pi.sendMessage?.({ customType: "mcp-wake", content: `[MCP ${server}] ${reason}`, display: true }, { triggerTurn: true, deliverAs: "followUp" }),
-      // ## YAGNI: Pi re-reads registered tool definitions per turn, so no explicit refresh is needed.
-      refreshTools: () => {},
+      refreshTools: () => installed?.refreshTools(),
       getBranch: () => lastCtx?.sessionManager?.getBranch?.() ?? [],
       appendEntry: (type, data) => pi.appendEntry?.(type, data),
       ...(options.consent ? { consent: options.consent } : {}),
@@ -222,7 +253,7 @@ export function createPiMcpExtension(options: PiMcpExtensionOptions): (pi: PiExt
           label: def.name,
           parameters: def.parameters ?? { type: "object", properties: {} },
           ...(def.name === "tool_search" ? { reachesTools: () => "all" as const } : { outputSchema: def.outputSchema ?? createCallToolResultSchema() }),
-          execute: (id: string, params: unknown, signal: AbortSignal | undefined) => def.execute(id, params, signal ?? new AbortController().signal),
+          execute: withCtx((id: string, params: unknown, signal: AbortSignal) => def.execute(id, params, signal)),
         };
         pi.registerTool(reg);
         // Pi never activates deferred tools on registration; they register only once tool_search matches them, so declare them to the model now.
@@ -233,23 +264,33 @@ export function createPiMcpExtension(options: PiMcpExtensionOptions): (pi: PiExt
         return { dispose() { pi.registerTool({ ...reg, exposure: "hidden" }); } };
       },
     };
-    installCodingAgentAdapter<LiveMcpServerRuntime & { auth?: PiLiveAuth }>(host, {
+    type LiveClient = LiveMcpServerRuntime & { auth?: PiLiveAuth; reconnect?(signal: AbortSignal): Promise<void> };
+    const piServers = pi.getMcpServers
+      ? () => Object.fromEntries(pi.getMcpServers!().map(({ name, ...cfg }) => [name, cfg]))
+      : undefined;
+    const dynamicServers = options.dynamicServers && piServers
+      ? () => ({ ...piServers(), ...options.dynamicServers!() })
+      : options.dynamicServers ?? piServers;
+    installed = installCodingAgentAdapter<LiveClient>(host, {
       configDir: options.configDir,
-      ...(options.dynamicServers ? { dynamicServers: options.dynamicServers } : {}),
+      ...(dynamicServers ? { dynamicServers } : {}),
       ...(options.card ? { card: options.card } : {}),
       signIn: async ({ client, signal }) => {
         if (!client.auth?.signIn) throw new Error("Server has no interactive sign-in configured");
         await client.auth.signIn(signal);
-        // Fresh discovery so capabilities and tools reflect the authorized session.
-        await client.rediscover(signal);
+        // Fresh discovery, feature connectors and tool list so everything reflects the authorized session.
+        await client.reconnect?.(signal);
+        installed?.refreshTools();
       },
       ...(options.project ? { project: options.project } : {}),
       ...(options.consent ? { consent: options.consent } : {}),
       ...(options.branchStore ? { branchStore: options.branchStore } : {}),
       createClient: async (ctx) => {
         const auth = await options.createAuth?.(ctx.descriptor, { signal: ctx.signal, credentialStore: ctx.credentialStore });
+        const telemetry = options.createOtelTelemetry?.(ctx.descriptor, { context: lastCtx });
         const rt = await createLiveMcpServerRuntime(ctx.descriptor, {
           signal: ctx.signal,
+          ...(telemetry ? { telemetry } : {}),
           ...(auth?.provider ? { authProvider: auth.provider } : {}),
           ...(options.consent ? { consent: options.consent } : {}),
           ...(options.createTransport ? { createTransport: options.createTransport } : {}),
@@ -258,11 +299,18 @@ export function createPiMcpExtension(options: PiMcpExtensionOptions): (pi: PiExt
         activeServers.set(ctx.descriptor.name, ctx.descriptor);
         const p = rt.ready(ctx.signal).finally(() => pendingReady.delete(p));
         pendingReady.add(p);
-        await p;
-        for (const c of connectors) c.connect(rt, ctx.descriptor, ctx.signal);
+        // Connect features only for successful discovery of model-visible servers.
+        const connect = (disc: Outcome<DiscoverResult>) => {
+          if (disc.kind !== "ok" || ctx.descriptor.exposure === "hidden") return;
+          for (const c of connectors) c.connect(rt, ctx.descriptor, ctx.signal);
+        };
+        connect(await p);
         return {
           ...rt,
+          // Spread copies a snapshot; keep capabilities live.
+          get capabilities() { return rt.capabilities; },
           ...(auth ? { auth } : {}),
+          reconnect: async (signal: AbortSignal) => connect(await rt.rediscover(signal)),
           close: async () => { activeServers.delete(ctx.descriptor.name); await rt.close(); await auth?.close?.(); },
         };
       },
@@ -283,6 +331,7 @@ export function createPiMcpExtension(options: PiMcpExtensionOptions): (pi: PiExt
       }),
       resourcesClient: (rt) => rt.ops.resources,
     });
+    if (pi.getMcpServers) pi.on("mcp_servers_change", () => installed?.refreshServers());
     pi.on("before_agent_start", async (ev: { systemPromptOptions?: { sections?: Record<string, string> } }) => {
       const sections = ev?.systemPromptOptions?.sections;
       if (!sections) return;
