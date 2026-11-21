@@ -9,7 +9,10 @@ import {
 } from "@mcp-client/core";
 import {
   StatefulClient,
+  SubscriptionManager,
+  SUBSCRIPTION_ID,
   elicitationExtension,
+  openListenStream,
   ResultCache,
   MrtrSession,
   autoRefresh,
@@ -95,9 +98,10 @@ describe("core integration", () => {
     });
     await core.close();
   });
-  it("a manual continuation expires without a retry or a retained timer", async () => {
+  it("a manual continuation is pure JSON-serializable data and expires without a retained timer", async () => {
     let now = 0;
-    const clock = { now: () => now, setTimeout: () => () => {} };
+    const setTimeoutSpy = vi.fn(() => () => {});
+    const clock = { now: () => now, setTimeout: setTimeoutSpy };
     const req = vi.fn(async () => ({
       kind: "ok" as const,
       value: { resultType: "input_required", requestState: "x" },
@@ -107,13 +111,168 @@ describe("core integration", () => {
     const o = await m.run("prompts/get", {}, { mrtr: "manual" });
     now = 10;
     if (o.kind !== "mrtr-interim") throw Error(o.kind);
-    expect(await o.resume()).toMatchObject({ kind: "limit-exceeded" });
+    expect("resume" in o).toBe(false);
+    expect(() => JSON.stringify(o)).not.toThrow();
+    expect(await m.resume(o)).toMatchObject({ kind: "limit-exceeded" });
     expect(req).toHaveBeenCalledTimes(1);
+  });
+
+  it("parks on !inputRequests with retryDelay without sleeping or mutating caller payloads, and resumes via JSON-roundtripped interim", async () => {
+    let now = 0;
+    const delays: number[] = [];
+    const clock = {
+      now: () => now,
+      setTimeout: (_fn: () => void, ms: number) => {
+        delays.push(ms);
+        return () => {};
+      },
+    };
+    const seenParams: Record<string, unknown>[] = [];
+    const req = vi.fn<RequestFn>(async (_m, params) => {
+      seenParams.push(structuredClone(params));
+      if (seenParams.length === 1) {
+        return {
+          kind: "ok",
+          value: { resultType: "input_required", requestState: "opaque-state-1" },
+          meta,
+        };
+      }
+      return {
+        kind: "ok",
+        value: { resultType: "complete", content: [{ type: "text", text: "done" }] },
+        meta: { ...meta, requestId: 2 },
+      };
+    });
+    const callerParams = { name: "build", arguments: { step: 1 } };
+    const session = new MrtrSession(req, {
+      serverLabel: "s",
+      clock,
+      retryDelay: 5000,
+    });
+    const interim = await session.run("tools/call", callerParams);
+    expect(delays).not.toContain(5000);
+    expect(interim.kind).toBe("mrtr-interim");
+    if (interim.kind !== "mrtr-interim") throw Error(interim.kind);
+    expect("resume" in interim).toBe(false);
+    expect(interim.requestState).toBe("opaque-state-1");
+    expect(callerParams).toEqual({ name: "build", arguments: { step: 1 } });
+
+    const roundTripped = JSON.parse(JSON.stringify(interim)) as typeof interim;
+    const finalOut = await session.resume(roundTripped);
+    expect(finalOut).toMatchObject({
+      kind: "ok",
+      value: { resultType: "complete", content: [{ type: "text", text: "done" }] },
+    });
+    expect(seenParams).toEqual([
+      { name: "build", arguments: { step: 1 } },
+      { name: "build", arguments: { step: 1 }, requestState: "opaque-state-1" },
+    ]);
+    // Re-resuming the same interim is rejected cleanly.
+    expect(await session.resume(roundTripped)).toMatchObject({
+      kind: "protocol-violation",
+      detail: { reason: "already-resumed" },
+    });
+
+    // A fresh MrtrSession instance can also resume a serialized interim with inputRequests.
+    const freshReq = vi.fn<RequestFn>(async (_m, params) => {
+      if (!("inputResponses" in params)) {
+        return {
+          kind: "ok",
+          value: {
+            resultType: "input_required",
+            requestState: "s-form",
+            inputRequests: {
+              confirm: {
+                method: "elicitation/create",
+                params: {
+                  message: "Confirm?",
+                  requestedSchema: { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] },
+                },
+              },
+            },
+          },
+          meta: { ...meta, method: "tools/call", requestId: 9 },
+        };
+      }
+      return { kind: "ok", value: { resultType: "complete", sent: params }, meta: { ...meta, method: "tools/call", requestId: 10 } };
+    });
+    const s1 = new MrtrSession(freshReq, {
+      serverLabel: "s",
+      port: { form: async () => ({ action: "accept", content: { ok: true } }) },
+    });
+    const parked = await s1.run("tools/call", { name: "deploy" }, { mrtr: "manual" });
+    if (parked.kind !== "mrtr-interim") throw Error(parked.kind);
+    const saved = JSON.parse(JSON.stringify(parked)) as typeof parked;
+    const s2 = new MrtrSession(freshReq, { serverLabel: "s" });
+    const resumed = await s2.resume(
+      saved,
+      { confirm: { action: "accept", content: { ok: true } } },
+      { params: { name: "deploy" } },
+    );
+    expect(resumed).toMatchObject({
+      kind: "ok",
+      value: {
+        resultType: "complete",
+        sent: {
+          name: "deploy",
+          requestState: "s-form",
+          inputResponses: { confirm: { action: "accept", content: { ok: true } } },
+        },
+      },
+    });
+  });
+
+  it("openListenStream streams live notifications via McpClient.request without bypassing to raw Transport", async () => {
+    const queue = new NotificationQueue<{ jsonrpc: "2.0"; method: string; params?: Record<string, unknown> }>();
+    const cancelled: string[] = [];
+    const transport: Transport = {
+      binding: "stdio",
+      diagnostics: new NotificationQueue(),
+      start(msg, ctx) {
+        ctx.signal.addEventListener("abort", () => cancelled.push(String(msg.id)), { once: true });
+        return {
+          notifications: queue,
+          done: new Promise(() => {}),
+        };
+      },
+      async notify() {},
+      async close() {},
+    };
+    const client = new McpClient({ transport, server: { key: "s" } });
+    const cache = new ResultCache();
+    const mgr = new SubscriptionManager({
+      open: openListenStream(client),
+      binding: "stdio",
+      serverRef: "s",
+      cache,
+    });
+    const sub = mgr.listen({ tools: true });
+    queue.push({
+      jsonrpc: "2.0",
+      method: "notifications/subscriptions/acknowledged",
+      params: { notifications: { toolsListChanged: true }, _meta: { [SUBSCRIPTION_ID]: sub.id } },
+    });
+    await sub.acknowledged;
+    const events: string[] = [];
+    const reader = (async () => {
+      for await (const ev of sub.events) events.push(ev.method);
+    })();
+    queue.push({
+      jsonrpc: "2.0",
+      method: "notifications/tools/list_changed",
+      params: { _meta: { [SUBSCRIPTION_ID]: sub.id } },
+    });
+    await new Promise((r) => setImmediate(r));
+    expect(events).toEqual(["notifications/tools/list_changed"]);
+    sub.close();
+    await reader;
+    expect(cancelled).toEqual([String(sub.id)]);
+    await client.close();
   });
 });
 
 describe("bounded cache and invalidation races", () => {
-  it("coalesces only within signal + auth context, and never repopulates after invalidation", async () => {
+  it("coalesces within auth context across distinct signals, and never repopulates after invalidation", async () => {
     const c = new ResultCache(),
       a = new AbortController(),
       b = new AbortController();
@@ -128,7 +287,7 @@ describe("bounded cache and invalidation races", () => {
       run(a.signal, "2"),
     ];
     await Promise.resolve();
-    expect(work).toHaveLength(3);
+    expect(work).toHaveLength(2);
     c.invalidate("server", "tools/list");
     for (const resolve of work) resolve(ok(2));
     await Promise.all(calls);
