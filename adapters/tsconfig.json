@@ -10,12 +10,20 @@
   "references": [
     { "path": "../packages/auth" },
     { "path": "../packages/core" },
+    { "path": "../packages/ext-apps" },
+    { "path": "../packages/ext-client-credentials" },
+    { "path": "../packages/ext-enterprise-auth" },
     { "path": "../packages/ext-events" },
+    { "path": "../packages/ext-events-webhook" },
+    { "path": "../packages/ext-server-cards" },
+    { "path": "../packages/ext-skills" },
+    { "path": "../packages/ext-tasks" },
     { "path": "../packages/mrtr-cache" },
     { "path": "../packages/ops" },
+    { "path": "../packages/telemetry-otel" },
     { "path": "../packages/transport-http" },
     { "path": "../packages/transport-stdio" }
   ],
   "include": ["pi-coding-agent/**/*.ts", "pi-durable/**/*.ts"],
-  "exclude": ["dist", "node_modules"]
+  "exclude": ["dist", "pi-coding-agent/dist", "node_modules"]
 }
