@@ -1,0 +1,27 @@
+{
+  "name": "@mcp-client/pi-coding-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Pi coding-agent MCP extension package",
+  "keywords": [
+    "pi-package"
+  ],
+  "bin": {
+    "mcp-cli": "./dist/bin/mcp-cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "pi": {
+    "extensions": [
+      "./dist/index.js"
+    ]
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json"
+  }
+}
