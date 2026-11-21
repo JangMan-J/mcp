@@ -115,7 +115,7 @@ async function liveSession(sdk, resourceLoader, settingsManager, cwd, agentDir, 
   try {
     await session.bindExtensions({mode:'rpc', onError:error => errors.push(String(error.error ?? error)), uiContext:{
       notify: message => messages.push(message),
-      confirm: async title => (dialogs.push(title), true),
+      confirm: async (title, message) => (dialogs.push(`${title} ${message ?? ''}`), true),
       select: async (title, options) => (dialogs.push(title), options.find(o => /accept|allow|yes/i.test(o)) ?? options[0]),
       input: async title => (dialogs.push(title), 'fixture reply'),
     }});
@@ -172,7 +172,8 @@ async function liveSession(sdk, resourceLoader, settingsManager, cwd, agentDir, 
     });
     await run('skills list/load/file', async () => {
       contains(await op('skills', 'list'), SKILL);
-      contains(await op('skills', 'load', {skillUri:SKILL}), '"approved":true');
+      const load = await op('skills', 'load', {skillUri:SKILL});
+      assert.equal(JSON.parse(load.content[0].text).approved, true);
       contains(await op('skills', 'read_file', {skillUri:SKILL, fileUri:SKILL_FILE}), 'Fixture skill instructions');
     });
   } finally {
