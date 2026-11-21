@@ -119,6 +119,22 @@ describe('registerOperation', () => {
     expect(seen?.aborted).toBe(true);
   });
 
+  it('invoke signal follows the real Context abortSignal field', async () => {
+    const { reg, invoke } = setup();
+    const outer = new AbortController();
+    let seen: AbortSignal | undefined;
+    invoke.mockImplementationOnce(async (_a, s) => { seen = s; outer.abort(); return ok; });
+    await reg.execute({}, { callId: 'c4b' }, { abortSignal: outer.signal });
+    expect(seen?.aborted).toBe(true);
+    await reg.execute({}, { callId: 'c4c' }, { abortSignal: undefined });
+  });
+
+  it('rejects non-object arguments', async () => {
+    const { reg, invoke } = setup();
+    for (const bad of [null, 1, 'x', [1]]) await expect(reg.execute(bad, { callId: 'c6' }, {})).rejects.toThrow(/JSON object/);
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
   it('cancel aborts the executing invoke even without onCancel, every time', async () => {
     const store = memStore();
     const seen: AbortSignal[] = [];

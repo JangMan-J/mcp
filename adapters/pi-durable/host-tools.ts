@@ -14,7 +14,8 @@ export type ContentBlock =
   | { readonly type: 'text'; readonly text: string }
   | { readonly type: 'image'; readonly data: string; readonly mimeType: string };
 
-export interface HostToolContext { readonly signal?: AbortSignal }
+/** `abortSignal` is the pi-durable/chord `Context` field; `signal` is the host wrapper's own. Both are honored. */
+export interface HostToolContext { readonly abortSignal?: AbortSignal | undefined; readonly signal?: AbortSignal }
 /** The subset of pi-durable's ToolExecutionApi the engine reads. */
 export interface HostToolApi { readonly callId: string; readonly checkpoint?: unknown; readonly wake?: unknown }
 
@@ -35,8 +36,8 @@ export interface HostToolRegistration {
   readonly structuredOutputSchema: Record<string, unknown>;
   readonly callers?: readonly ('model' | 'tools')[];
   readonly deferred?: true;
-  execute(args: Readonly<Record<string, unknown>>, api: HostToolApi, context: HostToolContext): Promise<HostToolResult>;
-  cancel(args: Readonly<Record<string, unknown>>, api: HostToolApi, context: HostToolContext): Promise<void>;
+  execute(args: unknown, api: HostToolApi, context: HostToolContext): Promise<HostToolResult>;
+  cancel(args: unknown, api: HostToolApi, context: HostToolContext): Promise<void>;
 }
 
 export interface OperationSpec {
@@ -128,7 +129,10 @@ export function registerOperation(spec: OperationSpec, deps: OperationDeps): Hos
     ...(exposure === 'codemode' ? { callers: ['tools'] as const } : {}),
     ...(exposure === 'direct' ? { callers: ['model', 'tools'] as const } : {}),
     ...(exposure === 'deferred' ? { deferred: true as const } : {}),
-    async execute(args, api, context) {
+    async execute(rawArgs, api, context) {
+      // The harness validates against `parameters`, but those are arbitrary JSON Schema; the engine needs an object.
+      if (!isRecord(rawArgs)) throw new TypeError(`${spec.name}: arguments must be a JSON object`);
+      const args: Readonly<Record<string, unknown>> = rawArgs;
       const key = nestedCallKey(api.callId, { key: 'mcp' });
       const effective = applyIdempotencyPolicy(
         { serverId: spec.serverId, toolName: spec.wireName, inputSchema: spec.inputSchema, args, logicalKey: key },
@@ -139,7 +143,7 @@ export function registerOperation(spec: OperationSpec, deps: OperationDeps): Hos
       // Per-call controller, live only while this execute runs, so cancel() can abort it.
       const ctrl = new AbortController();
       active.set(api.callId, ctrl);
-      const signal = context.signal ? AbortSignal.any([context.signal, ctrl.signal]) : ctrl.signal;
+      const signal = AbortSignal.any([ctrl.signal, ...[context.abortSignal, context.signal].filter((s) => s !== undefined)]);
       try {
         const outcome = await calls.execute(key, intent, (sent) => spec.invoke(effective, signal, sent.requestId), {
           tool: spec.wireName,
