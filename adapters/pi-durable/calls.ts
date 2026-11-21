@@ -69,8 +69,6 @@ export class DurableCalls<Req = unknown, Res = unknown> {
   ): Promise<CallOutcome<Res>> {
     return this.deps.mutex.withLock(key, async () => {
       const existing = await this.deps.store.get(key);
-      if (existing?.status === "completed")
-        return { status: "completed", result: existing.result as Res };
       let attempts = 1;
       const describe = (r: Req | undefined) =>
         r === undefined ? undefined : opts.describe?.(r);
@@ -80,6 +78,8 @@ export class DurableCalls<Req = unknown, Res = unknown> {
         const prior = describe(existing.request);
         const current = describe(request);
         if (conflicts(prior, current)) throw new Error("conflicting intent identity");
+        if (existing.status === "completed")
+          return { status: "completed", result: existing.result as Res };
         const intent = current ?? prior;
         const tool = opts.tool ?? (intent?.method === "tools/call" ? intent.name : undefined);
         const readOnly =

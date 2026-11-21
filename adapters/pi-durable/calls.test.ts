@@ -47,6 +47,23 @@ describe("DurableCalls", () => {
     expect(send).toHaveBeenCalledTimes(1);
   });
 
+  it("checks completed record identity before replaying the result", async () => {
+    const intent: RequestIntent = { method: "tools/call", server: "s", name: "write", digest: "d1", requestId: "r1" };
+    const request = JSON.stringify(intent);
+    const result = { id: 4 };
+    const backing = new Map<string, Rec>([["completed", { status: "completed", request, result }]]);
+    const send = vi.fn(async (_req: string) => ({ id: 5 }));
+    const calls = setup(backing, []);
+    const describe = (r: string): RequestIntent => JSON.parse(r) as RequestIntent;
+
+    await expect(calls.execute("completed", request, send, { describe })).resolves.toEqual({ status: "completed", result });
+    for (const patch of [{ method: "other" }, { server: "other" }, { name: "other" }, { digest: "other" }]) {
+      const conflicting = JSON.stringify({ ...intent, ...patch });
+      await expect(calls.execute("completed", conflicting, send, { describe })).rejects.toThrow("conflicting intent identity");
+    }
+    expect(send).not.toHaveBeenCalled();
+  });
+
   it("crash after send: reopened store reports interrupted without resending", async () => {
     const backing = new Map<string, Rec>();
     const send = vi.fn(async (_req: string) => ({ id: 7 }));
