@@ -4,6 +4,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { McpOutcomeError, type ConsentPort, type Outcome } from "@mcp-client/core";
 import { TASKS_ID, TaskHandle, type TaskStatus } from "@mcp-client/ext-tasks";
 import { DiskSkillCache, MemorySkillCache, SKILLS_EXTENSION_ID, SKILLS_PIN, SkillsClient } from "@mcp-client/ext-skills";
+import { DurableHandles } from "./handles.js";
 import type { DurableRuntime, ServerDescriptor } from "./runtime.js";
 
 type Obj = Record<string, unknown>;
@@ -142,6 +143,9 @@ export async function createExtendedFeatures(ctx: ExtendedFeaturesContext): Prom
         PRIMARY KEY (server_id, task_id)
       )
     `);
+    // DurableHandles snapshot lives in the same row (no second store); older tables lack the column.
+    const cols = db.prepare("PRAGMA table_info(durable_task_handles)").all() as Array<{ name: string }>;
+    if (!cols.some(c => c.name === "handle_json")) db.exec("ALTER TABLE durable_task_handles ADD COLUMN handle_json TEXT");
   }
 
   const nowMs = () => tasks?.clock.now() ?? Date.now();
@@ -150,6 +154,29 @@ export async function createExtendedFeatures(ctx: ExtendedFeaturesContext): Prom
     return db.prepare(
       "SELECT task_id, status, expires_at, poll_interval_ms, created_at, updated_at FROM durable_task_handles WHERE server_id = ? AND task_id = ?",
     ).get(serverId, taskId) as PersistedTaskRow | undefined;
+  }
+
+  function taskSnapshots(taskId: string): DurableHandles {
+    return new DurableHandles({
+      storage: {
+        read: () => {
+          const r = db.prepare("SELECT handle_json FROM durable_task_handles WHERE server_id = ? AND task_id = ?")
+            .get(serverId, taskId) as { handle_json: string | null } | undefined;
+          return r?.handle_json ? JSON.parse(r.handle_json) : null;
+        },
+        write: data => {
+          db.prepare("UPDATE durable_task_handles SET handle_json = ? WHERE server_id = ? AND task_id = ?")
+            .run(JSON.stringify(data), serverId, taskId);
+        },
+      },
+      // ## YAGNI: snapshots are only saved/loaded; polling stays with TaskHandle, so dispatch is never used.
+      send: async () => { throw new Error("DurableHandles.dispatch is not used by pi-durable"); },
+      now: nowMs,
+    });
+  }
+
+  function saveSnapshot(taskId: string, expiresAt: number | null): Promise<void> {
+    return taskSnapshots(taskId).save({ kind: "task", taskId, ...(expiresAt !== null ? { expiresAt } : {}) });
   }
 
   function isRowExpired(row: PersistedTaskRow | undefined): boolean {
@@ -179,7 +206,7 @@ export async function createExtendedFeatures(ctx: ExtendedFeaturesContext): Prom
     }
   }
 
-  function persistTask(taskId: string, status: string, state?: Obj): void {
+  async function persistTask(taskId: string, status: string, state?: Obj): Promise<void> {
     const now = nowMs();
     const existing = getRow(taskId);
     const rec = tasks?.store.get(tasks.serverKey, taskId);
@@ -206,6 +233,7 @@ export async function createExtendedFeatures(ctx: ExtendedFeaturesContext): Prom
         poll_interval_ms = excluded.poll_interval_ms,
         updated_at = excluded.updated_at
     `).run(serverId, taskId, status, expiresAt, pollIntervalMs, createdAt, now);
+    await saveSnapshot(taskId, expiresAt);
   }
 
   async function safeDeliver(event: Record<string, unknown>): Promise<void> {
@@ -268,14 +296,14 @@ export async function createExtendedFeatures(ctx: ExtendedFeaturesContext): Prom
           return;
         }
         lastState = out.value;
-        persistTask(handle.id, out.value.status, out.value);
+        await persistTask(handle.id, out.value.status, out.value);
         let status = out.value.status;
         if (status === "input_required" && asked !== "input_required") {
           const upd = await askInput(handle, out.value, signal);
           if (signal.aborted) return;
           if (upd && upd.kind === "ok" && isTaskState(upd.value)) {
             lastState = upd.value;
-            persistTask(handle.id, upd.value.status, upd.value);
+            await persistTask(handle.id, upd.value.status, upd.value);
             status = upd.value.status;
             asked = status;
           } else {
@@ -337,10 +365,14 @@ export async function createExtendedFeatures(ctx: ExtendedFeaturesContext): Prom
       "SELECT task_id, status, expires_at, poll_interval_ms, created_at, updated_at FROM durable_task_handles WHERE server_id = ? AND status IN ('working', 'input_required')",
     ).all(serverId) as unknown as PersistedTaskRow[];
     for (const row of rows) {
-      if (isRowExpired(row)) {
+      const snap = await taskSnapshots(row.task_id).load();
+      const snapExpired = snap?.kind === "task" && snap.taskId === row.task_id
+        && snap.expiresAt !== undefined && nowMs() >= snap.expiresAt;
+      if (isRowExpired(row) || snapExpired) {
         markExpired(row.task_id);
         continue;
       }
+      if (!snap) await saveSnapshot(row.task_id, row.expires_at);
       tasks.store.put({
         serverKey: tasks.serverKey,
         taskId: row.task_id,
@@ -369,14 +401,28 @@ export async function createExtendedFeatures(ctx: ExtendedFeaturesContext): Prom
           { name: tool, arguments: (args.arguments as Obj | undefined) ?? {} },
           { signal: callSignal },
         );
-        callSignal.throwIfAborted();
         const accepted = out.kind === "ok" && isTaskState(out.value) ? tasks.accept(out.value) : out;
-        if (accepted.kind === "ok") return accepted.value;
-        if (accepted.kind !== "task-handle") throwOutcome(accepted);
+        if (accepted.kind !== "task-handle") {
+          callSignal.throwIfAborted();
+          if (accepted.kind === "ok") return accepted.value;
+          throwOutcome(accepted);
+        }
         const handle = accepted.handle;
         if (!(handle instanceof TaskHandle)) throw new Error("Invalid task handle");
         const status = handle.status() ?? "working";
-        persistTask(handle.id, status);
+        await persistTask(handle.id, status);
+        if (callSignal.aborted) {
+          // User abort after the task id is known: cancel remotely. Shutdown/transport close leaves the persisted task running.
+          if (signal.aborted && !lifecycle.aborted && ACTIVE_STATUSES.has(status)) {
+            try {
+              const res = await handle.cancel();
+              if (res.kind === "ok" && isTaskState(res.value)) await persistTask(handle.id, res.value.status, res.value);
+            } catch {
+              // Cancel is best effort; the task stays persisted as active for recovery.
+            }
+          }
+          callSignal.throwIfAborted();
+        }
         if (ACTIVE_STATUSES.has(status)) startTracking(handle);
         return { taskId: handle.id, status };
       }
@@ -389,7 +435,7 @@ export async function createExtendedFeatures(ctx: ExtendedFeaturesContext): Prom
         assertNotExpired(taskId);
         if (out.kind !== "ok") throwOutcome(out);
         if (isTaskState(out.value)) {
-          persistTask(taskId, out.value.status, out.value);
+          await persistTask(taskId, out.value.status, out.value);
           if (ACTIVE_STATUSES.has(out.value.status)) startTracking(handle);
           else stopTracking(taskId);
         }
@@ -406,7 +452,7 @@ export async function createExtendedFeatures(ctx: ExtendedFeaturesContext): Prom
         callSignal.throwIfAborted();
         if (out.kind !== "ok") throwOutcome(out);
         if (isTaskState(out.value)) {
-          persistTask(taskId, out.value.status, out.value);
+          await persistTask(taskId, out.value.status, out.value);
           if (ACTIVE_STATUSES.has(out.value.status)) startTracking(handle);
           else stopTracking(taskId);
         }
@@ -420,7 +466,7 @@ export async function createExtendedFeatures(ctx: ExtendedFeaturesContext): Prom
         lifecycle.throwIfAborted();
         if (out.kind !== "ok") throwOutcome(out);
         if (isTaskState(out.value)) {
-          persistTask(taskId, out.value.status, out.value);
+          await persistTask(taskId, out.value.status, out.value);
           if (!ACTIVE_STATUSES.has(out.value.status)) stopTracking(taskId);
         }
         callSignal.throwIfAborted();

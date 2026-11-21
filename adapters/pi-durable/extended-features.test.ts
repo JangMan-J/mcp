@@ -8,7 +8,16 @@ import type { ConsentPort, Outcome } from "@mcp-client/core";
 import { createTasksExtension } from "@mcp-client/ext-tasks";
 import { createExtendedFeatures } from "./extended-features.js";
 import { openRuntime, type DurableRuntime, type ServerDescriptor } from "./runtime.js";
-import { startFixture, SKILL, SKILL_FILE, TASK } from "../../scripts/pi-trial/live-ext-fixture.mjs";
+
+// The .mjs fixture is untyped; a non-literal specifier plus a narrow interface avoids TS7016 without suppression.
+interface LiveFixture {
+  startFixture(): Promise<{ base: string; mcpUrl: string; close(): Promise<void> }>;
+  SKILL: string;
+  SKILL_FILE: string;
+  TASK: string;
+}
+const FIXTURE_PATH = "../../scripts/pi-trial/live-ext-fixture.mjs";
+const loadFixture = () => import(FIXTURE_PATH) as Promise<LiveFixture>;
 
 type Obj = Record<string, unknown>;
 
@@ -304,6 +313,98 @@ describe("pi-durable extended features", () => {
     await features.close();
   });
 
+  it("persists DurableHandles snapshots in the task row, reopens them, and close sends nothing", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-durable-ext-"));
+    dirs.push(dir);
+    const file = join(dir, "t.db");
+    const db1 = new DatabaseSync(file);
+    dbs.push(db1);
+    const first = fakeRuntime(TASKS_CAP, {
+      "tools/call": [
+        { taskId: "t-keep", status: "working", pollIntervalMs: 60_000 },
+        { taskId: "t-exp", status: "working", pollIntervalMs: 60_000, ttlMs: 1 },
+      ],
+      "tasks/get": [{ taskId: "t-keep", status: "working", pollIntervalMs: 60_000 }],
+    });
+    const f1 = await createExtendedFeatures({ id: "srv", runtime: first.rt, descriptor: descriptor(), db: db1 });
+    const sig = new AbortController().signal;
+    await f1.run("mcp_tasks", { action: "call", tool: "a" }, sig);
+    await f1.run("mcp_tasks", { action: "call", tool: "b" }, sig);
+    const snap = (id: string) => JSON.parse((db1.prepare("SELECT handle_json FROM durable_task_handles WHERE task_id = ?")
+      .get(id) as { handle_json: string }).handle_json);
+    expect(snap("t-keep")).toEqual({ kind: "task", taskId: "t-keep" });
+    expect(snap("t-exp")).toMatchObject({ kind: "task", taskId: "t-exp", expiresAt: expect.any(Number) });
+    const callsBeforeClose = first.calls.length;
+    await f1.close();
+    expect(first.calls.length).toBe(callsBeforeClose); // close sends nothing (no tasks/cancel)
+    expect(first.calls.some(c => c.method === "tasks/cancel")).toBe(false);
+    expect(db1.prepare("SELECT status FROM durable_task_handles WHERE task_id = 't-keep'").get()).toMatchObject({ status: "working" });
+    db1.close();
+
+    // Reopen: live task is recovered from snapshot-backed row; expired one is not polled.
+    await new Promise(r => setTimeout(r, 5));
+    const db2 = new DatabaseSync(file);
+    dbs.push(db2);
+    const second = fakeRuntime(TASKS_CAP, {});
+    const f2 = await createExtendedFeatures({ id: "srv", runtime: second.rt, descriptor: descriptor(), db: db2 });
+    expect(await f2.run("mcp_tasks", { action: "active" }, sig)).toEqual({ tasks: [{ taskId: "t-keep", status: "working" }] });
+    await expect(f2.run("mcp_tasks", { action: "get", taskId: "t-exp" }, sig)).rejects.toThrow(/expired/);
+    expect(db2.prepare("SELECT status FROM durable_task_handles WHERE task_id = 't-exp'").get()).toMatchObject({ status: "expired" });
+    expect(second.calls.some(c => (c.params as Obj | undefined)?.taskId === "t-exp")).toBe(false);
+    await f2.close();
+    expect(second.calls.some(c => c.method === "tasks/cancel")).toBe(false);
+  });
+
+  it("expires a recovered task from its DurableHandles snapshot", async () => {
+    const db = openDb();
+    const now = Date.now();
+    const seed = fakeRuntime(TASKS_CAP, { "tools/call": [{ taskId: "t-snap", status: "working", pollIntervalMs: 60_000 }] });
+    const f0 = await createExtendedFeatures({ id: "srv", runtime: seed.rt, descriptor: descriptor(), db });
+    await f0.run("mcp_tasks", { action: "call", tool: "a" }, new AbortController().signal);
+    await f0.close();
+    db.prepare("UPDATE durable_task_handles SET handle_json = ?").run(JSON.stringify({ kind: "task", taskId: "t-snap", expiresAt: now - 1 }));
+    const next = fakeRuntime(TASKS_CAP, {});
+    const f1 = await createExtendedFeatures({ id: "srv", runtime: next.rt, descriptor: descriptor(), db });
+    expect(await f1.run("mcp_tasks", { action: "active" }, new AbortController().signal)).toEqual({ tasks: [] });
+    expect(db.prepare("SELECT status FROM durable_task_handles").get()).toMatchObject({ status: "expired" });
+    expect(next.calls).toEqual([]);
+    await f1.close();
+  });
+
+  it("cancels a created remote task on user abort but not on shutdown", async () => {
+    const user = new AbortController();
+    const dbU = openDb();
+    const a = fakeRuntime(TASKS_CAP, {
+      "tools/call": [{ taskId: "t-abort", status: "working" }],
+      "tasks/cancel": [{ taskId: "t-abort", status: "cancelled" }],
+    });
+    a.rt.stateful.request = vi.fn((method: string, params: unknown) => {
+      const out = Promise.resolve(ok(method, method === "tools/call"
+        ? { taskId: "t-abort", status: "working" } : { taskId: "t-abort", status: "cancelled" }));
+      if (method === "tools/call") user.abort(new Error("user"));
+      void params;
+      return out;
+    }) as never;
+    const fu = await createExtendedFeatures({ id: "srv", runtime: a.rt, descriptor: descriptor(), db: dbU });
+    await expect(fu.run("mcp_tasks", { action: "call", tool: "x" }, user.signal)).rejects.toThrow();
+    expect(dbU.prepare("SELECT status FROM durable_task_handles WHERE task_id = 't-abort'").get()).toMatchObject({ status: "cancelled" });
+    await fu.close();
+
+    const dbS = openDb();
+    const b = fakeRuntime(TASKS_CAP, {});
+    const seen: string[] = [];
+    let features!: Awaited<ReturnType<typeof createExtendedFeatures>>;
+    b.rt.stateful.request = vi.fn((method: string) => {
+      seen.push(method);
+      void features.close();
+      return Promise.resolve(ok(method, { taskId: "t-shut", status: "working" }));
+    }) as never;
+    features = await createExtendedFeatures({ id: "srv", runtime: b.rt, descriptor: descriptor(), db: dbS });
+    await expect(features.run("mcp_tasks", { action: "call", tool: "x" }, new AbortController().signal)).rejects.toThrow();
+    expect(seen).toEqual(["tools/call"]);
+    expect(dbS.prepare("SELECT status FROM durable_task_handles WHERE task_id = 't-shut'").get()).toMatchObject({ status: "working" });
+  });
+
   it("runs mcp_skills list/get/load/read_file/directory with manifest-bound consent and confined cache", async () => {
     const skillUri = "skill://demo/alpha";
     const fileUri = `${skillUri}/SKILL.md`;
@@ -393,6 +494,7 @@ describe("pi-durable extended features", () => {
   });
 
   it("works end-to-end against live-ext-fixture.mjs for tasks and skills", async () => {
+    const { startFixture, SKILL, SKILL_FILE, TASK } = await loadFixture();
     const fx = await startFixture();
     const db = openDb();
     let rt: DurableRuntime | undefined;
