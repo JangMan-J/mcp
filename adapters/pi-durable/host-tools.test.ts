@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ToolIntent } from './adapter.js';
 import type { CallRecord, DurableCallStore, PerKeyMutex } from './calls.js';
+import * as ext from './extension.js';
 import type { McpCallToolResult } from './extension.js';
-import { INTERRUPTED_OUTPUT, registerOperation, type OperationSpec } from './host-tools.js';
+import { CALL_TOOL_RESULT_SCHEMA, INTERRUPTED_OUTPUT, registerOperation, type OperationSpec } from './host-tools.js';
 import { nestedCallKey } from './nested-key.js';
 
 type Rec = CallRecord<ToolIntent, McpCallToolResult>;
@@ -33,10 +34,11 @@ describe('registerOperation', () => {
   it('builds a 1.6.0-shaped registration and ContentBlock output', async () => {
     const { reg, invoke } = setup();
     expect(reg).toMatchObject({ name: 'mcp__s__t', replay: 'unsafe', callers: ['model', 'tools'] });
-    expect(reg.structuredOutputSchema).toBeDefined();
-    const signal = new AbortController().signal;
-    const r = await reg.execute({ a: 1 }, { callId: 'c1' }, { signal });
-    expect(invoke).toHaveBeenCalledWith({ a: 1 }, signal, 'r1');
+    expect(reg.structuredOutputSchema).toBe(ext.CALL_TOOL_RESULT_SCHEMA);
+    expect(CALL_TOOL_RESULT_SCHEMA).toBe(ext.CALL_TOOL_RESULT_SCHEMA);
+    expect(INTERRUPTED_OUTPUT).toBe(ext.INTERRUPTED_OUTPUT);
+    const r = await reg.execute({ a: 1 }, { callId: 'c1' }, {});
+    expect(invoke).toHaveBeenCalledWith({ a: 1 }, expect.any(AbortSignal), 'r1');
     expect(r.output).toEqual([{ type: 'text', text: 'hi' }, { type: 'image', data: 'AA', mimeType: 'image/png' }]);
     expect(r.structuredOutput).toEqual({ content: ok.content, structuredContent: { n: 1 } });
     expect(r.isError).toBeUndefined();
@@ -87,7 +89,7 @@ describe('registerOperation', () => {
       expect(r.isError).toBeUndefined();
       const id = s.store.map.get(key)?.request?.requestId;
       expect(id).not.toBe('r1');
-      expect(s.invoke).toHaveBeenLastCalledWith({ a: 1 }, undefined, id);
+      expect(s.invoke).toHaveBeenLastCalledWith({ a: 1 }, expect.any(AbortSignal), id);
     }
   });
 
@@ -106,5 +108,33 @@ describe('registerOperation', () => {
     expect(onCancel).toHaveBeenCalledTimes(1);
     expect(onCancel).toHaveBeenCalledWith({ callId: 'c3', name: 'mcp__s__t', checkpoint: { p: 1 } });
     expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it('invoke signal follows the context signal', async () => {
+    const { reg, invoke } = setup();
+    const outer = new AbortController();
+    let seen: AbortSignal | undefined;
+    invoke.mockImplementationOnce(async (_a, s) => { seen = s; outer.abort(); return ok; });
+    await reg.execute({}, { callId: 'c4' }, { signal: outer.signal });
+    expect(seen?.aborted).toBe(true);
+  });
+
+  it('cancel aborts the executing invoke even without onCancel, every time', async () => {
+    const store = memStore();
+    const seen: AbortSignal[] = [];
+    const invoke = vi.fn((_a: Readonly<Record<string, unknown>>, s: AbortSignal | undefined) => new Promise<McpCallToolResult>((_res, rej) => {
+      seen.push(s!);
+      s!.addEventListener('abort', () => rej(new Error('aborted')));
+    }));
+    const reg = registerOperation({ name: 'n', serverId: 's', wireName: 't', inputSchema: {}, invoke }, { store, mutex });
+    for (const n of [1, 2]) {
+      store.map.delete(nestedCallKey('c5', { key: 'mcp' }));
+      const run = reg.execute({}, { callId: 'c5' }, {});
+      await vi.waitFor(() => expect(invoke).toHaveBeenCalledTimes(n));
+      await reg.cancel({}, { callId: 'c5' }, {});
+      await expect(run).rejects.toThrow('aborted');
+    }
+    expect(seen).toHaveLength(2);
+    expect(seen.every((s) => s.aborted)).toBe(true);
   });
 });

@@ -1,6 +1,6 @@
 import { argsDigest, type ToolIntent } from './adapter.js';
 import { DurableCalls, type CallOutcome, type DurableCallStore, type PerKeyMutex, type RequestIntent } from './calls.js';
-import type { McpCallToolResult, McpContent } from './extension.js';
+import { CALL_TOOL_RESULT_SCHEMA, INTERRUPTED_OUTPUT, type McpCallToolResult, type McpContent } from './extension.js';
 import { nestedCallKey } from './nested-key.js';
 import { applyIdempotencyPolicy, type IdempotencyPolicy } from './policies.js';
 
@@ -67,18 +67,7 @@ export interface OperationDeps {
   readonly onCancel?: (info: { callId: string; name: string; checkpoint?: unknown }) => void | Promise<void>;
 }
 
-export const INTERRUPTED_OUTPUT =
-  'Uncertain write: the call was interrupted across a host restart and may or may not have run; do not retry blindly.';
-
-export const CALL_TOOL_RESULT_SCHEMA: Record<string, unknown> = {
-  type: 'object',
-  properties: {
-    content: { type: 'array', items: { type: 'object', properties: { type: { type: 'string' } }, required: ['type'] } },
-    structuredContent: {},
-    isError: { type: 'boolean' },
-  },
-  required: ['content'],
-};
+export { CALL_TOOL_RESULT_SCHEMA, INTERRUPTED_OUTPUT };
 
 const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 
@@ -113,6 +102,8 @@ export function outcomeToResult(outcome: CallOutcome<McpCallToolResult>): HostTo
   };
 }
 
+const CANCELLED_CAP = 1024;
+
 const describe = (r: ToolIntent): RequestIntent => ({ method: r.method, server: r.server, name: r.name, digest: r.digest, requestId: r.requestId });
 
 /**
@@ -126,6 +117,7 @@ export function registerOperation(spec: OperationSpec, deps: OperationDeps): Hos
   const newId = (): string => deps.newRequestId?.() ?? crypto.randomUUID();
   const replay = spec.override ? spec.override === 'replay' : spec.readOnly === true;
   const cancelled = new Set<string>();
+  const active = new Map<string, AbortController>();
   const exposure = spec.exposure ?? 'direct';
   return {
     name: spec.name,
@@ -143,27 +135,34 @@ export function registerOperation(spec: OperationSpec, deps: OperationDeps): Hos
         deps.policies,
       );
       const digest = argsDigest(effective);
-      // DurableCalls returns completed records without an identity check; reject mismatches here.
-      const prior = await deps.store.get(key);
-      const p = prior?.request;
-      if (p && (p.digest !== digest || p.name !== spec.wireName || p.server !== spec.serverId))
-        throw new Error(`conflicting intent identity for ${key}`);
       const intent: ToolIntent = { method: 'tools/call', server: spec.serverId, name: spec.wireName, durableId: key, digest, requestId: newId() };
-      const outcome = await calls.execute(key, intent, (sent) => spec.invoke(effective, context.signal, sent.requestId), {
-        tool: spec.wireName,
-        describe,
-        restartRequest: (r) => ({ ...r, requestId: newId() }),
-        ...(deps.acceptDuplicate !== undefined ? { acceptDuplicate: deps.acceptDuplicate } : {}),
-        ...(deps.restartLimit !== undefined ? { restartLimit: deps.restartLimit } : {}),
-        ...(spec.readOnly ? { readOnlyTools: [spec.wireName] } : {}),
-        ...(spec.override ? { toolOverrides: { [spec.wireName]: spec.override } } : {}),
-      });
-      return outcomeToResult(outcome);
+      // Per-call controller, live only while this execute runs, so cancel() can abort it.
+      const ctrl = new AbortController();
+      active.set(api.callId, ctrl);
+      const signal = context.signal ? AbortSignal.any([context.signal, ctrl.signal]) : ctrl.signal;
+      try {
+        const outcome = await calls.execute(key, intent, (sent) => spec.invoke(effective, signal, sent.requestId), {
+          tool: spec.wireName,
+          describe,
+          restartRequest: (r) => ({ ...r, requestId: newId() }),
+          ...(deps.acceptDuplicate !== undefined ? { acceptDuplicate: deps.acceptDuplicate } : {}),
+          ...(deps.restartLimit !== undefined ? { restartLimit: deps.restartLimit } : {}),
+          ...(spec.readOnly ? { readOnlyTools: [spec.wireName] } : {}),
+          ...(spec.override ? { toolOverrides: { [spec.wireName]: spec.override } } : {}),
+        });
+        return outcomeToResult(outcome);
+      } finally {
+        if (active.get(api.callId) === ctrl) active.delete(api.callId);
+      }
     },
     async cancel(_args, api) {
-      // Idempotent; never invokes or nests.
+      // Never invokes or nests. Always aborts an executing call; onCancel (remote task hooks) runs once per call id.
+      active.get(api.callId)?.abort();
       if (cancelled.has(api.callId)) return;
       cancelled.add(api.callId);
+      // ## YAGNI: bounded FIFO dedupe instead of tracking call lifetimes; an id evicted after
+      // CANCELLED_CAP newer cancels may fire onCancel again, which hooks must tolerate anyway.
+      if (cancelled.size > CANCELLED_CAP) cancelled.delete(cancelled.values().next().value!);
       await deps.onCancel?.({ callId: api.callId, name: spec.name, ...(api.checkpoint !== undefined ? { checkpoint: api.checkpoint } : {}) });
     },
   };
