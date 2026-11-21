@@ -21,7 +21,7 @@ Status: typed entrypoint implemented; scratch trial at the pinned fork passed
   adapter only; emits `adapters/pi-coding-agent/dist/index.js`, the
   `pi.extensions` entry in `package.json`).
 - One-off load without installing: `pi -e adapters/pi-coding-agent/dist/index.js`
-  (pass `--no-extensions`/`-builtin:mcp` per `docs/decisions/pi-target.md`).
+  (`/mcp` registration replaces `builtin:mcp`; see `docs/decisions/pi-target.md`).
 - Package install: `pi install ./adapters/pi-coding-agent`. Only do this with
   `PI_CODING_AGENT_DIR` pointing at a scratch dir; do not install into the
   active `~/.pi/agent` until the cutover in `docs/cutover.md`.
