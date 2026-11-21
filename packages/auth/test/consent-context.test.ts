@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest';
 import type { AuthRequestContext } from '@mcp-client/core';
-import { startTestAuthorizationServer } from '../../fixtures/server/as-main.js';
+import { startTestAuthorizationServer } from './fixtures/test-as.js';
 import { ConfiguredBearer, OAuthAuthorization, SafeFetch } from '../src/index.js';
 
 it('uses the host consent port for an informed decision before opening the browser', async () => {

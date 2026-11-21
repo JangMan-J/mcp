@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import type { AuthChallenge, AuthHeaderResult, AuthProvider, AuthRequestContext, CredentialStore, FetchPort, RandomPort } from '@mcp-client/core';
 import { discover, getDocument, object, strings, type DiscoveryOptions, type Metadata } from './discovery.js';
-import { AuthError, bearerValue, canonicalResource, detach, fail, hash, isLoopback, parseBearerChallenges, pkceChallenge, secureUrl, type BearerChallenge } from './protocol.js';
+import { AuthError, basicAuthorization, bearerValue, cancelled, canonicalResource, fail, hash, isLoopback, parseBearerChallenges, pkceChallenge, secureUrl, withAbort, type BearerChallenge } from './protocol.js';
 import { SafeFetch } from './safe-fetch.js';
 
 export class MemoryCredentialStore implements CredentialStore {
@@ -54,7 +54,7 @@ export class ConfiguredBearer implements AuthProvider {
       this.#credentialVersion = {};
       return true;
     }, () => false).finally(() => { this.#pending = undefined; });
-    return detach(this.#pending, signal);
+    return withAbort(this.#pending, signal, cancelled);
   }
 }
 
@@ -139,7 +139,7 @@ export class OAuthAuthorization implements AuthProvider {
     const grant = this.#grant;
     const work = this.#pending?.work ?? (grant && grant.expires - (this.#options.skewMs ?? 30_000) <= this.now()
       ? this.start(undefined, signal => this.renew(grant, grant.scopes, signal, context)) : undefined);
-    if (work) await (context ? detach(work, context.signal) : work);
+    if (work) await (context ? withAbort(work, context.signal, cancelled) : work);
     return this.#grant && { authorization: `Bearer ${this.#grant.token}`, contextId: this.#grant.context, credentialVersion: this.#grant.version };
   }
 
@@ -158,7 +158,7 @@ export class OAuthAuthorization implements AuthProvider {
     const scopeKey = challenge.status === 403 ? JSON.stringify([operation, bearer?.scope, bearer?.resource_metadata]) : undefined;
     while (this.#pending) {
       const pending = this.#pending;
-      await detach(pending.work, signal);
+      await withAbort(pending.work, signal, cancelled);
       if (pending.scopeKey === scopeKey) return true;
       if (scopeKey === undefined) return true;
       if (signal.aborted) fail('cancelled');
@@ -168,7 +168,7 @@ export class OAuthAuthorization implements AuthProvider {
       if (used >= this.stepUpLimit) fail('insufficient-scope');
       this.#stepUps.set(operation, used + 1);
     }
-    await detach(this.start(scopeKey, flowSignal => this.challenge(challenge, bearer, flowSignal, context)), signal);
+    await withAbort(this.start(scopeKey, flowSignal => this.challenge(challenge, bearer, flowSignal, context)), signal, cancelled);
     return true;
   }
 
@@ -176,7 +176,7 @@ export class OAuthAuthorization implements AuthProvider {
   private diagnostic(message: string) { this.#options.onDiagnostic?.(message); }
   private start(scopeKey: string | undefined, run: (signal: AbortSignal) => Promise<void>): Promise<void> {
     const signal = AbortSignal.timeout(this.#options.flowTimeoutMs ?? 120_000);
-    const work = Promise.resolve().then(() => detach(run(signal), signal)).catch((error: unknown) => {
+    const work = Promise.resolve().then(() => withAbort(run(signal), signal, cancelled)).catch((error: unknown) => {
       if (error instanceof AuthError) throw error;
       return fail('flow-failed');
     }).finally(() => { this.#pending = undefined; });
@@ -355,16 +355,13 @@ export class OAuthAuthorization implements AuthProvider {
     form.set('client_id', registration.clientId);
     form.set('resource', session.resource);
     const headers = new Headers({ 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' });
-    const basicAuth = () => {
-      const encode = (value: string) => new URLSearchParams({ x: value }).toString().slice(2);
-      headers.set('Authorization', `Basic ${Buffer.from(`${encode(registration.clientId)}:${encode(registration.clientSecret!)}`).toString('base64')}`);
-    };
-    if (registration.authMethod === 'client_secret_basic') basicAuth();
+    const setBasicAuth = () => headers.set('Authorization', basicAuthorization(registration.clientId, registration.clientSecret!));
+    if (registration.authMethod === 'client_secret_basic') setBasicAuth();
     else if (registration.authMethod === 'client_secret_post') form.set('client_secret', registration.clientSecret!);
     else if (registration.authMethod === 'none') { /* public client */ }
     else if (registration.clientSecret !== undefined) {
       if (!metadata.clientAuthMethods.length || metadata.clientAuthMethods.includes('client_secret_basic')) {
-        basicAuth();
+        setBasicAuth();
       } else if (metadata.clientAuthMethods.includes('client_secret_post')) {
         form.set('client_secret', registration.clientSecret);
       } else fail('client-auth-method-unsupported');

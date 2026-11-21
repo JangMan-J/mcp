@@ -5,7 +5,6 @@ import { createServer, type RequestOptions } from 'node:https';
 import type { TLSSocket } from 'node:tls';
 import { beforeEach, expect, it, vi } from 'vitest';
 import { discoverIssuer } from '../src/discovery.js';
-import { runExchange } from '../src/conformance.js';
 import { AuthError, OAuthAuthorization, SafeFetch, openSystemBrowser } from '../src/index.js';
 
 // Control the policy lookup, but leave Node to open a real TLS socket.
@@ -124,15 +123,52 @@ it('[AUTH-URL-1] permits HTTP authorization endpoints only on loopback with expl
 
 it('[AUTH-RES-1] sends the root PRM identifier for authorization, code exchange, and refresh', async () => {
   const resource = 'https://mcp.test';
-  await runExchange({ client: { prmLocation: 'root', tokenReplies: [{ body: {
-    access_token: 'first', token_type: 'Bearer', refresh_token: 'refresh', expires_in: 1,
-  } }] }, script: [
-    { do: 'challenge' }, { expect: 'open', url: 'https://as.test/authorize', match: { resource } },
-    { expect: 'form', match: { resource, grant_type: 'authorization_code' } },
-    { do: 'advance', ms: 1000 }, { expect: 'header', value: 'Bearer fixture-token-2' },
-    { expect: 'form', index: 1, match: { resource, grant_type: 'refresh_token' } },
-    { expect: 'header', url: `${resource}/other`, value: null },
-  ] });
+  const issuer = 'https://as.test/tenant';
+  const redirectUri = 'http://127.0.0.1:4321/callback';
+  let now = 0;
+  let tokenIndex = 0;
+  const opens: URL[] = [];
+  const forms: Record<string, string>[] = [];
+  const auth = new OAuthAuthorization({
+    resource,
+    redirectUri,
+    allowInsecureDev: true,
+    clock: { now: () => now },
+    skewMs: 0,
+    registrations: { [issuer]: { clientId: 'fixture-client', redirectUris: [redirectUri] } },
+    consent: { async request() { return { decision: 'accept' }; } },
+    browser: { async open(url) { opens.push(new URL(url)); } },
+    redirect: { async waitForCallback({ state }) { return new URLSearchParams({ code: 'code-1', state, iss: issuer }); } },
+    fetch: {
+      async fetch(url, init) {
+        if (url === `${resource}/.well-known/oauth-protected-resource`) {
+          return Response.json({ resource, authorization_servers: [issuer], scopes_supported: ['read'] });
+        }
+        if (url === 'https://as.test/.well-known/oauth-authorization-server/tenant') {
+          return Response.json({
+            issuer, authorization_endpoint: 'https://as.test/authorize', token_endpoint: 'https://as.test/token',
+            code_challenge_methods_supported: ['S256'],
+          });
+        }
+        if (url === 'https://as.test/token' && init.method === 'POST') {
+          forms.push(Object.fromEntries(new URLSearchParams(String(init.body))));
+          tokenIndex++;
+          return Response.json(tokenIndex === 1
+            ? { access_token: 'first', token_type: 'Bearer', refresh_token: 'refresh', expires_in: 1 }
+            : { access_token: 'fixture-token-2', token_type: 'Bearer', expires_in: 60 });
+        }
+        return new Response(null, { status: 404 });
+      },
+    },
+  });
+  expect(await auth.onChallenge({ status: 401, resource, wwwAuthenticate: 'Bearer' }, new AbortController().signal)).toBe(true);
+  expect(`${opens[0]!.origin}${opens[0]!.pathname}`).toBe('https://as.test/authorize');
+  expect(opens[0]!.searchParams.get('resource')).toBe(resource);
+  expect(forms[0]).toMatchObject({ resource, grant_type: 'authorization_code' });
+  now += 1000;
+  expect((await auth.headerFor(resource))?.authorization).toBe('Bearer fixture-token-2');
+  expect(forms[1]).toMatchObject({ resource, grant_type: 'refresh_token' });
+  expect(await auth.headerFor(`${resource}/other`)).toBeUndefined();
 });
 
 // Observe process creation without opening a desktop application.

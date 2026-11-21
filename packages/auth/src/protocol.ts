@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto';
 import { AuthError } from '@mcp-client/core';
 
-export { AuthError, parseBearerChallenges, type BearerChallenge } from '@mcp-client/core';
+export { AuthError, parseBearerChallenges, withAbort, type BearerChallenge } from '@mcp-client/core';
 export function fail(reason: string): never { throw new AuthError('auth-failure', reason); }
+export const cancelled = (): AuthError => new AuthError('auth-failure', 'cancelled');
 export const hash = (input: string) => createHash('sha256').update(input).digest('base64url');
 export const pkceChallenge = hash;
 export const isLoopback = (host: string) => ['localhost', '127.0.0.1', '[::1]'].includes(host);
@@ -28,14 +29,8 @@ export function bearerValue(value: unknown): string {
   return value;
 }
 
-export function detach<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const abort = () => {
-      signal.removeEventListener('abort', abort);
-      reject(new AuthError('auth-failure', 'cancelled'));
-    };
-    signal.addEventListener('abort', abort, { once: true });
-    if (signal.aborted) abort();
-    void work.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort));
-  });
+/** RFC 6749 §2.3.1 HTTP Basic credential header with form-urlencoded client id and secret. */
+export function basicAuthorization(clientId: string, clientSecret: string): string {
+  const encode = (value: string) => new URLSearchParams({ x: value }).toString().slice(2);
+  return `Basic ${Buffer.from(`${encode(clientId)}:${encode(clientSecret)}`).toString('base64')}`;
 }

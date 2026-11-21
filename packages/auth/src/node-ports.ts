@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
-import { AuthError, detach, fail, secureUrl } from './protocol.js';
+import { AuthError, cancelled, fail, secureUrl, withAbort } from './protocol.js';
 import type { RedirectPort } from './provider.js';
 
 /** Launch a fixed program with an opaque URL argument; never use a shell. */
@@ -58,6 +58,6 @@ export async function startLoopbackRedirect(path = '/callback'): Promise<Redirec
     if (options.redirectUri !== redirectUri || used) fail('invalid-redirect-uri');
     used = true;
     const work = new Promise<URLSearchParams>((resolve, reject) => { pending = { resolve, reject }; });
-    try { return await detach(work, options.signal); } finally { close(); }
+    try { return await withAbort(work, options.signal, cancelled); } finally { close(); }
   } };
 }

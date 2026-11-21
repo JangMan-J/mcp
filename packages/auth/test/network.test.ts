@@ -1,6 +1,6 @@
 import { createServer } from 'node:http';
 import { expect, it } from 'vitest';
-import { startTestAuthorizationServer } from '../../fixtures/server/as-main.js';
+import { startTestAuthorizationServer } from './fixtures/test-as.js';
 import { OAuthAuthorization, SafeFetch, startLoopbackRedirect } from '../src/index.js';
 
 it('redeems a real single-use PKCE code via the loopback callback and test AS', async () => {
