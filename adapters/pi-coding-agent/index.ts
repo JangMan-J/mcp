@@ -9,6 +9,10 @@ import { createExtendedFeatures, inspectServerCard } from "./extended-features.j
 export { createPiMcpExtension, createLiveMcpServerRuntime } from "./pi-extension.js";
 export type { PiExtensionAPI, PiMcpExtensionOptions, PiFeatureHost, PiFeatureConnector, PiLiveAuth, LiveRuntimeOptions, LiveMcpServerRuntime } from "./pi-extension.js";
 
+function isTrusted(ctx: any): boolean {
+  try { return typeof ctx?.isProjectTrusted === "function" && ctx.isProjectTrusted() === true; } catch { return false; }
+}
+
 /** Default Pi entrypoint: live auth, Pi UI consent, and all feature modules. */
 export default function piMcpExtension(pi: PiExtensionAPI): void {
   let ctx: any;
@@ -25,10 +29,15 @@ export default function piMcpExtension(pi: PiExtensionAPI): void {
     consent,
     resolveProviderToken,
     onContext: (c) => { ctx = c; },
-    // Project config is read only once Pi reports the project as trusted.
+    // Project config is read only when Pi's ctx.isProjectTrusted() returns true; a missing or throwing check fails closed.
     project: () => {
       const cwd = typeof ctx?.cwd === "string" ? ctx.cwd : undefined;
-      return cwd ? { configPath: join(cwd, ".pi", "mcp.json"), trusted: ctx?.projectTrusted === true } : undefined;
+      return cwd ? { configPath: join(cwd, ".pi", "mcp.json"), trusted: isTrusted(ctx) } : undefined;
+    },
+    // Branch state persists through Pi's session: appendEntry writes, the active branch is read back.
+    branchStore: {
+      appendEntry: (type, data) => { pi.appendEntry?.(type, data); },
+      getBranch: () => ctx?.sessionManager?.getBranch?.() ?? [],
     },
     card: inspectServerCard,
     createAuth: (descriptor, { signal, credentialStore }) => createLiveAuth(descriptor, {

@@ -16,6 +16,37 @@ Status: typed entrypoint implemented; scratch trial at the pinned fork passed
 - `bin/mcp-cli.ts`: optional standalone CLI (D7 Option C). It does not
   change `pi mcp`, which stays on the old stack.
 
+## Build and load in Pi
+- `npm run build` (all workspaces) or `npm run build:pi-extension` (this
+  adapter only; emits `adapters/pi-coding-agent/dist/index.js`, the
+  `pi.extensions` entry in `package.json`).
+- One-off load without installing: `pi -e adapters/pi-coding-agent/dist/index.js`
+  (pass `--no-extensions`/`-builtin:mcp` per `docs/decisions/pi-target.md`).
+- Package install: `pi install ./adapters/pi-coding-agent`. Only do this with
+  `PI_CODING_AGENT_DIR` pointing at a scratch dir; do not install into the
+  active `~/.pi/agent` until the cutover in `docs/cutover.md`.
+- Scratch sessions: set `PI_CODING_AGENT_SESSION_DIR="$SCRATCH/sessions"`
+  so branch entries never land in active sessions.
+- Live runner prerequisites: the pinned fork build, Node `>=22.19.0`, a
+  built `dist/`, a scratch `PI_CODING_AGENT_DIR`, and a synthetic MCP server
+  (see "Scratch test prerequisites" below).
+
+## Config, auth, commands
+- Global config: `$PI_CODING_AGENT_DIR/mcp.json` (default `~/.pi/agent/mcp.json`).
+- Project config: `<cwd>/.pi/mcp.json`, read only when Pi's
+  `ctx.isProjectTrusted()` returns `true`; if that method is missing or
+  throws, project config is skipped (fail closed).
+- Auth: provider bearer tokens come from Pi's model registry
+  (`getApiKeyForProvider`); a missing key fails the request. OAuth sign-in and
+  URL elicitation prompt through Pi's UI consent.
+- Branch state (cursor, approval, taskId, requestState only; no tokens) is
+  written with `pi.appendEntry` under `pi.coding-agent.branch.v2` and restored
+  from `ctx.sessionManager.getBranch()` (active branch only).
+- Commands: `/mcp [list|status [server]|enable <server>|disable <server>|sign-in <server>|reconnect <server>|card <server>]`.
+- Limitations: `pi mcp` (CLI) stays on the old stack; use `bin/mcp-cli.ts`.
+  Branch saving needs a host with `appendEntry`; without a session manager,
+  restore yields no state.
+
 ## CI commands (fake host, no Pi, no live config)
 - `npm run build`
 - `npx vitest run adapters/pi-coding-agent` (add
