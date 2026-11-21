@@ -1,6 +1,6 @@
 import { McpClient, type ConsentPort, type DiscoverResult, type Outcome, type RequestOptions, type Transport } from "@mcp-client/core";
 import { StatefulClient } from "@mcp-client/mrtr-cache";
-import { createOps, type Ops } from "@mcp-client/ops";
+import { createOps, type Ops, type OpsClient } from "@mcp-client/ops";
 import { StdioTransport } from "@mcp-client/transport-stdio";
 import { HttpTransport } from "@mcp-client/transport-http";
 import { ConfiguredBearer } from "@mcp-client/auth";
@@ -54,14 +54,37 @@ export async function createLiveMcpServerRuntime(
     ...(opts?.consent ? { ports: { consent: cancellableConsentPort(opts.consent, opts.signal) } } : {}),
     ...(descriptor.timeout !== undefined ? { defaults: { timeoutMs: descriptor.timeout * 1000 } } : {}),
   });
+  const consent = opts?.consent ? cancellableConsentPort(opts.consent, opts.signal) : undefined;
   const stateful = new StatefulClient({
     request: (m, p, o) => client.request(m, p, o),
     serverRef: descriptor.name,
     serverLabel: descriptor.name,
     transportClosed: closedCtrl.signal,
+    ...(consent ? {
+      port: {
+        url: async (r, s) => (await consent.request({ kind: "url-elicitation", serverLabel: r.serverLabel, url: r.url, message: r.message }, s)).decision,
+        form: async (r, s) => {
+          const res = await consent.request({ kind: "form-elicitation", serverLabel: r.serverLabel, message: r.message, schema: r.schema }, s);
+          return res.decision === "accept" ? { action: "accept", content: res.content ?? {} } : { action: res.decision };
+        },
+      },
+      // ## YAGNI: the consent port owns opening the page; MRTR only needs a browser to declare url mode.
+      browser: { open: async () => {} },
+    } : {}),
   });
   let caps: Record<string, unknown> | undefined;
-  const ops = createOps(client, { capabilities: () => caps, serverTrusted: descriptor.trusted });
+  const mrtrMethods = new Set(["tools/call", "prompts/get", "resources/read"]);
+  // MRTR-capable methods go through StatefulClient (input_required -> consent -> retry); the rest stay on the raw client.
+  const opsClient: OpsClient = {
+    request: ((method: string, params?: Record<string, unknown>, o?: RequestOptions) => {
+      if (!mrtrMethods.has(method)) return client.request(method, params, o);
+      const ac = new AbortController();
+      const p = stateful.request(method, params, { ...o, signal: o?.signal ? AbortSignal.any([o.signal, ac.signal]) : ac.signal });
+      const none = { async *[Symbol.asyncIterator]() {} };
+      return { id: 0, progress: none, notifications: none, signal: ac.signal, cancel: () => ac.abort(), then: p.then.bind(p) };
+    }) as OpsClient["request"],
+  };
+  const ops = createOps(opsClient, { capabilities: () => caps, serverTrusted: descriptor.trusted });
   let readyPromise: Promise<Outcome<DiscoverResult>> | undefined;
   const ready = (signal?: AbortSignal): Promise<Outcome<DiscoverResult>> => (readyPromise ??= Promise.resolve(client.discover(signal ? { signal } : undefined)).then((disc) => {
     caps = disc.kind === "ok" ? (disc.value.capabilities as Record<string, unknown>) : undefined;
