@@ -16,26 +16,92 @@ application supplies `@earendil-works/pi-durable@1.6.0`.
 import { createRegistry } from '@earendil-works/pi-durable';
 import { startDurableMcpHost } from './adapters/pi-durable/dist/index.js';
 
-const host = await startDurableMcpHost({
-  mcpConfig: './mcp.json',             // reads the mcpServers map
-  databasePath: './mcp-calls.sqlite',  // reuse this file after restart
-});
-try {
-  const registry = createRegistry();
-  for (const extension of host.extensions) registry.install(extension);
-  // Use the registry throughout the durable session.
-} finally {
-  await host.close();
+async function withMcpRegistry(run, { signInServer, authorizationConsent } = {}) {
+  const host = await startDurableMcpHost({
+    mcpConfig: './mcp.json',
+    databasePath: './mcp-calls.sqlite',
+    authorizationConsent, // application's OAuth consent port, if needed
+  });
+  try {
+    if (signInServer) await host.signIn(signInServer);
+    const registry = createRegistry();
+    for (const extension of host.extensions) registry.install(extension);
+    return await run(registry, host);
+  } finally {
+    await host.close();
+  }
 }
 ```
 
-`host.extensions` contains durable `Extension` objects: install them directly,
-without converting MCP responses to strings or wrapping tool registrations.
-Tool results expose content blocks for display and `structuredOutput` for
-codemode. For a call outside the registry, use `host.call(key, name, args)`
-with a stable key for that logical operation and a name from `host.toolNames`.
-Reusing the database and key lets the host replay a committed result instead
-of resending the request.
+- **Servers:** `mcpConfig` names an operator-selected JSON file containing an
+  `mcpServers` map. Alternatively, pass `servers` as an array of named
+  descriptors, e.g. `{ name: 'remote', url: 'https://example.com/mcp' }` for
+  Streamable HTTP or `{ name: 'local', command: 'node', args: ['./server.js'] }`
+  for stdio. If both options are set, explicit entries replace same-name file
+  entries. Disabled entries are skipped.
+- **Storage:** Reuse `databasePath` across restarts for call records, event
+  cursors and persisted handles. Without it, SQLite is in-memory. `stateDir`
+  is separate: it holds credentials and caches, defaults to
+  `${databasePath}.state` for a file database, and otherwise defaults to a
+  private temporary directory removed on close. Do not use Pi's global
+  directory as `stateDir`.
+- **Sign-in:** A server that requires authorization may be listed in
+  `host.servers` without any tools. For interactive OAuth, supply
+  `authorizationConsent` (and optionally a `browser` port), wait for
+  `host.signIn(serverId)` to finish rediscovery, then read and install
+  `host.extensions`. No sign-in call is needed for an already accessible server.
+
+`host.extensions` contains durable `Extension` objects: install them directly.
+Tool results expose `output` content blocks for display and `structuredOutput`
+for codemode.
+
+### Names and replay
+
+The default `toolNaming: 'prefixed'` usually registers ordinary tools as
+`mcp__<server>__<tool>`. Use `host.toolNames` for the exact names, including
+hash-suffixed variants. `toolNaming: 'bare'` keeps wire names and requires them
+not to collide with other registered tools. Feature names such as `mcp_prompts`
+and `mcp_resources` are unchanged.
+
+Outside the registry, call `host.call(key, name, args)` with an optional fourth
+argument, an `AbortSignal`. To replay a committed result without resending,
+reopen the same database and reuse the key, tool and arguments. Give distinct
+logical calls distinct keys. An unfinished call is not replayed by default.
+Set `readOnlyTools` (host-wide or per server)
+using wire names for tools known to be read-only. Per-server `toolOverrides`
+(`'replay'` or `'interrupt'`) take precedence over `readOnlyTools` and
+`acceptDuplicate`. See [Tool calls](#tool-calls-durablecalls) for the risks.
+
+### Mixed servers, features and cancellation
+
+Stdio and HTTP servers can share one host. Feature tools take an `action` and a
+`server` ID; pass the ID explicitly when mixing servers, for example:
+
+```js
+const controller = new AbortController();
+const pending = host.call('notes-list-1', 'mcp_resources',
+  { server: 'remote', action: 'list' }, controller.signal);
+// To request cancellation, call controller.abort().
+const result = await pending;
+```
+
+Use an `AbortController` per call outside the registry. Registry execution
+uses its context signal, and the registration's `cancel` aborts the active
+invocation. Both paths apply to ordinary and feature tools. Cancellation does
+not prove the remote stopped or undo a side effect. To cancel an existing task
+or remove a subscription, use the corresponding feature action (`cancel` or
+`unsubscribe`). `host.close()` aborts active calls and closes streams and
+transports.
+
+### Refreshing the registry snapshot
+
+For servers advertising `tools.listChanged`, `notifications/tools/list_changed`
+refreshes the host's snapshot asynchronously, not the installed registry.
+To refresh explicitly, `await host.refreshTools(serverId)` (omit the ID for
+all servers). After refresh or sign-in, read
+`host.extensions` again and install the current snapshot into a fresh registry
+for the next session or at a safe application boundary. Keeping the old
+registry can leave removed tools registered.
 
 ## Lower-level modules
 
@@ -69,11 +135,11 @@ accidents.
 `execute(key, request, send)` runs under a per-key lock and follows one rule:
 commit before wake.
 
-1. If the store holds a `completed` record for `key`, return its result
-   without calling `send`. Replaying a completed call is answered from
-   storage and is not a resend.
-2. If the store holds an `intent` with no outcome, return
-   `{ status: "interrupted" }` without calling `send`.
+1. If the store holds a matching `completed` record for `key`, return its
+   result without calling `send`.
+2. If the store holds a matching `intent` with no outcome, return
+   `{ status: "interrupted" }` without calling `send` unless restart policy
+   allows another attempt.
 3. Otherwise commit the intent, then call `send`, then commit the outcome,
    then return the result. Host-visible effects happen only after the outcome
    is committed.
@@ -91,14 +157,11 @@ the effect twice. The default handling of an `interrupted` call is therefore
 to stop and surface it as an uncertain write — never to resend automatically,
 including on restart.
 
-Re-issuing an interrupted call is a caller's explicit decision, made only
-through the core request option `acceptDuplicate: true`, together with
-`retryOf` naming the original request. A re-issued request always gets a
-fresh request id; the stored id is never reused. Setting `acceptDuplicate`
-means accepting that the remote may execute the effect a second time. Before
-re-issuing, prefer a domain-specific read to reconcile whether the original
-call was applied. Only operations known to be read-only, or a per-tool
-operator override, should be treated as safe to replay.
+The host's `acceptDuplicate: true` option (host-wide or per server) permits
+resending an unfinished call with a fresh request ID, within `restartLimit`.
+This may execute a remote effect a second time. Prefer a domain-specific read
+to reconcile whether the original call was applied. Use a `'replay'` override
+only when you intend to allow reissuing that tool.
 
 An injected idempotency key does not change this rule: it helps a remote
 dedupe a retry, but it is not authorization to retry a write.
@@ -154,13 +217,9 @@ Only for an enabled Events stream, delivering in order per subscription:
 
 ## Restart limits
 
-- Restart replays committed outcomes and re-dispatches persisted handles;
-  it does not resend interrupted calls (see `acceptDuplicate` above).
-- The host's durable `restart_limit` is honored: restores are single
-  dispatches, and neither this adapter nor the host may resend requests in a
-  tight loop across crashes. Backoff and giving up after the limit are the
-  host's responsibility; an exhausted limit leaves calls `interrupted` for
-  an operator, not retried forever.
-- Restart cannot recover an in-flight call whose outcome was never
-  committed, cannot prove whether its remote effect happened, and cannot
-  resume a subscription in place — it re-listens under a new request.
+- Restart replays committed outcomes and does not resend interrupted calls
+  by default. The host's `restartLimit` caps resends per call (one by default
+  when replay is allowed). An exhausted limit leaves the call `interrupted`.
+- Restart cannot recover an uncommitted outcome or prove whether the remote
+  effect happened. A subscription handle re-listens under a new request
+  rather than resuming in place.
