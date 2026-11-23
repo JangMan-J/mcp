@@ -136,7 +136,7 @@ function assertNoUnrewrittenWorkspaceSpecifiers(dir) {
     }
     if (!entry.name.endsWith(".js") && !entry.name.endsWith(".d.ts")) continue;
     const text = readFileSync(full, "utf8");
-    const m = text.match(/(["'])@mcp-client\/[a-z0-9-]+\1/);
+    const m = text.match(/(["'])@mcp-client\/[^"']+\1/);
     if (m) {
       throw new Error(`build-workspaces: unrewritten workspace specifier ${m[0]} in ${full}`);
     }

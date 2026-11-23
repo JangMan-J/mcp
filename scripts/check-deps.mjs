@@ -43,25 +43,73 @@ for (const entry of readdirSync(PACKAGES_DIR, { withFileTypes: true })) {
   }
 }
 
+const REGEX_PRECEDING_KEYWORDS = new Set([
+  "return",
+  "throw",
+  "case",
+  "default",
+  "in",
+  "of",
+  "typeof",
+  "void",
+  "delete",
+  "await",
+  "yield",
+  "new",
+  "else",
+  "do",
+]);
+
+function canStartRegex(tokens) {
+  const prev = tokens[tokens.length - 1];
+  if (!prev) return true;
+  if (prev.type === "punct") {
+    return prev.value !== ")" && prev.value !== "]" && prev.value !== "++" && prev.value !== "--";
+  }
+  if (prev.type === "ident") {
+    return REGEX_PRECEDING_KEYWORDS.has(prev.value);
+  }
+  return false;
+}
+
 function tokenizeTs(src) {
   const tokens = [];
   const n = src.length;
   let i = 0;
+  let sawNewline = false;
+
+  function emit(tok, nl = sawNewline) {
+    tokens.push({ ...tok, precededByNewline: nl });
+    sawNewline = false;
+  }
 
   function scanTemplate() {
+    const startNewline = sawNewline;
+    sawNewline = false;
     i++; // skip `
+    let val = "";
+    let hasExpr = false;
     while (i < n) {
       const ch = src[i];
-      if (ch === "\\") { i += 2; continue; }
-      if (ch === "`") { i++; tokens.push({ type: "template" }); return; }
+      if (ch === "\\") {
+        if (!hasExpr) val += src[i + 1] ?? "";
+        i += 2;
+        continue;
+      }
+      if (ch === "`") {
+        i++;
+        emit({ type: "template", value: hasExpr ? undefined : val, hasExpr }, startNewline);
+        return;
+      }
       if (ch === "$" && src[i + 1] === "{") {
+        hasExpr = true;
         i += 2;
         let depth = 1;
         while (i < n && depth > 0) {
-          if (src[i] === "{") { depth++; tokens.push({ type: "punct", value: "{" }); i++; continue; }
+          if (src[i] === "{") { depth++; emit({ type: "punct", value: "{" }); i++; continue; }
           if (src[i] === "}") {
             depth--;
-            tokens.push({ type: "punct", value: "}" });
+            emit({ type: "punct", value: "}" });
             i++;
             if (depth === 0) break;
             continue;
@@ -70,6 +118,7 @@ function tokenizeTs(src) {
         }
         continue;
       }
+      if (!hasExpr) val += ch;
       i++;
     }
   }
@@ -77,19 +126,49 @@ function tokenizeTs(src) {
   function scanOne() {
     if (i >= n) return;
     const ch = src[i];
-    if (/\s/.test(ch)) { i++; return; }
+    if (/\s/.test(ch)) {
+      if (ch === "\n" || ch === "\r" || ch === "\u2028" || ch === "\u2029") sawNewline = true;
+      i++;
+      return;
+    }
     if (ch === "/" && src[i + 1] === "/") {
       i += 2;
-      while (i < n && src[i] !== "\n") i++;
+      while (i < n && src[i] !== "\n" && src[i] !== "\r") i++;
       return;
     }
     if (ch === "/" && src[i + 1] === "*") {
       i += 2;
-      while (i < n && !(src[i] === "*" && src[i + 1] === "/")) i++;
+      while (i < n && !(src[i] === "*" && src[i + 1] === "/")) {
+        if (src[i] === "\n" || src[i] === "\r" || src[i] === "\u2028" || src[i] === "\u2029") {
+          sawNewline = true;
+        }
+        i++;
+      }
       i += 2;
       return;
     }
+    if (ch === "/" && canStartRegex(tokens)) {
+      const nl = sawNewline;
+      i++; // skip opening /
+      let inClass = false;
+      let closed = false;
+      while (i < n) {
+        const c = src[i];
+        if (c === "\\") { i += 2; continue; }
+        if (c === "\n" || c === "\r" || c === "\u2028" || c === "\u2029") break;
+        if (c === "[" && !inClass) { inClass = true; i++; continue; }
+        if (c === "]" && inClass) { inClass = false; i++; continue; }
+        if (c === "/" && !inClass) { i++; closed = true; break; }
+        i++;
+      }
+      if (closed) {
+        while (i < n && /[A-Za-z]/.test(src[i])) i++;
+      }
+      emit({ type: "regex" }, nl);
+      return;
+    }
     if (ch === "'" || ch === '"') {
+      const nl = sawNewline;
       const q = ch;
       i++;
       let val = "";
@@ -98,18 +177,37 @@ function tokenizeTs(src) {
         val += src[i++];
       }
       i++; // skip closing quote
-      tokens.push({ type: "string", value: val });
+      emit({ type: "string", value: val }, nl);
       return;
     }
     if (ch === "`") { scanTemplate(); return; }
+    if (/[0-9]/.test(ch)) {
+      const nl = sawNewline;
+      let num = ch;
+      i++;
+      while (i < n && /[0-9A-Za-z_]/.test(src[i])) num += src[i++];
+      if (src[i] === "." && src[i + 1] !== ".") {
+        num += ".";
+        i++;
+        while (i < n && /[0-9A-Za-z_]/.test(src[i])) num += src[i++];
+      }
+      emit({ type: "number", value: num }, nl);
+      return;
+    }
     if (/[A-Za-z_$]/.test(ch)) {
+      const nl = sawNewline;
       let id = ch;
       i++;
       while (i < n && /[A-Za-z0-9_$]/.test(src[i])) id += src[i++];
-      tokens.push({ type: "ident", value: id });
+      emit({ type: "ident", value: id }, nl);
       return;
     }
-    tokens.push({ type: "punct", value: ch });
+    if ((ch === "+" && src[i + 1] === "+") || (ch === "-" && src[i + 1] === "-") || (ch === "=" && src[i + 1] === ">")) {
+      emit({ type: "punct", value: ch + src[i + 1] });
+      i += 2;
+      return;
+    }
+    emit({ type: "punct", value: ch });
     i++;
   }
 
@@ -123,14 +221,16 @@ function areNamedImportsAllTypeOnly(clauseTokens) {
     return false;
   }
   const inner = clauseTokens.slice(1, -1);
-  if (inner.length === 0) return true;
+  if (inner.length === 0) return false;
   // Split by ',' and check each non-empty specifier starts with ident 'type' followed by ident (not 'as' or ',')
   let start = 0;
+  let count = 0;
   for (let idx = 0; idx <= inner.length; idx++) {
     if (idx === inner.length || (inner[idx].type === "punct" && inner[idx].value === ",")) {
       const part = inner.slice(start, idx);
       start = idx + 1;
       if (part.length === 0) continue;
+      count++;
       if (part[0].type !== "ident" || part[0].value !== "type") return false;
       // Handle edge case `import { type as x }` where `type` is the imported symbol name
       if (part.length >= 2 && part[1].type === "ident" && part[1].value === "as" && (part.length === 3 || part[2]?.value !== "as")) {
@@ -138,7 +238,7 @@ function areNamedImportsAllTypeOnly(clauseTokens) {
       }
     }
   }
-  return true;
+  return count > 0;
 }
 
 function extractDeps(filePath) {
@@ -151,18 +251,32 @@ function extractDeps(filePath) {
     const prev = i > 0 ? tokens[i - 1] : undefined;
     const isMemberProp = prev?.type === "punct" && prev.value === ".";
 
-    // Dynamic import("spec")
+    // Dynamic import("spec") / import(`spec`) / import("spec", { with: ... })
     if (!isMemberProp && t.type === "ident" && t.value === "import" && tokens[i + 1]?.value === "(") {
-      if (tokens[i + 2]?.type === "string" && tokens[i + 3]?.value === ")") {
-        deps.push({ spec: tokens[i + 2].value, typeOnly: false });
+      const arg = tokens[i + 2];
+      const after = tokens[i + 3];
+      if (
+        arg &&
+        (arg.type === "string" || (arg.type === "template" && !arg.hasExpr)) &&
+        after?.type === "punct" &&
+        (after.value === ")" || after.value === ",")
+      ) {
+        deps.push({ spec: arg.value, typeOnly: false });
       }
       continue;
     }
 
-    // require("spec")
+    // require("spec") / require(`spec`)
     if (!isMemberProp && t.type === "ident" && t.value === "require" && tokens[i + 1]?.value === "(") {
-      if (tokens[i + 2]?.type === "string" && tokens[i + 3]?.value === ")") {
-        deps.push({ spec: tokens[i + 2].value, typeOnly: false });
+      const arg = tokens[i + 2];
+      const after = tokens[i + 3];
+      if (
+        arg &&
+        (arg.type === "string" || (arg.type === "template" && !arg.hasExpr)) &&
+        after?.type === "punct" &&
+        (after.value === ")" || after.value === ",")
+      ) {
+        deps.push({ spec: arg.value, typeOnly: false });
       }
       continue;
     }
@@ -170,8 +284,9 @@ function extractDeps(filePath) {
     // Statement-level import / export
     const atStmtStart =
       !prev ||
+      t.precededByNewline ||
       (prev.type === "punct" && (prev.value === ";" || prev.value === "{" || prev.value === "}"));
-    if (!atStmtStart || t.type !== "ident") continue;
+    if (!atStmtStart || isMemberProp || t.type !== "ident") continue;
 
     if (t.value === "import") {
       const next = tokens[i + 1];
@@ -180,6 +295,7 @@ function extractDeps(filePath) {
         deps.push({ spec: next.value, typeOnly: false });
         continue;
       }
+      if (next.type !== "ident" && next.value !== "*" && next.value !== "{") continue;
       let j = i + 1;
       let typePrefix = false;
       if (tokens[j]?.type === "ident" && tokens[j].value === "type") {

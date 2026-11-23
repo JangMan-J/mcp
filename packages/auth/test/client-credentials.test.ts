@@ -521,4 +521,28 @@ describe('authServerMetadataUrl and tokenEndpoint overrides', () => {
     });
     expect((await devAuth.headerFor('http://localhost:8080/mcp'))?.authorization).toBe('Bearer tok-dev');
   });
+
+  it('rejects query or fragment in expectedIssuer in constructor consistently with metadata discovery', () => {
+    expect(() => new ClientCredentialsAuth({
+      resource: RES,
+      clientId: 'c',
+      secret: 'pw',
+      tokenEndpoint: 'https://as.test/token',
+      expectedIssuer: 'https://as.test/issuer?foo=bar',
+    })).toThrow('as-issuer-invalid');
+    expect(() => new ClientCredentialsAuth({
+      resource: RES,
+      clientId: 'c',
+      secret: 'pw',
+      tokenEndpoint: 'https://as.test/token',
+      expectedIssuer: 'https://as.test/issuer?',
+    })).toThrow('as-issuer-invalid');
+    expect(() => new ClientCredentialsAuth({
+      resource: RES,
+      clientId: 'c',
+      secret: 'pw',
+      tokenEndpoint: 'https://as.test/token',
+      expectedIssuer: 'https://as.test/issuer#frag',
+    })).toThrow('invalid-url');
+  });
 });

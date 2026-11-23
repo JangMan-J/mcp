@@ -179,6 +179,12 @@ function secureNoHash(input: unknown, dev: boolean): URL {
   return url;
 }
 
+function validateIssuerUrl(input: string, dev: boolean): URL {
+  const url = secureNoHash(input, dev);
+  if (url.search || /[?#]/u.test(input)) fail('as-issuer-invalid');
+  return url;
+}
+
 async function signAssertion(
   signer: AssertionSigner,
   claims: { readonly clientId: string; readonly audience: string; readonly nowMs: number; readonly ttlSeconds: number; readonly jti: string },
@@ -212,7 +218,7 @@ export class ClientCredentialsAuth implements AuthProvider {
     this.resource = canonicalResource(config.resource!);
     this.fetcher = config.fetch ?? new SafeFetch({ allowInsecureDev: this.dev });
     this.pinned = config.expectedIssuer;
-    if (this.pinned !== undefined) secureNoHash(this.pinned, this.dev);
+    if (this.pinned !== undefined) validateIssuerUrl(this.pinned, this.dev);
     if (config.authServerMetadataUrl !== undefined) secureNoHash(config.authServerMetadataUrl, this.dev);
     if (config.tokenEndpoint !== undefined) secureNoHash(config.tokenEndpoint, this.dev);
 
@@ -305,8 +311,7 @@ export class ClientCredentialsAuth implements AuthProvider {
       if (!doc) return fail('as-metadata-missing');
       const rawIssuer = doc['issuer'];
       if (typeof rawIssuer !== 'string') return fail('as-issuer-invalid');
-      const issuerUrl = secureNoHash(rawIssuer, this.dev);
-      if (issuerUrl.search || /[?#]/u.test(rawIssuer)) fail('as-issuer-invalid');
+      validateIssuerUrl(rawIssuer, this.dev);
       if (this.pinned !== undefined && rawIssuer !== this.pinned) fail('as-issuer-mismatch');
       this.pinned = rawIssuer;
       const tokenEndpoint = secureNoHash(this.config.tokenEndpoint ?? doc['token_endpoint'], this.dev).href;
@@ -339,8 +344,7 @@ export class ClientCredentialsAuth implements AuthProvider {
   }
 
   private async metadata(issuer: string, signal: AbortSignal): Promise<AsMetadata> {
-    const url = secureNoHash(issuer, this.dev);
-    if (url.search || /[?#]/u.test(issuer)) fail('as-issuer-invalid');
+    const url = validateIssuerUrl(issuer, this.dev);
     const path = url.pathname === '/' ? '' : url.pathname.replace(/\/$/u, '');
     const urls = [`${url.origin}/.well-known/oauth-authorization-server${path}`, `${url.origin}/.well-known/openid-configuration${path}`];
     if (path) urls.push(`${url.origin}${path}/.well-known/openid-configuration`);
