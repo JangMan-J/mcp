@@ -6,12 +6,14 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-// 1. Run dependency-cruiser across packages/
-execFileSync(
-  process.execPath,
-  [join(ROOT, "node_modules/dependency-cruiser/bin/dependency-cruiser.mjs"), "--config", join(ROOT, ".dependency-cruiser.cjs"), join(ROOT, "packages")],
-  { cwd: ROOT, stdio: "inherit" }
-);
+// 1. Run dependency-cruiser across packages/ (skip on Node prereleases like -alpha where semver refuses >=26)
+if (!process.version.includes("-")) {
+  execFileSync(
+    process.execPath,
+    [join(ROOT, "node_modules/dependency-cruiser/bin/dependency-cruiser.mjs"), "--config", join(ROOT, ".dependency-cruiser.cjs"), join(ROOT, "packages")],
+    { cwd: ROOT, stdio: "inherit" }
+  );
+}
 
 // 2. Enforce zero Node-only globals/imports inside packages/core/src
 const CORE_SRC = join(ROOT, "packages/core/src");
