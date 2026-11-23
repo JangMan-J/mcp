@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  floors:
+    runs-on: ubuntu-latest
+    outputs:
+      node: ${{ steps.read.outputs.node }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: read
+        run: |
+          node -e '
+            const pkg = require("./package.json");
+            const m = /^>=\s*(\d+\.\d+\.\d+)$/.exec(pkg.engines?.node ?? "");
+            if (!m) { console.error("engines.node must be \">=X.Y.Z\" in package.json, got " + JSON.stringify(pkg.engines?.node)); process.exit(1); }
+            console.log("node=" + m[1]);
+          ' >> "$GITHUB_OUTPUT"
+
+  check:
+    needs: floors
+    name: Node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["${{ needs.floors.outputs.node }}", "lts/*", "current"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - name: Check the package contents
+        run: npm pack --dry-run
+      - name: Install the packed tarball and import all subpaths
+        run: npm run smoke:pack

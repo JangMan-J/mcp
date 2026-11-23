@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { dirname, join, posix, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -80,4 +80,45 @@ for (const dirName of [...present.values()].sort()) {
     runTsc(["-b", ts]);
   }
 }
+
+// Assemble unified dist/ at repo root for @jangmanj/mcp-client.
+const distRoot = join(root, "dist");
+rmSync(distRoot, { recursive: true, force: true });
+mkdirSync(distRoot, { recursive: true });
+
+for (const dirName of [...present.values()].sort()) {
+  const srcDist = join(packagesDir, dirName, "dist");
+  if (!existsSync(srcDist)) continue;
+  cpSync(srcDist, join(distRoot, dirName), { recursive: true });
+}
+
+function rewriteDistImports(dir) {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      rewriteDistImports(full);
+      continue;
+    }
+    if (!entry.name.endsWith(".js") && !entry.name.endsWith(".d.ts")) continue;
+    const text = readFileSync(full, "utf8");
+    const replaced = text.replace(
+      /(["'])@mcp-client\/([a-z0-9-]+)\1/g,
+      (match, quote, short) => {
+        const targetDir = present.get(short);
+        if (!targetDir) return match;
+        const fromDir = dirname(full).split("\\").join("/");
+        const targetFile = join(distRoot, targetDir, "index.js").split("\\").join("/");
+        let rel = posix.relative(fromDir, targetFile);
+        if (!rel.startsWith(".")) rel = `./${rel}`;
+        return `${quote}${rel}${quote}`;
+      }
+    );
+    if (replaced !== text) writeFileSync(full, replaced);
+  }
+}
+
+rewriteDistImports(distRoot);
+writeFileSync(join(distRoot, "index.js"), 'export * from "./core/index.js";\n');
+writeFileSync(join(distRoot, "index.d.ts"), 'export * from "./core/index.js";\n');
+
 console.log("build-workspaces: ok");
