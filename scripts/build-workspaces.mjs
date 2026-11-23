@@ -59,6 +59,12 @@ for (const entry of readdirSync(linkDir)) {
   if (rel.startsWith("..")) throw new Error(`build-workspaces: @mcp-client/${entry} resolves outside packages/: ${real}`);
 }
 
+// Clean workspace dist/ and incremental tsbuildinfo before tsc -b so removed/renamed files never linger.
+for (const dirName of [...present.values()].sort()) {
+  rmSync(join(packagesDir, dirName, "dist"), { recursive: true, force: true });
+  rmSync(join(packagesDir, dirName, "tsconfig.tsbuildinfo"), { force: true });
+}
+
 // Run tsc -b
 const tscBin = join(root, "node_modules", "typescript", "bin", "tsc");
 const tscArgs = existsSync(tscBin) ? [tscBin] : null;
@@ -81,7 +87,7 @@ for (const dirName of [...present.values()].sort()) {
   }
 }
 
-// Assemble unified dist/ at repo root for @jangmanj/mcp-client.
+// Assemble unified dist/ at repo root for @jangmanj/mcp-client (omitting *.map and sourceMappingURL hints).
 const distRoot = join(root, "dist");
 rmSync(distRoot, { recursive: true, force: true });
 mkdirSync(distRoot, { recursive: true });
@@ -89,7 +95,10 @@ mkdirSync(distRoot, { recursive: true });
 for (const dirName of [...present.values()].sort()) {
   const srcDist = join(packagesDir, dirName, "dist");
   if (!existsSync(srcDist)) continue;
-  cpSync(srcDist, join(distRoot, dirName), { recursive: true });
+  cpSync(srcDist, join(distRoot, dirName), {
+    recursive: true,
+    filter: (src) => !src.endsWith(".map"),
+  });
 }
 
 function rewriteDistImports(dir) {
@@ -101,7 +110,7 @@ function rewriteDistImports(dir) {
     }
     if (!entry.name.endsWith(".js") && !entry.name.endsWith(".d.ts")) continue;
     const text = readFileSync(full, "utf8");
-    const replaced = text.replace(
+    let replaced = text.replace(
       /(["'])@mcp-client\/([a-z0-9-]+)\1/g,
       (match, quote, short) => {
         const targetDir = present.get(short);
@@ -113,12 +122,30 @@ function rewriteDistImports(dir) {
         return `${quote}${rel}${quote}`;
       }
     );
+    replaced = replaced.replace(/\r?\n?\/\/# sourceMappingURL=[^\r\n]*\r?\n?$/g, (m) => (m.startsWith("\n") || m.startsWith("\r") ? "\n" : ""));
     if (replaced !== text) writeFileSync(full, replaced);
+  }
+}
+
+function assertNoUnrewrittenWorkspaceSpecifiers(dir) {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      assertNoUnrewrittenWorkspaceSpecifiers(full);
+      continue;
+    }
+    if (!entry.name.endsWith(".js") && !entry.name.endsWith(".d.ts")) continue;
+    const text = readFileSync(full, "utf8");
+    const m = text.match(/(["'])@mcp-client\/[a-z0-9-]+\1/);
+    if (m) {
+      throw new Error(`build-workspaces: unrewritten workspace specifier ${m[0]} in ${full}`);
+    }
   }
 }
 
 rewriteDistImports(distRoot);
 writeFileSync(join(distRoot, "index.js"), 'export * from "./core/index.js";\n');
 writeFileSync(join(distRoot, "index.d.ts"), 'export * from "./core/index.js";\n');
+assertNoUnrewrittenWorkspaceSpecifiers(distRoot);
 
 console.log("build-workspaces: ok");

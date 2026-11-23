@@ -44,7 +44,7 @@ describe("architecture invariants (Plan 4.6)", () => {
     const work: ((o: Outcome<unknown>) => void)[] = [];
     const req: RequestFn = () => new Promise((r) => work.push(r));
     const run = (auth: string) => c.run({ serverRef: "s", authContextId: auth }, "tools/list", {}, { signal }, req);
-    const p = [run("alice"), run("alice"), run("bob")];
+    const p = [run("alice"), run("alice"), run("bob")] as const;
     await Promise.resolve();
     await Promise.resolve();
     // alice x2 coalesce into one upstream call; bob gets his own

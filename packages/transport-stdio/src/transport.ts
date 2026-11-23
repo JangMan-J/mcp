@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn } from "node:child_process";
 import { clearTimeout, setTimeout } from "node:timers";
 import {
   DEFAULT_MAX_DIAGNOSTICS,
@@ -25,7 +25,7 @@ import {
   DEFAULT_STDERR_MAX_LINE_BYTES,
   StderrRingBuffer,
 } from "./stderr-ring.js";
-import { WriteQueue, type WriteState } from "./write-queue.js";
+import { WriteQueue, type StdioWritable, type WriteState } from "./write-queue.js";
 
 export const META_PROGRESS_TOKEN = "io.modelcontextprotocol/progressToken" as const;
 export const META_SUBSCRIPTION_ID = "io.modelcontextprotocol/subscriptionId" as const;
@@ -49,6 +49,44 @@ export interface StdioRestartPolicy {
   readonly backoffMs?: number;
 }
 
+export interface StdioSpawnOptions {
+  readonly stdio: ["pipe", "pipe", "pipe"];
+  readonly shell: false;
+  readonly windowsHide: true;
+  readonly cwd?: string;
+  readonly env: Record<string, string>;
+}
+
+export interface StdioReadableStream {
+  on(event: "data", listener: (chunk: Uint8Array) => void): unknown;
+  on(event: "error", listener: (err: Error) => void): unknown;
+  once(event: "end", listener: () => void): unknown;
+}
+
+export interface StdioWritableStream extends StdioWritable {
+  end(): unknown;
+  on(event: "error", listener: (err: Error) => void): unknown;
+}
+
+export interface StdioChildProcess {
+  readonly pid?: number | undefined;
+  readonly exitCode: number | null;
+  readonly signalCode: string | null;
+  readonly stdin: StdioWritableStream | null;
+  readonly stdout: StdioReadableStream | null;
+  readonly stderr: StdioReadableStream | null;
+  once(event: "spawn", listener: () => void): unknown;
+  once(event: "close", listener: (code: number | null, signal: string | null) => void): unknown;
+  on(event: "error", listener: (err: Error & { code?: string }) => void): unknown;
+  kill(signal?: "SIGTERM" | "SIGKILL"): boolean;
+}
+
+export type StdioSpawnFn = (
+  command: string,
+  args: readonly string[],
+  options: StdioSpawnOptions,
+) => StdioChildProcess;
+
 export interface StdioTransportOptions {
   readonly command: string;
   readonly args?: readonly string[];
@@ -68,7 +106,7 @@ export interface StdioTransportOptions {
   readonly clock?: Clock;
   readonly maxDiagnostics?: number;
   /** Optional spawn override for unit testing launch parameters (STDIO-LAUNCH-1). */
-  readonly spawnFn?: typeof spawn;
+  readonly spawnFn?: StdioSpawnFn;
 }
 
 interface PendingRequest {
@@ -85,7 +123,7 @@ interface PendingRequest {
 }
 
 interface ChildRun {
-  readonly child: ChildProcess;
+  readonly child: StdioChildProcess;
   readonly closed: Promise<void>;
   disconnected: boolean;
   eofMidLine?: boolean;
@@ -133,7 +171,7 @@ export class StdioTransport implements Transport {
   private readonly restartWindowMs: number;
   private readonly restartBackoffMs: number;
   private readonly clock: Clock;
-  private readonly spawnFn: typeof spawn;
+  private readonly spawnFn: StdioSpawnFn;
 
   private readonly diagChannel: DiagnosticChannel;
   private readonly stderrRing: StderrRingBuffer;
@@ -416,7 +454,7 @@ export class StdioTransport implements Transport {
     this.noiseBytes = 0;
     this.splitter.reset();
 
-    let child: ChildProcess;
+    let child: StdioChildProcess;
     try {
       // STDIO-LAUNCH-1: shell: false, windowsHide: true, stdio: pipe
       child = this.spawnFn(this.command, [...this.args], {
@@ -474,7 +512,7 @@ export class StdioTransport implements Transport {
     child.stderr?.on("data", (chunk: Uint8Array) => this.stderrRing.push(chunk));
     child.stderr?.once("end", () => this.stderrRing.flush());
 
-    child.on("error", (err: NodeJS.ErrnoException) => {
+    child.on("error", (err: Error & { code?: string }) => {
       if (this._state !== "spawning") {
         this.emitDiag("lifecycle", `child process error: ${err.message}`);
         return;
@@ -742,7 +780,7 @@ export class StdioTransport implements Transport {
     this.retireChild(run);
   }
 
-  private handleUnexpectedClose(code: number | null, signal: NodeJS.Signals | null, eofMidLine: boolean): void {
+  private handleUnexpectedClose(code: number | null, signal: string | null, eofMidLine: boolean): void {
     if (this._state === "closing" || this._state === "closed" || this._state === "failed") {
       return;
     }

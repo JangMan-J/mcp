@@ -41,7 +41,7 @@ it('redeems a real single-use PKCE code via the loopback callback and test AS', 
 });
 
 it('[AUTH-DCR-1] forwards an opt-in JSON content-type, defaults to urlencoded, and rejects other types', async () => {
-  const seen: Array<{ contentType?: string; body: string }> = [];
+  const seen: Array<{ contentType?: string | undefined; body: string }> = [];
   const server = createServer((req, res) => {
     let body = '';
     req.on('data', (chunk: Buffer) => { body += chunk; });
@@ -65,7 +65,7 @@ it('[AUTH-DCR-1] forwards an opt-in JSON content-type, defaults to urlencoded, a
 });
 
 it('revalidates redirects and sends no ambient authentication, with a body cap and deadline', async () => {
-  const seen: Array<{ host?: string; auth?: string; cookie?: string; path?: string }> = [];
+  const seen: Array<{ host?: string | undefined; auth?: string | undefined; cookie?: string | undefined; path?: string | undefined }> = [];
   const server = createServer((req, res) => {
     seen.push({ host: req.headers.host, auth: req.headers.authorization, cookie: req.headers.cookie, path: req.url });
     if (req.url === '/redirect') return res.writeHead(302, { Location: `http://localhost:${port}/hidden` }).end();

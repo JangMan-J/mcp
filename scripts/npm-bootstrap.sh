@@ -105,11 +105,11 @@ fi
 name=$(node -p 'require("./package.json").name')
 version=$(node -p 'require("./package.json").version')
 repo_url=$(node -p 'const r = require("./package.json").repository; typeof r === "string" ? r : (r && r.url) || ""')
-[ "$name" != "pi-package-template" ] || die "the package is still named pi-package-template: run npm run init-package"
+[ "$name" != "pi-package-template" ] || die "the package is still named pi-package-template: update package.json \"name\""
 [[ "$version" != *-* ]] || die "version $version is a prerelease: set the first release version in package.json"
 origin=$(git remote get-url origin)
 repo=$(slug "$origin")
-[ "$(slug "$repo_url")" = "$repo" ] || die "package.json repository ($repo_url) does not match origin ($origin): run npm run init-package"
+[ "$(slug "$repo_url")" = "$repo" ] || die "package.json repository ($repo_url) does not match origin ($origin): update package.json \"repository\""
 [ -f ".github/workflows/$WORKFLOW" ] || die "missing .github/workflows/$WORKFLOW"
 environment=$(sed -nE 's/^[[:space:]]*environment:[[:space:]]*([A-Za-z0-9_.-]+)[[:space:]]*$/\1/p' ".github/workflows/$WORKFLOW" | head -1)
 

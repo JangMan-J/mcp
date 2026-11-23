@@ -22,6 +22,11 @@ npm install @jangmanj/mcp-client
 - `@jangmanj/mcp-client/ext-server-cards`
 - `@jangmanj/mcp-client/ext-skills`
 
+## TypeScript
+
+- Use `"moduleResolution": "NodeNext"` (or `"Bundler"`) in your consumer `tsconfig.json` so subpath exports resolve cleanly.
+- If your consumer `tsconfig.json` overrides `"lib"` without `"DOM"` (for example `"lib": ["ES2023"]`), install `@types/node` and include `"types": ["node"]` so standard Web/Node globals (`AbortSignal`, `URL`, `Response`, `CryptoKey`) are typed.
+
 ## Development
 
 ```sh

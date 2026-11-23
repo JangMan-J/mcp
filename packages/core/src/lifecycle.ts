@@ -14,8 +14,8 @@ import type { DiscoverResult } from "./schema/index.js";
 
 /** Library identity sent as io.modelcontextprotocol/clientInfo when the host supplies none (WIRE-META-3). */
 export const LIBRARY_CLIENT_INFO: { readonly name: string; readonly version: string } = Object.freeze({
-  name: "@mcp-client/core",
-  version: "0.1.0",
+  name: "@jangmanj/mcp-client",
+  version: "0.1.1",
 });
 
 /** Deprecated logging key; never sent (WIRE-LOG-1). */

@@ -29,9 +29,9 @@ const PRM = '/.well-known/oauth-protected-resource/mcp';
 const key = readFileSync(new URL('./fixtures/loopback-test-key.pem', import.meta.url));
 const cert = readFileSync(new URL('./fixtures/loopback-test-cert.pem', import.meta.url), 'utf8');
 
-async function withHttps(run: (port: number, seen: { host?: string; sni: unknown; path?: string }[]) => Promise<void>) {
+async function withHttps(run: (port: number, seen: { host?: string | undefined; sni: unknown; path?: string | undefined }[]) => Promise<void>) {
   lookup.mockClear();
-  const seen: { host?: string; sni: unknown; path?: string }[] = [];
+  const seen: { host?: string | undefined; sni: unknown; path?: string | undefined }[] = [];
   const server = createServer({ key, cert }, (req, res) => {
     seen.push({ host: req.headers.host, sni: (req.socket as TLSSocket & { servername?: string }).servername, path: req.url });
     res.writeHead(200, { 'Content-Type': 'application/json' }).end('{"ok":true}');
@@ -82,7 +82,7 @@ it('[AUTH-PRM-4] aborts PRM discovery for an untrusted or hostname-mismatched ce
 });
 
 it('[AUTH-SSRF-4] [AUTH-SSRF-5] [AUTH-SSRF-6] revalidates redirects and sends no ambient authentication, with a body cap and deadline', async () => {
-  const seen: Array<{ host?: string; auth?: string; cookie?: string; path?: string }> = [];
+  const seen: Array<{ host?: string | undefined; auth?: string | undefined; cookie?: string | undefined; path?: string | undefined }> = [];
   const server = createHttpServer((req, res) => {
     seen.push({ host: req.headers.host, auth: req.headers.authorization, cookie: req.headers.cookie, path: req.url });
     if (req.url === '/redirect') return res.writeHead(302, { Location: `http://localhost:${port}/hidden` }).end();

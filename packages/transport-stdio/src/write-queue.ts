@@ -1,4 +1,14 @@
-import type { Writable } from "node:stream";
+export interface StdioWritable {
+  readonly destroyed: boolean;
+  readonly writableEnded: boolean;
+  write(chunk: string, encoding: "utf8", cb: (err?: Error | null) => void): boolean;
+  once(event: "drain", listener: () => void): this;
+  once(event: "error", listener: (err: Error) => void): this;
+  once(event: "close", listener: () => void): this;
+  off(event: "drain", listener: () => void): this;
+  off(event: "error", listener: (err: Error) => void): this;
+  off(event: "close", listener: () => void): this;
+}
 
 export type WriteState = "queued" | "writing" | "sent";
 
@@ -18,11 +28,11 @@ export interface QueuedWrite {
 export class WriteQueue {
   private readonly priorityQueue: QueuedWrite[] = [];
   private readonly normalQueue: QueuedWrite[] = [];
-  private stdin: Writable | undefined;
+  private stdin: StdioWritable | undefined;
   private active: QueuedWrite | undefined;
   private finishActive: ((err: Error) => void) | undefined;
 
-  attach(stdin: Writable): void {
+  attach(stdin: StdioWritable): void {
     this.stdin = stdin;
     this.pump();
   }

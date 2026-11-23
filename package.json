@@ -1,6 +1,6 @@
 {
   "name": "@jangmanj/mcp-client",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "MCP 2026-07-28 client library: core, transports, auth, ops, MRTR/cache, OTEL telemetry, and extensions.",
   "license": "MIT",
   "author": "JangMan-J",
@@ -13,6 +13,7 @@
     "url": "https://github.com/JangMan-J/mcp-client/issues"
   },
   "type": "module",
+  "sideEffects": false,
   "workspaces": [
     "packages/*"
   ],
@@ -69,14 +70,15 @@
   },
   "scripts": {
     "build": "node scripts/build-workspaces.mjs",
+    "typecheck": "tsc -b tsconfig.json && tsc --noEmit -p tsconfig.test.json",
     "test": "vitest run",
     "gen:schema": "node scripts/gen-schema-types.mjs",
     "check:deps": "node scripts/check-deps.mjs",
     "check:forbidden": "node scripts/check-forbidden.mjs",
-    "check": "npm run build && npm run check:deps && npm run check:forbidden && npm test",
+    "check": "npm run build && npm run typecheck && npm run check:deps && npm run check:forbidden && npm test",
     "smoke:pack": "node scripts/smoke-pack.mjs",
     "bootstrap:npm": "bash scripts/npm-bootstrap.sh",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run check"
   },
   "dependencies": {
     "ajv": "8.20.0"

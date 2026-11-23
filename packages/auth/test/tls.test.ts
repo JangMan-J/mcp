@@ -27,9 +27,9 @@ const PRM = '/.well-known/oauth-protected-resource/mcp';
 const key = readFileSync(new URL('./fixtures/loopback-test-key.pem', import.meta.url));
 const cert = readFileSync(new URL('./fixtures/loopback-test-cert.pem', import.meta.url), 'utf8');
 
-async function withHttps(run: (port: number, seen: { host?: string; sni: unknown; path?: string }[]) => Promise<void>) {
+async function withHttps(run: (port: number, seen: { host?: string | undefined; sni: unknown; path?: string | undefined }[]) => Promise<void>) {
   lookup.mockClear();
-  const seen: { host?: string; sni: unknown; path?: string }[] = [];
+  const seen: { host?: string | undefined; sni: unknown; path?: string | undefined }[] = [];
   const server = createServer({ key, cert }, (req, res) => {
     seen.push({ host: req.headers.host, sni: (req.socket as TLSSocket & { servername?: string }).servername, path: req.url });
     res.writeHead(200, { 'Content-Type': 'application/json' }).end('{"ok":true}');

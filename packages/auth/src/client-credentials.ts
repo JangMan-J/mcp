@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, createPrivateKey, sign as cryptoSign, type KeyObject } from 'node:crypto';
 import type { AuthChallenge, AuthHeaderResult, AuthProvider, AuthRequestContext, Clock, CredentialStore, FetchPort, RandomPort } from '@mcp-client/core';
 import { getDocument, object, strings, type JsonObject } from './discovery.js';
 import { AuthError, basicAuthorization, cancelled, canonicalResource, fail, parseBearerChallenges, secureUrl, withAbort } from './protocol.js';
@@ -10,21 +10,119 @@ const DEFAULT_TTL_S = 300;
 const ASSERTION_TTL_S = 60;
 const textEncoder = new TextEncoder();
 
+export type AssertionSigningAlgorithm = 'RS256' | 'RS384' | 'RS512' | 'ES256' | 'ES384' | 'ES512' | 'EdDSA';
+
+const ALLOWED_SIGNING_ALGS = new Set<AssertionSigningAlgorithm>(['RS256', 'RS384', 'RS512', 'ES256', 'ES384', 'ES512', 'EdDSA']);
+
+const RSA_HASH_FOR_ALG: Record<'RS256' | 'RS384' | 'RS512', { readonly web: string; readonly node: string }> = {
+  RS256: { web: 'SHA-256', node: 'sha256' },
+  RS384: { web: 'SHA-384', node: 'sha384' },
+  RS512: { web: 'SHA-512', node: 'sha512' },
+};
+
+const EC_SPEC_FOR_ALG: Record<'ES256' | 'ES384' | 'ES512', { readonly curve: string; readonly web: string; readonly node: string }> = {
+  ES256: { curve: 'P-256', web: 'SHA-256', node: 'sha256' },
+  ES384: { curve: 'P-384', web: 'SHA-384', node: 'sha384' },
+  ES512: { curve: 'P-521', web: 'SHA-512', node: 'sha512' },
+};
+
 export interface AssertionSigner {
   readonly alg: string;
   readonly kid?: string;
   sign(signingInput: Uint8Array): Promise<Uint8Array> | Uint8Array;
 }
 
-/** Sign with a non-extractable WebCrypto private key. ES256 output is the raw r||s form JWS requires. */
-export function createWebCryptoAssertionSigner(alg: 'ES256' | 'RS256', privateKey: CryptoKey, kid?: string): AssertionSigner {
+/** Sign with a non-extractable WebCrypto private key. ECDSA output is the raw r||s form JWS requires. */
+export function createWebCryptoAssertionSigner(alg: AssertionSigningAlgorithm, privateKey: CryptoKey, kid?: string): AssertionSigner {
   if (privateKey.type !== 'private') throw new Error('a private CryptoKey is required');
-  const params = alg === 'ES256' ? { name: 'ECDSA', hash: 'SHA-256' } : { name: 'RSASSA-PKCS1-v1_5' };
+  if (!ALLOWED_SIGNING_ALGS.has(alg)) throw new AuthError('auth-unavailable', 'unsupported-signing-alg');
+
+  const keyAlg = privateKey.algorithm as { readonly name: string; readonly hash?: { readonly name?: string }; readonly namedCurve?: string };
+  let params: AlgorithmIdentifier | RsaPssParams | EcdsaParams;
+  if (alg === 'RS256' || alg === 'RS384' || alg === 'RS512') {
+    const spec = RSA_HASH_FOR_ALG[alg];
+    if (keyAlg.name !== 'RSASSA-PKCS1-v1_5' || keyAlg.hash?.name !== spec.web) {
+      throw new AuthError('auth-unavailable', 'signing-alg-mismatch');
+    }
+    params = { name: 'RSASSA-PKCS1-v1_5' };
+  } else if (alg === 'ES256' || alg === 'ES384' || alg === 'ES512') {
+    const spec = EC_SPEC_FOR_ALG[alg];
+    if (keyAlg.name !== 'ECDSA' || keyAlg.namedCurve !== spec.curve) {
+      throw new AuthError('auth-unavailable', 'signing-alg-mismatch');
+    }
+    params = { name: 'ECDSA', hash: spec.web };
+  } else {
+    if (keyAlg.name !== 'Ed25519' && keyAlg.name !== 'Ed448') {
+      throw new AuthError('auth-unavailable', 'signing-alg-mismatch');
+    }
+    params = { name: keyAlg.name };
+  }
+
   return {
     alg,
     ...(kid !== undefined ? { kid } : {}),
     async sign(input) {
       return new Uint8Array(await crypto.subtle.sign(params, privateKey, input as Uint8Array<ArrayBuffer>));
+    },
+  };
+}
+
+/** Sign with a PEM-encoded private key (PKCS#8, PKCS#1 RSA, or SEC1 EC) via Node's `node:crypto`. */
+export function createPemAssertionSigner(
+  privateKeyPem: string,
+  options?: { readonly alg?: AssertionSigningAlgorithm; readonly kid?: string },
+): AssertionSigner {
+  if (options?.alg !== undefined && !ALLOWED_SIGNING_ALGS.has(options.alg)) {
+    throw new AuthError('auth-unavailable', 'unsupported-signing-alg');
+  }
+  if (typeof privateKeyPem !== 'string' || privateKeyPem.trim() === '') {
+    throw new AuthError('auth-unavailable', 'invalid-private-key');
+  }
+
+  let key: KeyObject;
+  try {
+    key = createPrivateKey(privateKeyPem);
+  } catch {
+    // Redact OpenSSL diagnostics and PEM bytes from errors.
+    throw new AuthError('auth-unavailable', 'invalid-private-key');
+  }
+
+  let resolvedAlg: AssertionSigningAlgorithm;
+  const keyType = key.asymmetricKeyType;
+  if (keyType === 'rsa') {
+    resolvedAlg = options?.alg ?? 'RS256';
+    if (resolvedAlg !== 'RS256' && resolvedAlg !== 'RS384' && resolvedAlg !== 'RS512') {
+      throw new AuthError('auth-unavailable', 'signing-alg-mismatch');
+    }
+  } else if (keyType === 'ec') {
+    const curve = key.asymmetricKeyDetails?.namedCurve;
+    const inferred: AssertionSigningAlgorithm | undefined =
+      curve === 'prime256v1' ? 'ES256' : curve === 'secp384r1' ? 'ES384' : curve === 'secp521r1' ? 'ES512' : undefined;
+    if (!inferred) throw new AuthError('auth-unavailable', 'invalid-private-key');
+    if (options?.alg !== undefined && options.alg !== inferred) {
+      throw new AuthError('auth-unavailable', 'signing-alg-mismatch');
+    }
+    resolvedAlg = inferred;
+  } else if (keyType === 'ed25519' || keyType === 'ed448') {
+    if (options?.alg !== undefined && options.alg !== 'EdDSA') {
+      throw new AuthError('auth-unavailable', 'signing-alg-mismatch');
+    }
+    resolvedAlg = 'EdDSA';
+  } else {
+    throw new AuthError('auth-unavailable', 'invalid-private-key');
+  }
+
+  return {
+    alg: resolvedAlg,
+    ...(options?.kid !== undefined ? { kid: options.kid } : {}),
+    sign(input) {
+      if (resolvedAlg === 'EdDSA') {
+        return new Uint8Array(cryptoSign(null, input, key));
+      }
+      if (resolvedAlg === 'ES256' || resolvedAlg === 'ES384' || resolvedAlg === 'ES512') {
+        return new Uint8Array(cryptoSign(EC_SPEC_FOR_ALG[resolvedAlg].node, input, { key, dsaEncoding: 'ieee-p1363' }));
+      }
+      return new Uint8Array(cryptoSign(RSA_HASH_FOR_ALG[resolvedAlg].node, input, key));
     },
   };
 }
@@ -42,7 +140,12 @@ export interface ClientCredentialsConfig {
   readonly credentialKey?: string;
   readonly credentials?: CredentialStore;
   readonly signer?: AssertionSigner;
+  readonly privateKeyPem?: string;
+  readonly alg?: AssertionSigningAlgorithm;
+  readonly kid?: string;
   readonly expectedIssuer?: string;
+  readonly authServerMetadataUrl?: string;
+  readonly tokenEndpoint?: string;
   readonly scopes?: readonly string[];
   readonly fetch?: FetchPort;
   readonly clock?: Pick<Clock, 'now'>;
@@ -52,8 +155,9 @@ export interface ClientCredentialsConfig {
 }
 
 export function isConfigured(c: ClientCredentialsConfig): boolean {
+  const hasPem = typeof c.privateKeyPem === 'string' && c.privateKeyPem.trim() !== '';
   const hasSecret = (typeof c.secret === 'string' && c.secret !== '') || (!!c.credentials && !!c.credentialKey);
-  return !!c.resource && !!c.clientId && (hasSecret || !!c.signer);
+  return !!c.resource && !!c.clientId && (hasSecret || !!c.signer || hasPem);
 }
 
 interface Token {
@@ -93,17 +197,37 @@ export class ClientCredentialsAuth implements AuthProvider {
   private readonly fetcher: FetchPort;
   private readonly resource: string;
   private readonly dev: boolean;
+  private readonly signer: AssertionSigner | undefined;
   private pinned: string | undefined;
   private token: (Token & { version: object }) | undefined;
   private inflight: Promise<Token & { version: object }> | undefined;
 
   constructor(private readonly config: ClientCredentialsConfig) {
     if (!isConfigured(config)) throw new AuthError('auth-unavailable', 'not-configured');
+    if (config.signer && config.privateKeyPem !== undefined) {
+      throw new AuthError('auth-unavailable', 'invalid-config');
+    }
     this.dev = config.allowInsecureDev === true;
+    secureNoHash(config.resource!, this.dev);
     this.resource = canonicalResource(config.resource!);
     this.fetcher = config.fetch ?? new SafeFetch({ allowInsecureDev: this.dev });
     this.pinned = config.expectedIssuer;
     if (this.pinned !== undefined) secureNoHash(this.pinned, this.dev);
+    if (config.authServerMetadataUrl !== undefined) secureNoHash(config.authServerMetadataUrl, this.dev);
+    if (config.tokenEndpoint !== undefined) secureNoHash(config.tokenEndpoint, this.dev);
+
+    if (config.privateKeyPem !== undefined) {
+      this.signer = createPemAssertionSigner(config.privateKeyPem, {
+        ...(config.alg !== undefined ? { alg: config.alg } : {}),
+        ...(config.kid !== undefined ? { kid: config.kid } : {}),
+      });
+    } else {
+      this.signer = config.signer;
+    }
+
+    if (config.tokenEndpoint !== undefined && config.authServerMetadataUrl === undefined && this.signer && this.pinned === undefined) {
+      throw new AuthError('auth-unavailable', 'expected-issuer-required');
+    }
   }
 
   contextId(): string {
@@ -163,8 +287,37 @@ export class ClientCredentialsAuth implements AuthProvider {
     }
   }
 
-  /** PRM then AS metadata. Never reads or calls a registration endpoint. */
+  /** PRM then AS metadata (or explicit endpoint/metadata overrides). Never reads or calls a registration endpoint. */
   private async discover(signal: AbortSignal): Promise<AsMetadata> {
+    if (this.config.tokenEndpoint !== undefined && this.config.authServerMetadataUrl === undefined) {
+      const endpoint = secureNoHash(this.config.tokenEndpoint, this.dev);
+      return {
+        issuer: this.pinned ?? endpoint.origin,
+        tokenEndpoint: endpoint.href,
+        methods: [],
+        algs: [],
+      };
+    }
+
+    if (this.config.authServerMetadataUrl !== undefined) {
+      const metaUrl = secureNoHash(this.config.authServerMetadataUrl, this.dev).href;
+      const doc = await getDocument(this.fetcher, metaUrl, signal);
+      if (!doc) return fail('as-metadata-missing');
+      const rawIssuer = doc['issuer'];
+      if (typeof rawIssuer !== 'string') return fail('as-issuer-invalid');
+      const issuerUrl = secureNoHash(rawIssuer, this.dev);
+      if (issuerUrl.search || /[?#]/u.test(rawIssuer)) fail('as-issuer-invalid');
+      if (this.pinned !== undefined && rawIssuer !== this.pinned) fail('as-issuer-mismatch');
+      this.pinned = rawIssuer;
+      const tokenEndpoint = secureNoHash(this.config.tokenEndpoint ?? doc['token_endpoint'], this.dev).href;
+      return {
+        issuer: rawIssuer,
+        tokenEndpoint,
+        methods: strings(doc['token_endpoint_auth_methods_supported']),
+        algs: strings(doc['token_endpoint_auth_signing_alg_values_supported']),
+      };
+    }
+
     const url = secureNoHash(this.resource, this.dev);
     const root = `${url.origin}/.well-known/oauth-protected-resource`;
     const candidates = [...new Set([`${root}${url.pathname === '/' ? '' : url.pathname}${url.search}`, root])];
@@ -216,7 +369,8 @@ export class ClientCredentialsAuth implements AuthProvider {
     const form = new URLSearchParams({ grant_type: 'client_credentials', resource: this.resource });
     if (this.config.scopes?.length) form.set('scope', this.config.scopes.join(' '));
     const headers: Record<string, string> = { 'content-type': 'application/x-www-form-urlencoded' };
-    const { signer, clientId } = this.config;
+    const { clientId } = this.config;
+    const signer = this.signer;
     if (signer) {
       if (as.methods.length && !as.methods.includes('private_key_jwt')) fail('auth-method-unsupported');
       if (as.algs.length && !as.algs.includes(signer.alg)) fail('signing-alg-unsupported');
