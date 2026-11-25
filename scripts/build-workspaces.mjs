@@ -87,7 +87,7 @@ for (const dirName of [...present.values()].sort()) {
   }
 }
 
-// Assemble unified dist/ at repo root for @jangmanj/mcp-client (omitting *.map and sourceMappingURL hints).
+// Assemble unified dist/ at repo root for @jangmanj/mcp (omitting *.map and sourceMappingURL hints).
 const distRoot = join(root, "dist");
 rmSync(distRoot, { recursive: true, force: true });
 mkdirSync(distRoot, { recursive: true });

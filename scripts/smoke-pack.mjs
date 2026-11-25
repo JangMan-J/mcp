@@ -20,22 +20,22 @@ try {
   execFileSync("npm", ["install", "--no-save", "--silent", tarball, "@types/node"], { cwd: tmp, stdio: "inherit" });
 
   const subpaths = [
-    "@jangmanj/mcp-client",
-    "@jangmanj/mcp-client/core",
-    "@jangmanj/mcp-client/client",
-    "@jangmanj/mcp-client/testing",
-    "@jangmanj/mcp-client/server-events",
-    "@jangmanj/mcp-client/server",
-    "@jangmanj/mcp-client/server-transport",
-    "@jangmanj/mcp-client/auth",
-    "@jangmanj/mcp-client/ops",
-    "@jangmanj/mcp-client/mrtr-cache",
-    "@jangmanj/mcp-client/telemetry-otel",
-    "@jangmanj/mcp-client/transport-http",
-    "@jangmanj/mcp-client/transport-stdio",
-    "@jangmanj/mcp-client/ext-events",
-    "@jangmanj/mcp-client/ext-server-cards",
-    "@jangmanj/mcp-client/ext-skills",
+    "@jangmanj/mcp",
+    "@jangmanj/mcp/core",
+    "@jangmanj/mcp/client",
+    "@jangmanj/mcp/testing",
+    "@jangmanj/mcp/server-events",
+    "@jangmanj/mcp/server",
+    "@jangmanj/mcp/server-transport",
+    "@jangmanj/mcp/auth",
+    "@jangmanj/mcp/ops",
+    "@jangmanj/mcp/mrtr-cache",
+    "@jangmanj/mcp/telemetry-otel",
+    "@jangmanj/mcp/transport-http",
+    "@jangmanj/mcp/transport-stdio",
+    "@jangmanj/mcp/ext-events",
+    "@jangmanj/mcp/ext-server-cards",
+    "@jangmanj/mcp/ext-skills",
   ];
 
   // 1. ESM dynamic import check across all 11 entrypoints

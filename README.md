@@ -1,11 +1,11 @@
-# @jangmanj/mcp-client
+# @jangmanj/mcp
 
 MCP 2026-07-28 client library: core protocol/lifecycle, stdio and HTTP transports, OAuth/client-credentials auth, ops (tools/prompts/resources/completion), MRTR/cache/tasks, OpenTelemetry, and extensions.
 
 ## Installation
 
 ```sh
-npm install @jangmanj/mcp-client
+npm install @jangmanj/mcp
 ```
 
 ## Quickstart
@@ -14,7 +14,7 @@ Push first: subscribe to events and react as they arrive. Pull (tools, resources
 there when you need it.
 
 ```ts
-import { connect } from "@jangmanj/mcp-client/client";
+import { connect } from "@jangmanj/mcp/client";
 
 const connection = await connect({
   stdio: { command: "npx", args: ["-y", "your-mcp-server"] },
@@ -59,7 +59,7 @@ match on `Outcome.kind`.
 HTTP servers use `http:` instead of `stdio:`:
 
 ```ts
-import { ConfiguredBearer } from "@jangmanj/mcp-client/auth";
+import { ConfiguredBearer } from "@jangmanj/mcp/auth";
 
 const connection = await connect({
   http: {
@@ -77,14 +77,14 @@ For interactive OAuth (discovery, PKCE, CIMD/DCR), construct `OAuthAuthorization
 
 ## Building a server
 
-`@jangmanj/mcp-client/server` covers the ordinary MCP 2026-07-28 request
-surface; `@jangmanj/mcp-client/server-events` covers push. Both are
+`@jangmanj/mcp/server` covers the ordinary MCP 2026-07-28 request
+surface; `@jangmanj/mcp/server-events` covers push. Both are
 transport-agnostic — your host owns JSON-RPC dispatch, error mapping, and
 listeners.
 
 ```ts
-import { McpServer } from "@jangmanj/mcp-client/server";
-import { EventBus, EventsServer, SubscriptionsServer, TaskCenter } from "@jangmanj/mcp-client/server-events";
+import { McpServer } from "@jangmanj/mcp/server";
+import { EventBus, EventsServer, SubscriptionsServer, TaskCenter } from "@jangmanj/mcp/server-events";
 
 const bus = new EventBus();
 const subscriptions = new SubscriptionsServer({ capabilities: { tools: { listChanged: true } } });
@@ -123,12 +123,12 @@ manifests. Deprecated Logging/Roots/Sampling are intentionally absent.
 
 ## Server transports
 
-`@jangmanj/mcp-client/server-transport` hosts an `McpServer` over real stdio or
+`@jangmanj/mcp/server-transport` hosts an `McpServer` over real stdio or
 streamable HTTP, including SSE push channels, `notifications/cancelled`, and
 resource-side bearer auth:
 
 ```ts
-import { StdioServerHost, HttpServerHost, StaticBearerAuth, buildProtectedResourceMetadata } from "@jangmanj/mcp-client/server-transport";
+import { StdioServerHost, HttpServerHost, StaticBearerAuth, buildProtectedResourceMetadata } from "@jangmanj/mcp/server-transport";
 
 // stdio: newline-delimited JSON-RPC on stdin/stdout
 await new StdioServerHost({ server }).listen();
@@ -145,15 +145,15 @@ helps you publish RFC 9728 metadata for OAuth clients.
 
 ## Push on the server side
 
-`@jangmanj/mcp-client/server-events` is the modular, transport-agnostic server
+`@jangmanj/mcp/server-events` is the modular, transport-agnostic server
 companion: event logs with cursors, live `events/stream`, standard
 `subscriptions/listen`, notices, and optional async tasks. It contains no
 tools/resources/prompts registry of its own — that lives in
-`@jangmanj/mcp-client/server` — so you can adopt push without adopting a
+`@jangmanj/mcp/server` — so you can adopt push without adopting a
 framework.
 
 ```ts
-import { EventBus, EventsServer, SubscriptionsServer, TaskCenter, Notices } from "@jangmanj/mcp-client/server-events";
+import { EventBus, EventsServer, SubscriptionsServer, TaskCenter, Notices } from "@jangmanj/mcp/server-events";
 
 const bus = new EventBus();
 const events = new EventsServer({ bus });
@@ -180,14 +180,14 @@ Scope: `events/list`, `events/poll`, `events/stream`, `subscriptions/listen`,
 `notifications/*` fanout, and `tasks/get`/`tasks/cancel`/`tasks/update` state.
 Webhook delivery is intentionally out of scope; deprecated MCP Logging is not
 used — notices travel as ordinary events. Skills publishing lives in
-`@jangmanj/mcp-client/server` (`registerSkill`): manifests with computed
+`@jangmanj/mcp/server` (`registerSkill`): manifests with computed
 SHA-256/size, `skills/list`/`skills/get`, and file bytes via `resources/read`.
 
-For discovery metadata, `@jangmanj/mcp-client/ext-server-cards` also includes a
+For discovery metadata, `@jangmanj/mcp/ext-server-cards` also includes a
 card builder for servers you operate:
 
 ```ts
-import { buildServerCard, buildAiCatalog } from "@jangmanj/mcp-client/ext-server-cards";
+import { buildServerCard, buildAiCatalog } from "@jangmanj/mcp/ext-server-cards";
 
 const card = buildServerCard({
   name: "roger-wilco",
@@ -215,12 +215,12 @@ Cards are advisory only: primitive capability fields are rejected, and live
 
 ## Testing your own tools
 
-`@jangmanj/mcp-client/testing` provides an in-memory transport and a scriptable tool
+`@jangmanj/mcp/testing` provides an in-memory transport and a scriptable tool
 server — no child processes or sockets:
 
 ```ts
-import { connect } from "@jangmanj/mcp-client/client";
-import { createToolServer } from "@jangmanj/mcp-client/testing";
+import { connect } from "@jangmanj/mcp/client";
+import { createToolServer } from "@jangmanj/mcp/testing";
 
 const connection = await connect({
   transport: createToolServer({
@@ -239,9 +239,9 @@ The quickstart above is a thin wrapper. The underlying pieces remain available w
 need them:
 
 ```ts
-import { McpClient } from "@jangmanj/mcp-client";
-import { createOps } from "@jangmanj/mcp-client/ops";
-import { StdioTransport } from "@jangmanj/mcp-client/transport-stdio";
+import { McpClient } from "@jangmanj/mcp";
+import { createOps } from "@jangmanj/mcp/ops";
+import { StdioTransport } from "@jangmanj/mcp/transport-stdio";
 
 const client = new McpClient({
   transport: new StdioTransport({ command: "npx", args: ["-y", "@modelcontextprotocol/server-filesystem", "."] }),
@@ -260,22 +260,22 @@ const ops = createOps(client);
 
 ## Subpath exports
 
-- `@jangmanj/mcp-client` (re-exports `./core`)
-- `@jangmanj/mcp-client/core`
-- `@jangmanj/mcp-client/client` (high-level `connect()` API)
-- `@jangmanj/mcp-client/testing` (in-memory transport / fake tool server)
-- `@jangmanj/mcp-client/server-events` (push-first server building blocks)
-- `@jangmanj/mcp-client/server` (tools/resources/prompts/discover/completion server)
-- `@jangmanj/mcp-client/server-transport` (stdio + streamable HTTP server hosts)
-- `@jangmanj/mcp-client/auth`
-- `@jangmanj/mcp-client/ops`
-- `@jangmanj/mcp-client/mrtr-cache`
-- `@jangmanj/mcp-client/telemetry-otel`
-- `@jangmanj/mcp-client/transport-http`
-- `@jangmanj/mcp-client/transport-stdio`
-- `@jangmanj/mcp-client/ext-events`
-- `@jangmanj/mcp-client/ext-server-cards`
-- `@jangmanj/mcp-client/ext-skills`
+- `@jangmanj/mcp` (re-exports `./core`)
+- `@jangmanj/mcp/core`
+- `@jangmanj/mcp/client` (high-level `connect()` API)
+- `@jangmanj/mcp/testing` (in-memory transport / fake tool server)
+- `@jangmanj/mcp/server-events` (push-first server building blocks)
+- `@jangmanj/mcp/server` (tools/resources/prompts/discover/completion server)
+- `@jangmanj/mcp/server-transport` (stdio + streamable HTTP server hosts)
+- `@jangmanj/mcp/auth`
+- `@jangmanj/mcp/ops`
+- `@jangmanj/mcp/mrtr-cache`
+- `@jangmanj/mcp/telemetry-otel`
+- `@jangmanj/mcp/transport-http`
+- `@jangmanj/mcp/transport-stdio`
+- `@jangmanj/mcp/ext-events`
+- `@jangmanj/mcp/ext-server-cards`
+- `@jangmanj/mcp/ext-skills`
 
 ## TypeScript
 
@@ -290,7 +290,7 @@ this library (transports, lifecycle, ops, MRTR) and exposes each server's tools 
 Pi as `mcp__<server>__<tool>`.
 
 ```sh
-pi install npm:@jangmanj/mcp-client
+pi install npm:@jangmanj/mcp
 # or from a checkout / git ref:
 pi install ./path/to/mcp-client
 pi install git:github.com/JangMan-J/mcp-client@v0.1.1

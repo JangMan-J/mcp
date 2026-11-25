@@ -1,6 +1,6 @@
 /**
  * Pi extension entry: replaces Pi's built-in MCP session support with a
- * bridge implemented on this library (@jangmanj/mcp-client).
+ * bridge implemented on this library (@jangmanj/mcp).
  *
  * Registering the /mcp command is what makes Pi stand down its built-in MCP
  * extension for sessions (docs/mcp.md#replace-the-built-in-mcp-support), so
