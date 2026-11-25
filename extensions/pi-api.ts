@@ -74,6 +74,7 @@ export interface McpServerEntry {
 
 export interface Ui {
 	notify(message: string, level?: "info" | "warning" | "error"): void;
+	confirm?(title: string, message: string): Promise<boolean>;
 }
 
 export interface SessionContext {

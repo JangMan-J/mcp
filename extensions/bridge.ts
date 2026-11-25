@@ -18,6 +18,11 @@ import { StdioTransport } from "../dist/transport-stdio/index.js";
 import type { Outcome } from "../dist/index.js";
 import type { Exposure, ResolvedServerConfig } from "./config.ts";
 import { convertBlocks } from "./content.ts";
+import {
+	canonicalResource,
+	createOAuthProvider,
+	FileCredentialStore,
+} from "./oauth.ts";
 import type { ExtensionAPI, ToolAnnotations, ToolResult } from "./pi-api.ts";
 
 export type ServerStatus = "connecting" | "connected" | "error" | "disabled";
@@ -33,6 +38,10 @@ export interface ServerState {
 	instructions?: string | undefined;
 	client?: McpClient | undefined;
 	ops?: Ops | undefined;
+	/** Set when the server rejected unauthenticated requests. */
+	authRequired?: boolean | undefined;
+	/** Closes the loopback redirect listener of an OAuth provider, if any. */
+	closeRedirect?: (() => void) | undefined;
 	/** Pi tool names registered for this server (persist across reconnects). */
 	readonly registeredTools: Set<string>;
 	/** Exposures this server's tools were registered with. */
@@ -117,6 +126,14 @@ function inputSchemaOf(entry: ToolEntry): Record<string, unknown> {
 /** Transport-failure kinds worth one reconnect + retry. */
 const RETRY_KINDS = new Set(["connect", "closed", "stream-broken", "process-exit"]);
 
+function isAuthOutcome(outcome: Outcome<unknown>): boolean {
+	if (outcome.kind === "auth-failure" || outcome.kind === "auth-unavailable") return true;
+	return (
+		outcome.kind === "transport-failure" &&
+		(outcome.failure.kind === "auth-failure" || outcome.failure.kind === "auth-unavailable")
+	);
+}
+
 export function describeOutcome(outcome: Exclude<Outcome<unknown>, { kind: "ok" }>): string {
 	switch (outcome.kind) {
 		case "jsonrpc-error":
@@ -143,6 +160,14 @@ export interface BridgeOptions {
 	readonly notify: (message: string, level: "info" | "warning" | "error") => void;
 	/** Bound for connection waits from tool_call / before_agent_start. */
 	readonly waitMs?: number;
+	/** Path of the OAuth credential store file; enables OAuth for HTTP servers. */
+	readonly credentialStorePath?: string;
+	/** Host confirm dialog for OAuth consent prompts. */
+	readonly confirm?: (title: string, message: string) => Promise<boolean>;
+	/** Browser opener override (tests); defaults to the system browser. */
+	readonly browserOpen?: (url: string, signal: AbortSignal) => Promise<void>;
+	/** Allow OAuth against insecure loopback HTTP (local dev servers, tests). */
+	readonly allowInsecureAuth?: boolean;
 }
 
 export class McpBridge {
@@ -151,11 +176,23 @@ export class McpBridge {
 	private readonly waitMs: number;
 	private readonly states = new Map<string, ServerState>();
 	private readonly pending = new Map<string, Promise<void>>();
+	private readonly credentials: FileCredentialStore | undefined;
+	private readonly confirm: BridgeOptions["confirm"];
+	private readonly browserOpen: BridgeOptions["browserOpen"];
+	private readonly allowInsecureAuth: boolean;
+	/** Server name for which an interactive login (/mcp login) is armed. */
+	private loginArmed: string | undefined;
 
 	constructor(opts: BridgeOptions) {
 		this.pi = opts.pi;
 		this.notify = opts.notify;
 		this.waitMs = opts.waitMs ?? 10_000;
+		this.credentials = opts.credentialStorePath !== undefined
+			? new FileCredentialStore(opts.credentialStorePath)
+			: undefined;
+		this.confirm = opts.confirm;
+		this.browserOpen = opts.browserOpen;
+		this.allowInsecureAuth = opts.allowInsecureAuth ?? false;
 	}
 
 	get(name: string): ServerState | undefined {
@@ -242,6 +279,34 @@ export class McpBridge {
 		return state;
 	}
 
+	/** Interactive OAuth sign-in: arms the consent gate and reconnects. */
+	async login(name: string): Promise<ServerState> {
+		const state = this.states.get(name);
+		if (!state) throw new Error(`unknown server: ${name}`);
+		if (state.config.kind !== "http") {
+			throw new Error(`mcp "${name}": OAuth applies to HTTP servers only`);
+		}
+		if (!this.credentials) throw new Error("OAuth is not available (no credential store)");
+		this.loginArmed = name;
+		try {
+			await this.reconnect(name);
+		} finally {
+			this.loginArmed = undefined;
+		}
+		return state;
+	}
+
+	/** Delete stored credentials for the server's resource and reconnect. */
+	async logout(name: string): Promise<ServerState> {
+		const state = this.states.get(name);
+		if (!state) throw new Error(`unknown server: ${name}`);
+		if (this.credentials && state.config.url !== undefined) {
+			await this.credentials.deleteResource(canonicalResource(state.config.url));
+		}
+		await this.reconnect(name);
+		return state;
+	}
+
 	async closeAll(): Promise<void> {
 		await Promise.allSettled([...this.pending.values()]);
 		await Promise.allSettled([...this.states.values()].map((s) => this.teardown(s)));
@@ -252,6 +317,8 @@ export class McpBridge {
 		const client = state.client;
 		state.client = undefined;
 		state.ops = undefined;
+		state.closeRedirect?.();
+		state.closeRedirect = undefined;
 		if (client) {
 			try {
 				await client.close({ graceMs: 500 });
@@ -261,19 +328,40 @@ export class McpBridge {
 		}
 	}
 
-	private buildClient(config: ResolvedServerConfig): McpClient {
-		const transport =
-			config.kind === "stdio"
-				? new StdioTransport({
-						command: config.command as string,
-						args: config.args ?? [],
-						...(config.cwd !== undefined ? { cwd: config.cwd } : {}),
-						...(config.env !== undefined ? { env: config.env } : {}),
-					})
-				: new HttpTransport({
-						url: config.url as string,
-						...(config.headers !== undefined ? { extraHeaders: config.headers } : {}),
-					});
+	private async buildClient(config: ResolvedServerConfig, state: ServerState): Promise<McpClient> {
+		let transport: StdioTransport | HttpTransport;
+		if (config.kind === "stdio") {
+			transport = new StdioTransport({
+				command: config.command as string,
+				args: config.args ?? [],
+				...(config.cwd !== undefined ? { cwd: config.cwd } : {}),
+				...(config.env !== undefined ? { env: config.env } : {}),
+			});
+		} else {
+			// OAuth attaches when no static Authorization header is configured
+			// (mirrors Pi's rule); the flow itself runs on the first 401.
+			const hasStaticAuth = Object.keys(config.headers ?? {}).some(
+				(k) => k.toLowerCase() === "authorization",
+			);
+			let authProvider;
+			if (!hasStaticAuth && this.credentials) {
+				const handle = await createOAuthProvider({
+					config,
+					store: this.credentials,
+					interactive: () => this.loginArmed === config.name,
+					...(this.confirm !== undefined ? { confirm: this.confirm } : {}),
+					...(this.browserOpen !== undefined ? { browserOpen: this.browserOpen } : {}),
+					allowInsecureAuth: this.allowInsecureAuth,
+				});
+				authProvider = handle.provider;
+				state.closeRedirect = handle.closeRedirect;
+			}
+			transport = new HttpTransport({
+				url: config.url as string,
+				...(config.headers !== undefined ? { extraHeaders: config.headers } : {}),
+				...(authProvider !== undefined ? { authProvider } : {}),
+			});
+		}
 		return new McpClient({
 			transport,
 			server: { key: config.name, label: config.name },
@@ -285,13 +373,7 @@ export class McpBridge {
 	private async connect(state: ServerState): Promise<void> {
 		const { config } = state;
 		try {
-			if (config.wantsOAuth) {
-				this.notify(
-					`mcp "${state.name}": oauth config is not supported by this bridge yet; connect may fail with 401`,
-					"warning",
-				);
-			}
-			const client = this.buildClient(config);
+			const client = await this.buildClient(config, state);
 			const ops = createOps(client);
 			state.client = client;
 			state.ops = ops;
@@ -324,11 +406,15 @@ export class McpBridge {
 				(listed.kind === "jsonrpc-error" && listed.code === -32601)
 			) {
 				// Server without a tools capability: valid, just nothing to register.
+			} else if (isAuthOutcome(listed)) {
+				state.authRequired = true;
+				throw new Error(`authentication required — sign in with /mcp login ${state.name}`);
 			} else {
 				throw new Error(describeOutcome(listed));
 			}
 			state.status = "connected";
 			state.error = undefined;
+			state.authRequired = undefined;
 		} catch (err) {
 			state.status = "error";
 			state.error = err instanceof Error ? err.message : String(err);
@@ -479,7 +565,9 @@ export class McpBridge {
 				case "disabled":
 					return `${base}: disabled${s.error ? ` (${s.error})` : ""}`;
 				case "error":
-					return `${base}: error: ${s.error ?? "unknown"}`;
+					return s.authRequired
+						? `${base}: needs sign-in — /mcp login ${s.name}`
+						: `${base}: error: ${s.error ?? "unknown"}`;
 			}
 		});
 	}

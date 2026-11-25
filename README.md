@@ -8,6 +8,34 @@ MCP 2026-07-28 client library: core protocol/lifecycle, stdio and HTTP transport
 npm install @jangmanj/mcp-client
 ```
 
+## Quickstart
+
+```ts
+import { McpClient } from "@jangmanj/mcp-client";
+import { createOps } from "@jangmanj/mcp-client/ops";
+import { StdioTransport } from "@jangmanj/mcp-client/transport-stdio";
+
+const client = new McpClient({
+  transport: new StdioTransport({ command: "npx", args: ["-y", "@modelcontextprotocol/server-filesystem", "."] }),
+  server: { key: "filesystem" },
+});
+
+const ops = createOps(client);
+const tools = await ops.tools.listAll();
+if (tools.kind === "ok") {
+  console.log(tools.value.items.map((t) => t.name));
+  const result = await ops.tools.call("list_allowed_directories");
+  if (result.kind === "ok") console.log(result.value.content);
+}
+
+await client.close();
+```
+
+Every call returns a discriminated `Outcome` (`ok` / `jsonrpc-error` / `transport-failure` /
+`mrtr-interim` / …) instead of throwing — pattern-match on `kind`. HTTP servers use
+`HttpTransport` from `/transport-http`; OAuth, bearer, and client-credentials live in
+`/auth` (`OAuthAuthorization`, `ConfiguredBearer`, `ClientCredentialsAuth`).
+
 ## Subpath exports
 
 - `@jangmanj/mcp-client` (re-exports `./core`)
@@ -49,9 +77,18 @@ patterns). `/mcp` lists server states; `/mcp reconnect <name>` restarts one.
 Servers registered by other extensions via `pi.registerMcpServer()` are connected
 too, with file configuration taking precedence.
 
-Not supported yet: OAuth flows (`oauth` entries connect unauthenticated and will
-fail on servers that require it — use `headers` with a token instead), MCP
-prompts/resources, elicitations, and task-based tool calls.
+Not supported yet: MCP prompts/resources exposure to Pi (servers offering only prompts or
+resources connect but register nothing), elicitation UI (consent prompts decline by
+default), task-based tool calls, and OAuth options `callbackPort`/`callbackUrl`/
+`scope`/`authServerMetadataUrl` (the bridge uses an ephemeral loopback redirect and the
+advertised scopes).
+
+OAuth works out of the box for HTTP servers without a static `Authorization` header: the
+first 401 marks the server "needs sign-in" in `/mcp`, and `/mcp login <name>` runs the
+authorization-code + PKCE flow with CIMD/DCR registration through the system browser.
+Credentials persist in `$PI_CODING_AGENT_DIR/mcp-client-oauth.json` (issuer-keyed);
+`/mcp logout <name>` deletes them. Static clients can be set with
+`"oauth": { "clientId": "...", "clientSecret": "${SECRET}", "clientName": "..." }`.
 
 A running Pi session picks the extension up on `/reload`; fresh starts load it
 automatically.
@@ -61,4 +98,10 @@ automatically.
 ```sh
 npm run check
 npm run smoke:pack
+npm run gen:spec-matrix   # regenerate SPEC.md (requirement ID -> source -> tests)
+npm run check:spec-drift  # compare the vendored schema + spec prose against upstream
 ```
+
+SPEC.md is the generated traceability matrix; CI fails when it is stale or a source
+requirement ID is cited by no test and not exempted. `spec-drift.yml` (daily cron)
+opens an issue when the upstream MCP 2026-07-28 schema or spec prose moves.

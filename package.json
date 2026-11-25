@@ -87,9 +87,12 @@
     "typecheck": "tsc -b tsconfig.json && tsc --noEmit -p tsconfig.test.json && tsc --noEmit -p tsconfig.extensions.json",
     "test": "vitest run",
     "gen:schema": "node scripts/gen-schema-types.mjs",
+    "gen:spec-matrix": "node scripts/gen-spec-matrix.mjs",
     "check:deps": "node scripts/check-deps.mjs",
     "check:forbidden": "node scripts/check-forbidden.mjs",
-    "check": "npm run build && npm run typecheck && npm run check:deps && npm run check:forbidden && npm test",
+    "check:spec-matrix": "node scripts/gen-spec-matrix.mjs --check",
+    "check:spec-drift": "node scripts/check-spec-drift.mjs",
+    "check": "npm run build && npm run typecheck && npm run check:deps && npm run check:forbidden && npm run check:spec-matrix && npm test",
     "smoke:pack": "node scripts/smoke-pack.mjs",
     "bootstrap:npm": "bash scripts/npm-bootstrap.sh",
     "prepublishOnly": "npm run check"

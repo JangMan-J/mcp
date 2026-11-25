@@ -8,8 +8,9 @@
  */
 
 import { homedir } from "node:os";
+import { join } from "node:path";
 import { McpBridge } from "./bridge.ts";
-import { loadServerConfigs, type ResolvedServerConfig } from "./config.ts";
+import { agentDir, loadServerConfigs, type ResolvedServerConfig } from "./config.ts";
 import type { ExtensionAPI, McpServerEntry, SessionContext, Ui } from "./pi-api.ts";
 
 /** Tolerantly unwrap pi.getMcpServers() / mcp_servers_change event shapes. */
@@ -43,20 +44,27 @@ export default function (pi: ExtensionAPI) {
 	const bridge = new McpBridge({
 		pi,
 		notify: (message, level) => currentUi?.notify(message, level),
+		credentialStorePath: join(agentDir(process.env, homedir()), "mcp-client-oauth.json"),
+		confirm: (title, message) => currentUi?.confirm?.(title, message) ?? Promise.resolve(false),
 	});
 
 	// Registering /mcp replaces built-in MCP support for sessions.
 	pi.registerCommand("mcp", {
-		description: "MCP servers (mcp-client bridge): /mcp [list] | /mcp reconnect <name>",
+		description: "MCP (mcp-client bridge): /mcp [list] | /mcp reconnect|login|logout <name>",
 		handler: async (args, ctx) => {
 			const [sub, ...rest] = args.trim().split(/\s+/).filter(Boolean);
 			if (sub === undefined || sub === "list") {
 				ctx.ui.notify(bridge.statusLines().join("\n"), "info");
 				return;
 			}
-			if (sub === "reconnect" && rest[0] !== undefined) {
+			if ((sub === "reconnect" || sub === "login" || sub === "logout") && rest[0] !== undefined) {
 				try {
-					const state = await bridge.reconnect(rest[0]);
+					const state =
+						sub === "login"
+							? await bridge.login(rest[0])
+							: sub === "logout"
+								? await bridge.logout(rest[0])
+								: await bridge.reconnect(rest[0]);
 					ctx.ui.notify(
 						state.status === "connected"
 							? `mcp "${state.name}": connected, ${state.toolCount} tools`
@@ -68,7 +76,7 @@ export default function (pi: ExtensionAPI) {
 				}
 				return;
 			}
-			ctx.ui.notify("Usage: /mcp [list] | /mcp reconnect <name>", "info");
+			ctx.ui.notify("Usage: /mcp [list] | /mcp reconnect|login|logout <name>", "info");
 		},
 	});
 

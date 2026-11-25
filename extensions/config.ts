@@ -14,6 +14,12 @@ import type { McpServerEntry } from "./pi-api.ts";
 
 export type Exposure = "direct" | "codemode" | "deferred" | "hidden";
 
+export interface OAuthConfig {
+	readonly clientId?: string;
+	readonly clientSecret?: string;
+	readonly clientName?: string;
+}
+
 export interface ResolvedServerConfig {
 	readonly name: string;
 	readonly source: "user" | "project" | "extension";
@@ -29,7 +35,9 @@ export interface ResolvedServerConfig {
 	readonly toolExposure?: Record<string, string>;
 	readonly description?: string;
 	readonly timeoutMs: number;
-	/** Present when the entry sets `oauth`: not supported by this bridge yet. */
+	/** Static client credentials / naming for the OAuth flow, when configured. */
+	readonly oauth?: OAuthConfig;
+	/** Present when the entry sets `oauth`. */
 	readonly wantsOAuth: boolean;
 }
 
@@ -153,6 +161,27 @@ function isPartialOverride(raw: McpServerEntry): boolean {
 	return raw.command === undefined && raw.url === undefined && raw.type === undefined;
 }
 
+function resolveOAuth(
+	raw: McpServerEntry,
+	env: Record<string, string | undefined>,
+	exec: (command: string) => string,
+	warnings: string[],
+	where: string,
+): OAuthConfig | undefined {
+	if (raw.oauth === undefined) return undefined;
+	const out: { clientId?: string; clientSecret?: string; clientName?: string } = {};
+	for (const key of ["clientId", "clientSecret", "clientName"] as const) {
+		const v = raw.oauth[key];
+		if (v === undefined) continue;
+		if (typeof v !== "string") {
+			warnings.push(`${where}: oauth.${key} must be a string`);
+			continue;
+		}
+		out[key] = key === "clientName" ? v : interpolate(v, env, exec, warnings, `${where}.oauth.${key}`);
+	}
+	return out;
+}
+
 function resolveEntry(
 	entry: RawEntry,
 	opts: LoadOptions,
@@ -180,6 +209,8 @@ function resolveEntry(
 	const env = opts.env ?? process.env;
 	const exec = opts.exec ?? defaultExec;
 
+	const oauth = resolveOAuth(raw, env, exec, warnings, where);
+
 	const base = {
 		name,
 		source,
@@ -187,6 +218,7 @@ function resolveEntry(
 		exposure: normalizeExposure(raw.exposure),
 		timeoutMs: raw.timeout !== undefined && raw.timeout > 0 ? raw.timeout * 1000 : DEFAULT_TIMEOUT_MS,
 		wantsOAuth: raw.oauth !== undefined,
+		...(oauth !== undefined ? { oauth } : {}),
 		...(raw.toolExposure !== undefined ? { toolExposure: raw.toolExposure } : {}),
 		...(raw.description !== undefined ? { description: raw.description } : {}),
 	};
