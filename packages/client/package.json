@@ -11,6 +11,8 @@
   },
   "dependencies": {
     "@mcp-client/core": "*",
+    "@mcp-client/ext-events": "*",
+    "@mcp-client/mrtr-cache": "*",
     "@mcp-client/ops": "*",
     "@mcp-client/transport-http": "*",
     "@mcp-client/transport-stdio": "*"

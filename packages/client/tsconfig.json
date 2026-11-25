@@ -8,6 +8,8 @@
   },
   "references": [
     { "path": "../core" },
+    { "path": "../ext-events" },
+    { "path": "../mrtr-cache" },
     { "path": "../ops" },
     { "path": "../transport-http" },
     { "path": "../transport-stdio" }

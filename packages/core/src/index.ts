@@ -17,6 +17,7 @@ import {
   type Limits,
   type NotifyOptions,
   type RequestOptions,
+  type StreamHandle,
 } from "./request.js";
 import type { DiscoverResult } from "./schema/index.js";
 
@@ -112,6 +113,29 @@ export class McpClient {
     opts?: NotifyOptions,
   ): Promise<void> {
     return this.manager.notify(method, params, opts);
+  }
+
+  /**
+   * Open a long-lived request stream (subscriptions/listen, events/stream).
+   * Uses the same per-request metadata, id allocation, and lifecycle handling
+   * as request(); no default request timeout applies to streams.
+   */
+  openStream(
+    method: string,
+    params: Record<string, unknown> = {},
+    opts: RequestOptions = {},
+  ): StreamHandle {
+    const req = this.manager.request<unknown>(method, params, {
+      ...opts,
+      stream: true,
+      idempotent: opts.idempotent ?? true,
+    });
+    return {
+      id: req.id,
+      close: () => req.cancel(),
+      done: Promise.resolve(req),
+      [Symbol.asyncIterator]: () => req.notifications[Symbol.asyncIterator](),
+    };
   }
 
   discover(opts?: RequestOptions): ClientRequest<DiscoverResult> {

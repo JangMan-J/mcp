@@ -7,13 +7,16 @@
  *   });
  *   const connection = await connect({ transport });
  */
-import type {
-	Exchange,
-	JsonRpcNotification,
-	JsonRpcRequest,
-	Transport,
-	TransportCall,
-	TransportDiagnostic,
+import {
+	NotificationQueue,
+	type Exchange,
+	type ExchangeEnd,
+	type JsonRpcNotification,
+	type JsonRpcRequest,
+	type RequestId,
+	type Transport,
+	type TransportCall,
+	type TransportDiagnostic,
 } from "@mcp-client/core";
 
 /** Throw from a handler to return a JSON-RPC error instead of a result. */
@@ -30,10 +33,6 @@ export class FakeJsonRpcError extends Error {
 
 export type InMemoryHandler = (msg: JsonRpcRequest) => unknown | Promise<unknown>;
 
-async function* emptyNotifications(): AsyncGenerator<JsonRpcNotification> {
-	// no notifications in the in-memory transport
-}
-
 async function* emptyDiagnostics(): AsyncGenerator<TransportDiagnostic> {
 	// no diagnostics in the in-memory transport
 }
@@ -41,13 +40,36 @@ async function* emptyDiagnostics(): AsyncGenerator<TransportDiagnostic> {
 export class InMemoryTransport implements Transport {
 	readonly binding = "in-memory";
 	readonly #handler: InMemoryHandler;
+	readonly #streams = new Map<RequestId, NotificationQueue<JsonRpcNotification>>();
+	readonly #closers = new Map<RequestId, () => void>();
 
 	constructor(handler: InMemoryHandler) {
 		this.#handler = handler;
 	}
 
-	start(msg: JsonRpcRequest, _ctx: TransportCall): Exchange {
-		const done = (async () => {
+	/** Push a notification into one active request stream (or all of them). */
+	push(notification: JsonRpcNotification, id?: RequestId): boolean {
+		if (id !== undefined) return this.#streams.get(id)?.push(notification) ?? false;
+		let delivered = false;
+		for (const queue of this.#streams.values()) delivered = queue.push(notification) || delivered;
+		return delivered;
+	}
+
+	start(msg: JsonRpcRequest, ctx: TransportCall): Exchange {
+		const notifications = new NotificationQueue<JsonRpcNotification>();
+		this.#streams.set(msg.id, notifications);
+		const aborted = (): ExchangeEnd => ({
+			kind: "failure",
+			failure: { kind: "closed", message: "aborted" },
+			delivery: "delivered-no-response",
+		});
+		const onAbort = new Promise<ExchangeEnd>((resolve) => {
+			const finish = () => resolve(aborted());
+			this.#closers.set(msg.id, finish);
+			if (ctx.signal.aborted) finish();
+			else ctx.signal.addEventListener("abort", finish, { once: true });
+		});
+		const work = (async (): Promise<ExchangeEnd> => {
 			try {
 				const result = await this.#handler(msg);
 				return {
@@ -75,7 +97,12 @@ export class InMemoryTransport implements Transport {
 				};
 			}
 		})();
-		return { notifications: emptyNotifications(), done };
+		const done = Promise.race([work, onAbort]).finally(() => {
+			this.#streams.delete(msg.id);
+			this.#closers.delete(msg.id);
+			notifications.close();
+		});
+		return { notifications, done };
 	}
 
 	async notify(_msg: JsonRpcNotification, _ctx: TransportCall): Promise<void> {
@@ -83,7 +110,7 @@ export class InMemoryTransport implements Transport {
 	}
 
 	async close(): Promise<void> {
-		// nothing to close
+		for (const finish of [...this.#closers.values()]) finish();
 	}
 
 	get diagnostics(): AsyncIterable<TransportDiagnostic> {

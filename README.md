@@ -10,27 +10,51 @@ npm install @jangmanj/mcp-client
 
 ## Quickstart
 
+Push first: subscribe to events and react as they arrive. Pull (tools, resources) is
+there when you need it.
+
 ```ts
 import { connect } from "@jangmanj/mcp-client/client";
 
 const connection = await connect({
-  stdio: { command: "npx", args: ["-y", "@modelcontextprotocol/server-filesystem", "."] },
-  reconnectOnDrop: true, // optional: rebuild + retry once after a dropped connection
+  stdio: { command: "npx", args: ["-y", "your-mcp-server"] },
+  reconnectOnDrop: true,
 });
 
 try {
-  const tools = await connection.tools.list();
-  console.log(tools.map((t) => t.name));
-  const result = await connection.tools.call("list_allowed_directories");
-  console.log(result.content);
+  // Events extension: live occurrences over events/stream (heartbeat + reconnect).
+  const mail = await connection.events.subscribe("mail", { folder: "inbox" });
+  for await (const event of mail) {
+    console.log(event.eventId, event.data);
+  }
+
+  // Standard MCP subscriptions: tools/prompts/resources list_changed, resource updates.
+  const changes = connection.listen({ tools: true });
+  await changes.acknowledged;
+  for await (const change of changes.events) {
+    console.log(change.method); // e.g. notifications/tools/list_changed -> re-list tools
+  }
 } finally {
   await connection.close();
 }
 ```
 
-`tools.list()` / `tools.call()` return values or throw `McpOutcomeError` — no `Outcome`
-matching required. For the full protocol surface (MRTR, tasks, uncertain writes), use
-`connection.ops` directly and match on `Outcome.kind`.
+`connection.events` uses the optional `io.modelcontextprotocol/events` extension and
+calls `server/discover` lazily to check support; `subscription.poll()` is available
+when you explicitly want pull. `connection.listen()` is the spec-standard
+`subscriptions/listen` stream.
+
+Tools work the same connection, without `Outcome` matching:
+
+```ts
+const tools = await connection.tools.list();
+const result = await connection.tools.call("list_allowed_directories");
+console.log(result.content);
+```
+
+`tools.list()` / `tools.call()` return values or throw `McpOutcomeError`. For the full
+protocol surface (MRTR, tasks, uncertain writes), use `connection.ops` directly and
+match on `Outcome.kind`.
 
 HTTP servers use `http:` instead of `stdio:`:
 
@@ -80,6 +104,8 @@ const connection = await connect({
 ```
 
 Throw `FakeJsonRpcError(code, message)` from a handler to simulate protocol errors.
+`transport.push(notification, requestId?)` injects notifications into active request
+streams, so you can test pushed events and `list_changed` without a live server.
 
 ## Low-level API
 
