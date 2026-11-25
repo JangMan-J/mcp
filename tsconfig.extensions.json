@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "allowImportingTsExtensions": true,
+    "rootDir": ".",
+    "lib": ["ES2024"],
+    "types": ["node"]
+  },
+  "include": ["extensions/**/*.ts"],
+  "exclude": ["extensions/test"]
+}

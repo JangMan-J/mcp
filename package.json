@@ -4,6 +4,10 @@
   "description": "MCP 2026-07-28 client library: core, transports, auth, ops, MRTR/cache, OTEL telemetry, and extensions.",
   "license": "MIT",
   "author": "JangMan-J",
+  "keywords": ["mcp", "model-context-protocol", "pi-package", "pi-extension"],
+  "pi": {
+    "extensions": ["./extensions/index.ts"]
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/JangMan-J/mcp-client.git"
@@ -19,6 +23,8 @@
   ],
   "files": [
     "dist",
+    "extensions",
+    "!extensions/test",
     "README.md",
     "LICENSE"
   ],
@@ -70,7 +76,8 @@
   },
   "scripts": {
     "build": "node scripts/build-workspaces.mjs",
-    "typecheck": "tsc -b tsconfig.json && tsc --noEmit -p tsconfig.test.json",
+    "prepare": "npm run build",
+    "typecheck": "tsc -b tsconfig.json && tsc --noEmit -p tsconfig.test.json && tsc --noEmit -p tsconfig.extensions.json",
     "test": "vitest run",
     "gen:schema": "node scripts/gen-schema-types.mjs",
     "check:deps": "node scripts/check-deps.mjs",

@@ -3,6 +3,7 @@
   "compilerOptions": {
     "noEmit": true,
     "composite": false,
+    "allowImportingTsExtensions": true,
     "declaration": false,
     "declarationMap": false,
     "sourceMap": false,
@@ -10,5 +11,5 @@
     "lib": ["ES2024", "DOM", "DOM.Iterable"],
     "types": ["node"]
   },
-  "include": ["packages/*/test/**/*.ts"]
+  "include": ["packages/*/test/**/*.ts", "extensions/test/**/*.ts"]
 }
