@@ -18,6 +18,14 @@ export interface OAuthConfig {
 	readonly clientId?: string;
 	readonly clientSecret?: string;
 	readonly clientName?: string;
+	/** Fixed loopback callback port (http://127.0.0.1:<port>/callback). */
+	readonly callbackPort?: number;
+	/** Full loopback redirect URI; takes precedence over callbackPort. */
+	readonly callbackUrl?: string;
+	/** Space-separated scopes requested when the server does not advertise them. */
+	readonly scope?: string;
+	/** Use this AS metadata document instead of discovery; trusted as configured. */
+	readonly authServerMetadataUrl?: string;
 }
 
 export interface ResolvedServerConfig {
@@ -169,8 +177,8 @@ function resolveOAuth(
 	where: string,
 ): OAuthConfig | undefined {
 	if (raw.oauth === undefined) return undefined;
-	const out: { clientId?: string; clientSecret?: string; clientName?: string } = {};
-	for (const key of ["clientId", "clientSecret", "clientName"] as const) {
+	const out: { clientId?: string; clientSecret?: string; clientName?: string; callbackPort?: number; callbackUrl?: string; scope?: string; authServerMetadataUrl?: string } = {};
+	for (const key of ["clientId", "clientSecret", "clientName", "callbackUrl", "scope", "authServerMetadataUrl"] as const) {
 		const v = raw.oauth[key];
 		if (v === undefined) continue;
 		if (typeof v !== "string") {
@@ -178,6 +186,11 @@ function resolveOAuth(
 			continue;
 		}
 		out[key] = key === "clientName" ? v : interpolate(v, env, exec, warnings, `${where}.oauth.${key}`);
+	}
+	if (raw.oauth.callbackPort !== undefined) {
+		const p = raw.oauth.callbackPort;
+		if (typeof p === "number" && Number.isInteger(p) && p > 0 && p < 65536) out.callbackPort = p;
+		else warnings.push(`${where}: oauth.callbackPort must be an integer port`);
 	}
 	return out;
 }

@@ -7,6 +7,7 @@
  * iss validation, step-up. This module only connects ports to Pi.
  */
 
+import { createServer, type Server } from "node:http";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import {
@@ -104,10 +105,65 @@ export interface OAuthProviderHandle {
 	readonly closeRedirect: () => void;
 }
 
+/** Loopback redirect listener bound to a fixed URI (callbackPort/callbackUrl). */
+async function startFixedRedirect(redirectUri: string): Promise<{ close: () => void; waitForCallback: (opts: { redirectUri: string; state: string; signal: AbortSignal }) => Promise<URLSearchParams> }> {
+	const url = new URL(redirectUri);
+	if (url.protocol !== "http:" || !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname)) {
+		throw new Error(`oauth callback must be loopback HTTP: ${redirectUri}`);
+	}
+	const path = url.pathname || "/callback";
+	let pending: { resolve: (v: URLSearchParams) => void; reject: (e: Error) => void } | undefined;
+	const server: Server = createServer((request, response) => {
+		const target = request.url ?? "";
+		if (request.method !== "GET" || !target.startsWith(`${path}?`) || !pending) {
+			response.writeHead(404, { Connection: "close" }).end();
+			return;
+		}
+		const resolve = pending.resolve;
+		pending = undefined;
+		response
+			.writeHead(200, { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store", Connection: "close" })
+			.end("Authorization response received. You can close this tab.");
+		resolve(new URLSearchParams(target.slice(path.length + 1)));
+		server.close();
+	});
+	server.requestTimeout = 10_000;
+	await new Promise<void>((resolve, reject) => {
+		server.once("error", reject);
+		server.listen(Number(url.port || 80), "127.0.0.1", resolve);
+	});
+	return {
+		close: () => {
+			pending?.reject(new Error("cancelled"));
+			pending = undefined;
+			server.close();
+			server.closeAllConnections();
+		},
+		waitForCallback: async (opts) => {
+			if (opts.redirectUri !== redirectUri) throw new Error("invalid-redirect-uri");
+			const work = new Promise<URLSearchParams>((resolve, reject) => {
+				pending = { resolve, reject };
+			});
+			opts.signal.addEventListener("abort", () => pending?.reject(new Error("cancelled")), { once: true });
+			return work;
+		},
+	};
+}
+
 export async function createOAuthProvider(opts: OAuthProviderOptions): Promise<OAuthProviderHandle> {
 	const { config } = opts;
-	const redirect = await startLoopbackRedirect("/callback");
-	const redirectUri = redirect.redirectUri;
+	// callbackUrl wins; callbackPort fixes the port of /callback; otherwise an
+	// ephemeral loopback listener from the library.
+	const redirectUri =
+		config.oauth?.callbackUrl ??
+		(config.oauth?.callbackPort !== undefined
+			? `http://127.0.0.1:${config.oauth.callbackPort}/callback`
+			: undefined);
+	const redirect = redirectUri !== undefined
+		? await startFixedRedirect(redirectUri)
+		: await startLoopbackRedirect("/callback");
+	const effectiveRedirectUri = redirectUri ?? ("redirectUri" in redirect ? redirect.redirectUri : undefined);
+	if (typeof effectiveRedirectUri !== "string") throw new Error("oauth redirect URI unavailable");
 
 	const consent: AuthorizationConsent = {
 		request: async (prompt, signal) => {
@@ -118,7 +174,7 @@ export async function createOAuthProvider(opts: OAuthProviderOptions): Promise<O
 				if (oauth?.clientId) {
 					const registration: ClientRegistration = {
 						clientId: oauth.clientId,
-						redirectUris: [redirectUri],
+						redirectUris: [effectiveRedirectUri],
 						...(oauth.clientSecret !== undefined ? { clientSecret: oauth.clientSecret } : {}),
 					};
 					return { decision: "accept", registration };
@@ -138,13 +194,17 @@ export async function createOAuthProvider(opts: OAuthProviderOptions): Promise<O
 
 	const provider = new OAuthAuthorization({
 		resource: config.url as string,
-		redirectUri,
+		redirectUri: effectiveRedirectUri,
 		redirect,
 		browser: { open: opts.browserOpen ?? openSystemBrowser },
 		credentials: opts.store,
 		consent,
 		serverLabel: config.name,
 		dynamicRegistration: { clientName: config.oauth?.clientName ?? "pi" },
+		...(config.oauth?.scope !== undefined ? { scope: config.oauth.scope } : {}),
+		...(config.oauth?.authServerMetadataUrl !== undefined
+			? { authServerMetadataUrl: config.oauth.authServerMetadataUrl }
+			: {}),
 		fetch: new SafeFetch({
 			allowInsecureDev: opts.allowInsecureAuth ?? false,
 			// Insecure-dev mode also permits loopback targets (local dev servers,

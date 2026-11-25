@@ -79,16 +79,16 @@ too, with file configuration taking precedence.
 
 Not supported yet: MCP prompts/resources exposure to Pi (servers offering only prompts or
 resources connect but register nothing), elicitation UI (consent prompts decline by
-default), task-based tool calls, and OAuth options `callbackPort`/`callbackUrl`/
-`scope`/`authServerMetadataUrl` (the bridge uses an ephemeral loopback redirect and the
-advertised scopes).
+default), and task-based tool calls.
 
 OAuth works out of the box for HTTP servers without a static `Authorization` header: the
 first 401 marks the server "needs sign-in" in `/mcp`, and `/mcp login <name>` runs the
 authorization-code + PKCE flow with CIMD/DCR registration through the system browser.
 Credentials persist in `$PI_CODING_AGENT_DIR/mcp-client-oauth.json` (issuer-keyed);
-`/mcp logout <name>` deletes them. Static clients can be set with
-`"oauth": { "clientId": "...", "clientSecret": "${SECRET}", "clientName": "..." }`.
+`/mcp logout <name>` deletes them. The full `oauth` config shape is supported:
+`clientId`, `clientSecret`, `clientName`, `callbackPort`, `callbackUrl` (loopback HTTP),
+`scope` (space-separated, merged with advertised scopes), and `authServerMetadataUrl`
+(trusted as configured, skips PRM discovery).
 
 A running Pi session picks the extension up on `/reload`; fresh starts load it
 automatically.

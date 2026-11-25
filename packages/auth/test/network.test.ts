@@ -3,6 +3,62 @@ import { expect, it } from 'vitest';
 import { startTestAuthorizationServer } from './fixtures/test-as.js';
 import { OAuthAuthorization, SafeFetch, startLoopbackRedirect } from '../src/index.js';
 
+it('[AUTH-OVERRIDE-1] uses a configured authorization-server metadata URL instead of discovery', async () => {
+  const redirect = await startLoopbackRedirect();
+  const as = await startTestAuthorizationServer(redirect.redirectUri);
+  const auth = new OAuthAuthorization({
+    resource: as.resource, redirectUri: redirect.redirectUri, allowInsecureDev: true,
+    fetch: new SafeFetch({ allowInsecureDev: true, allowAddress: host => host === '127.0.0.1' }),
+    authServerMetadataUrl: `${as.issuer}/.well-known/oauth-authorization-server`,
+    registrations: { [as.issuer]: { clientId: 'test-client', redirectUris: [redirect.redirectUri] } },
+    consent: { async request() { return { decision: 'accept' }; } },
+    redirect,
+    browser: { async open(input) {
+      const url = new URL(input);
+      url.protocol = 'http:';
+      await fetch(url);
+    } },
+  });
+  try {
+    const initial = await fetch(as.resource);
+    expect(initial.status).toBe(401);
+    expect(await auth.onChallenge({ status: 401, resource: as.resource,
+      wwwAuthenticate: initial.headers.get('www-authenticate')! }, new AbortController().signal)).toBe(true);
+    // The PRM document is never fetched: the configured metadata URL is trusted as configured.
+    expect(as.calls.some(c => c.path === '/.well-known/oauth-protected-resource/mcp')).toBe(false);
+    expect(as.calls.some(c => c.path === '/.well-known/oauth-authorization-server')).toBe(true);
+    expect((await auth.headerFor(as.resource))!.authorization).toBe('Bearer test-access');
+  } finally { redirect.close(); await as.close(); }
+});
+
+it('[AUTH-SCOPE-1] merges configured scopes into the authorization request', async () => {
+  const redirect = await startLoopbackRedirect();
+  const as = await startTestAuthorizationServer(redirect.redirectUri);
+  let authorizeQuery = '';
+  const auth = new OAuthAuthorization({
+    resource: as.resource, redirectUri: redirect.redirectUri, allowInsecureDev: true,
+    fetch: new SafeFetch({ allowInsecureDev: true, allowAddress: host => host === '127.0.0.1' }),
+    scope: 'read write',
+    registrations: { [as.issuer]: { clientId: 'test-client', redirectUris: [redirect.redirectUri] } },
+    consent: { async request() { return { decision: 'accept' }; } },
+    redirect,
+    browser: { async open(input) {
+      const url = new URL(input);
+      authorizeQuery = url.search;
+      url.protocol = 'http:';
+      await fetch(url);
+    } },
+  });
+  try {
+    const initial = await fetch(as.resource);
+    expect(await auth.onChallenge({ status: 401, resource: as.resource,
+      wwwAuthenticate: initial.headers.get('www-authenticate')! }, new AbortController().signal)).toBe(true);
+    const scope = new URLSearchParams(authorizeQuery).get('scope');
+    expect(scope).toContain('read');
+    expect(scope).toContain('write');
+  } finally { redirect.close(); await as.close(); }
+});
+
 it('redeems a real single-use PKCE code via the loopback callback and test AS', async () => {
   const redirect = await startLoopbackRedirect();
   const as = await startTestAuthorizationServer(redirect.redirectUri);

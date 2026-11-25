@@ -135,4 +135,75 @@ describe("McpBridge OAuth flow", () => {
 		},
 		30_000,
 	);
+
+	it(
+		"honors callbackPort and scope config",
+		async () => {
+			server = await startOAuthMcpServer();
+			dir = mkdtempSync(join(tmpdir(), "mcp-ext-oauth-"));
+			const { pi } = fakePi();
+			let authorizeScope: string | null = null;
+			const browserOpen = async (url: string) => {
+				const u = new URL(url);
+				authorizeScope = u.searchParams.get("scope");
+				// Fixed callback: the redirect must target the configured port.
+				expect(u.searchParams.get("redirect_uri")).toBe("http://127.0.0.1:18765/callback");
+				const res = await fetch(url, { redirect: "manual" });
+				await fetch(res.headers.get("location") as string);
+			};
+			bridge = new McpBridge({
+				pi,
+				notify: () => {},
+				credentialStorePath: join(dir, "auth.json"),
+				confirm: async () => true,
+				browserOpen,
+				allowInsecureAuth: true,
+			});
+			const cfg = {
+				...httpConfig(server!.url),
+				oauth: { clientId: "test-client", callbackPort: 18765, scope: "read write" },
+			};
+			bridge.sync(new Map([["secure", cfg]]));
+			await bridge.waitForPending();
+			const state = await bridge.login("secure");
+			expect(state.status).toBe("connected");
+			expect(authorizeScope).toContain("read");
+			expect(authorizeScope).toContain("write");
+		},
+		30_000,
+	);
+
+	it(
+		"honors authServerMetadataUrl (skips PRM discovery)",
+		async () => {
+			server = await startOAuthMcpServer();
+			dir = mkdtempSync(join(tmpdir(), "mcp-ext-oauth-"));
+			const { pi } = fakePi();
+			const browserOpen = async (url: string) => {
+				const res = await fetch(url, { redirect: "manual" });
+				await fetch(res.headers.get("location") as string);
+			};
+			bridge = new McpBridge({
+				pi,
+				notify: () => {},
+				credentialStorePath: join(dir, "auth.json"),
+				confirm: async () => true,
+				browserOpen,
+				allowInsecureAuth: true,
+			});
+			const cfg = {
+				...httpConfig(server!.url),
+				oauth: {
+					clientId: "test-client",
+					authServerMetadataUrl: `${server!.issuer}/.well-known/oauth-authorization-server`,
+				},
+			};
+			bridge.sync(new Map([["secure", cfg]]));
+			await bridge.waitForPending();
+			const state = await bridge.login("secure");
+			expect(state.status).toBe("connected");
+			expect(server!.calls.some((c: string) => c.includes("oauth-protected-resource"))).toBe(false);
+		},
+		30_000,
+	);
 });

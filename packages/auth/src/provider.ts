@@ -93,6 +93,8 @@ export interface OAuthOptions extends ResourceOptions, DiscoveryOptions {
   readonly flowTimeoutMs?: number;
   readonly stepUpLimit?: number;
   readonly offlineAccess?: boolean;
+  /** Space-separated scopes requested when the server does not advertise required scopes. */
+  readonly scope?: string;
   readonly onDiagnostic?: (message: string) => void;
 }
 interface Session {
@@ -194,6 +196,7 @@ export class OAuthAuthorization implements AuthProvider {
     if (previous && !sameBinding) this.#grant = undefined;
     const selected = [...new Set([...(step && sameBinding ? previous.scopes : []),
       ...(bearer?.scope !== undefined ? scopesOf(bearer.scope) : step && sameBinding ? [] : scopes.flatMap(scopesOf)),
+      ...scopesOf(this.#options.scope),
     ])].filter(scope => scope !== 'offline_access');
     if (this.#options.offlineAccess && metadata.scopes.includes('offline_access')) selected.push('offline_access');
     const session = { metadata, resource, registration: await this.registration(metadata, signal, context, selected) };

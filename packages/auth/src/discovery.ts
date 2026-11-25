@@ -22,6 +22,8 @@ export interface DiscoveryOptions {
   readonly allowInsecureDev?: boolean;
   readonly onDiagnostic?: (message: string) => void;
   readonly chooseAuthorizationServer?: (candidates: readonly string[]) => string | Promise<string>;
+  /** Skip PRM/issuer discovery: fetch this AS metadata document and trust it as configured. */
+  readonly authServerMetadataUrl?: string;
 }
 
 export async function getDocument(fetcher: FetchPort, url: string, signal: AbortSignal): Promise<JsonObject | undefined> {
@@ -36,6 +38,14 @@ export async function getDocument(fetcher: FetchPort, url: string, signal: Abort
 export async function discover(fetcher: FetchPort, resource: string, requestUrl: string, location: string | undefined,
   options: DiscoveryOptions, signal: AbortSignal): Promise<{ metadata: Metadata; scopes: string[]; resource: string }> {
   const url = secureUrl(resource, options.allowInsecureDev);
+  if (options.authServerMetadataUrl !== undefined) {
+    const metadataUrl = secureUrl(options.authServerMetadataUrl, options.allowInsecureDev);
+    const doc = await getDocument(fetcher, metadataUrl.href, signal);
+    if (!doc) fail('as-metadata-missing');
+    const issuer = doc['issuer'];
+    if (typeof issuer !== 'string' || !issuer) fail('as-issuer-invalid');
+    return { resource: url.href, metadata: await discoverIssuer(fetcher, issuer, options, signal), scopes: [] };
+  }
   const root = `${url.origin}/.well-known/oauth-protected-resource`;
   const locations = location !== undefined ? [secureUrl(location, options.allowInsecureDev).href] :
     [...new Set([`${root}${url.pathname === '/' ? '' : url.pathname}${url.search}`, root])];
@@ -65,8 +75,10 @@ export async function discoverIssuer(fetcher: FetchPort, issuer: string, options
   const url = secureUrl(issuer, options.allowInsecureDev);
   if (url.search || url.hash || /[?#]/u.test(issuer)) fail('as-issuer-invalid');
   const path = url.pathname === '/' ? '' : url.pathname.replace(/\/$/u, '');
-  const candidates = [`${url.origin}/.well-known/oauth-authorization-server${path}`, `${url.origin}/.well-known/openid-configuration${path}`];
-  if (path) candidates.push(`${url.origin}${path}/.well-known/openid-configuration`);
+  const candidates = options.authServerMetadataUrl !== undefined
+    ? [secureUrl(options.authServerMetadataUrl, options.allowInsecureDev).href]
+    : [`${url.origin}/.well-known/oauth-authorization-server${path}`, `${url.origin}/.well-known/openid-configuration${path}`];
+  if (!options.authServerMetadataUrl && path) candidates.push(`${url.origin}${path}/.well-known/openid-configuration`);
   for (const candidate of candidates) {
     const doc = await getDocument(fetcher, candidate, signal);
     if (!doc) continue;
