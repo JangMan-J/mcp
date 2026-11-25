@@ -16,25 +16,25 @@ no test is either on the explicit exemption list (technical debt) or a CI failur
 
 | ID | Requirement (excerpt) | Source | Tests |
 |---|---|---|---|
-| EDGE-10 | // WIRE-RT-3 / EDGE-10: Unknown or unregistered extension resultType -> protocol-violation. | `packages/core/src/request.ts:717` | `packages/core/test/req-edge-a.test.ts` |
+| EDGE-10 | // WIRE-RT-3 / EDGE-10: Unknown or unregistered extension resultType -> protocol-violation. | `packages/core/src/request.ts:739` | `packages/core/test/req-edge-a.test.ts` |
 | EDGE-12 | Per-client monotonic integer id generator keeping all values strictly < 2^53 (EDGE-12). | `packages/core/src/jsonrpc.ts:44` | `packages/core/test/req-edge-a.test.ts` |
 | EDGE-32 | // Error-code mapping (WIRE-ERR-3/4, VER-7, EDGE-32/34) | `packages/core/src/lifecycle.ts:31` | `packages/core/test/lifecycle/lifecycle.test.ts` |
 | EDGE-33 | - notifications/message is dropped: logging is deprecated (WIRE-LOG-1, EDGE-33) | `packages/core/src/lifecycle.ts:357` `packages/transport-stdio/src/transport.ts:656` | — (exempt) |
-| EDGE-6 | // EDGE-6: Abort before send emits zero wire traffic. | `packages/core/src/request.ts:401` `packages/transport-stdio/src/transport.ts:273` | `packages/core/test/core.test.ts` |
-| HTTP-AMBIG-3 | HTTP-AMBIG-3: id of the original request this caller-opted re-issue duplicates. | `packages/core/src/outcome.ts:54` `packages/core/src/request.ts:71` `packages/core/src/request.ts:73` `packages/core/src/request.ts:383` | `packages/transport-http/test/req-ambig.test.ts` |
+| EDGE-6 | // EDGE-6: Abort before send emits zero wire traffic. | `packages/core/src/request.ts:423` `packages/transport-stdio/src/transport.ts:273` | `packages/core/test/core.test.ts` |
+| HTTP-AMBIG-3 | HTTP-AMBIG-3: id of the original request this caller-opted re-issue duplicates. | `packages/core/src/outcome.ts:54` `packages/core/src/request.ts:72` `packages/core/src/request.ts:74` `packages/core/src/request.ts:405` | `packages/transport-http/test/req-ambig.test.ts` |
 | HTTP-AMBIG-4 | HTTP-AMBIG-4: task handle observed on the stream before it broke; kept for the tasks extension to poll. | `packages/core/src/outcome.ts:39` | `packages/transport-http/test/req-ambig.test.ts` |
-| LIM-CONC-1 | // LIM-CONC-1: over-cap requests wait here in FIFO order; nothing is sent while queued. | `packages/core/src/request.ts:160` `packages/core/src/request.ts:411` `packages/core/src/request.ts:733` | `packages/core/test/req-lim-conc.test.ts` |
+| LIM-CONC-1 | // LIM-CONC-1: over-cap requests wait here in FIFO order; nothing is sent while queued. | `packages/core/src/request.ts:161` `packages/core/src/request.ts:433` `packages/core/src/request.ts:755` | `packages/core/test/req-lim-conc.test.ts` |
 | LIM-DIAG-1 | Bounded diagnostic ring buffer with AsyncIterable streaming (LIM-DIAG-1). | `packages/core/src/ports.ts:14` | `packages/transport-stdio/test/req-lim-diag.test.ts` |
-| LIM-PROG-1 | LIM-PROG-1: rate-limits progress delivery to `limit` callbacks per `windowMs` (default 50 per | `packages/core/src/progress.ts:187` `packages/core/src/request.ts:457` | `packages/core/test/req-lim-prog.test.ts` |
+| LIM-PROG-1 | LIM-PROG-1: rate-limits progress delivery to `limit` callbacks per `windowMs` (default 50 per | `packages/core/src/progress.ts:187` `packages/core/src/request.ts:479` | `packages/core/test/req-lim-prog.test.ts` |
 | PROG-1 | Progress registry (S1.1, IMPLEMENTATION_PLAN.md §5.6; PROG-1..PROG-5). | `packages/core/src/progress.ts:4` `packages/core/src/progress.ts:74` | `packages/core/test/progress/progress.test.ts` |
 | PROG-2 | when the progress value strictly increases per token (PROG-2), and never after the request | `packages/core/src/progress.ts:8` | `packages/core/test/progress/progress.test.ts` |
 | PROG-3 | when the request settles. Notifications are accepted only for active tokens (PROG-3), only | `packages/core/src/progress.ts:7` | `packages/core/test/progress/progress.test.ts` |
 | PROG-4 | settled (PROG-4). progress/total may be any finite number (PROG-5). Every drop is counted. | `packages/core/src/progress.ts:9` `packages/core/src/progress.ts:122` | — (exempt) |
 | PROG-5 | Progress registry (S1.1, IMPLEMENTATION_PLAN.md §5.6; PROG-1..PROG-5). | `packages/core/src/progress.ts:4` `packages/core/src/progress.ts:9` | `packages/core/test/progress/progress.test.ts` |
 | STDIO-RECOVER-1 | prompts/get is listed as a host-overridable default only (STDIO-RECOVER-1); the spec does not | `packages/core/src/cancel.ts:18` | — (exempt) |
-| VER-2 | Picks the first version from our preference list that the server also supports (VER-2). | `packages/core/src/lifecycle.ts:114` `packages/core/src/request.ts:659` | `packages/core/test/core.test.ts` `packages/core/test/lifecycle/lifecycle.test.ts` |
+| VER-2 | Picks the first version from our preference list that the server also supports (VER-2). | `packages/core/src/lifecycle.ts:114` `packages/core/src/request.ts:681` | `packages/core/test/core.test.ts` `packages/core/test/lifecycle/lifecycle.test.ts` |
 | VER-3 | // Unsupported-version / legacy diagnostics (VER-3, VER-DIAG-1) | `packages/core/src/lifecycle.ts:123` `packages/core/src/lifecycle.ts:171` | — (exempt) |
-| VER-4 | (VER-3, VER-4). Everything else passes through. | `packages/core/src/lifecycle.ts:171` `packages/core/src/request.ts:659` | `packages/core/test/core.test.ts` `packages/core/test/lifecycle/lifecycle.test.ts` |
+| VER-4 | (VER-3, VER-4). Everything else passes through. | `packages/core/src/lifecycle.ts:171` `packages/core/src/request.ts:681` | `packages/core/test/core.test.ts` `packages/core/test/lifecycle/lifecycle.test.ts` |
 | VER-5 | memory (VER-5, VER-CACHE-1, VER-DIAG-1). Never sends initialize. Local cancels and transport | `packages/core/src/index.ts:169` `packages/core/src/lifecycle.ts:191` | `packages/core/test/lifecycle/lifecycle.test.ts` |
 | VER-6 | // server/discover and era cache (VER-5, VER-6, VER-CACHE-1) | `packages/core/src/lifecycle.ts:191` `packages/core/src/lifecycle.ts:198` | `packages/core/test/lifecycle/lifecycle.test.ts` |
 | VER-7 | // Error-code mapping (WIRE-ERR-3/4, VER-7, EDGE-32/34) | `packages/core/src/lifecycle.ts:31` `packages/core/src/lifecycle.ts:59` `packages/core/src/lifecycle.ts:384` | `packages/core/test/lifecycle/lifecycle.test.ts` |
@@ -48,12 +48,12 @@ no test is either on the explicit exemption list (technical debt) or a CI failur
 | WIRE-ERR-3 | // Error-code mapping (WIRE-ERR-3/4, VER-7, EDGE-32/34) | `packages/core/src/lifecycle.ts:31` | `packages/core/test/lifecycle/lifecycle.test.ts` |
 | WIRE-ERR-4 | for every code except where noted (WIRE-ERR-4); unknown data fields are ignored. | `packages/core/src/lifecycle.ts:65` | — (exempt) |
 | WIRE-ID-1 | throw new TypeError("Outbound request id must be non-empty string or integer, never null (WIRE-ID-1)"); | `packages/core/src/jsonrpc.ts:79` | `packages/core/test/core.test.ts` |
-| WIRE-LOG-1 | Deprecated logging key; never sent (WIRE-LOG-1). | `packages/core/src/lifecycle.ts:21` `packages/core/src/lifecycle.ts:357` `packages/core/src/request.ts:120` `packages/core/src/request.ts:124` `packages/transport-stdio/src/transport.ts:656` | `packages/core/test/lifecycle/lifecycle.test.ts` |
+| WIRE-LOG-1 | Deprecated logging key; never sent (WIRE-LOG-1). | `packages/core/src/lifecycle.ts:21` `packages/core/src/lifecycle.ts:357` `packages/core/src/request.ts:121` `packages/core/src/request.ts:125` `packages/transport-stdio/src/transport.ts:656` | `packages/core/test/lifecycle/lifecycle.test.ts` |
 | WIRE-META-3 | Library identity sent as io.modelcontextprotocol/clientInfo when the host supplies none (WIRE-META-3). | `packages/core/src/lifecycle.ts:15` | — (exempt) |
-| WIRE-META-4 | throw new Error(`Caller _meta cannot override reserved key '${key}' (WIRE-META-4)`); | `packages/core/src/request.ts:110` `packages/core/src/request.ts:119` | `packages/core/test/core.test.ts` `packages/core/test/lifecycle/lifecycle.test.ts` `packages/core/test/req-wire.test.ts` |
-| WIRE-META-5 | throw new TypeError(`Invalid _meta key syntax '${key}' (WIRE-META-5)`); | `packages/core/src/request.ts:113` | `packages/core/test/lifecycle/lifecycle.test.ts` `packages/core/test/req-wire.test.ts` |
-| WIRE-RT-2 | // WIRE-RT-2: Absent resultType treated as "complete". | `packages/core/src/request.ts:692` | `packages/core/test/core.test.ts` |
-| WIRE-RT-3 | // WIRE-RT-3 / EDGE-10: Unknown or unregistered extension resultType -> protocol-violation. | `packages/core/src/request.ts:717` | `packages/core/test/core.test.ts` |
+| WIRE-META-4 | throw new Error(`Caller _meta cannot override reserved key '${key}' (WIRE-META-4)`); | `packages/core/src/request.ts:111` `packages/core/src/request.ts:120` | `packages/core/test/core.test.ts` `packages/core/test/lifecycle/lifecycle.test.ts` `packages/core/test/req-wire.test.ts` |
+| WIRE-META-5 | throw new TypeError(`Invalid _meta key syntax '${key}' (WIRE-META-5)`); | `packages/core/src/request.ts:114` | `packages/core/test/lifecycle/lifecycle.test.ts` `packages/core/test/req-wire.test.ts` |
+| WIRE-RT-2 | // WIRE-RT-2: Absent resultType treated as "complete". | `packages/core/src/request.ts:714` | `packages/core/test/core.test.ts` |
+| WIRE-RT-3 | // WIRE-RT-3 / EDGE-10: Unknown or unregistered extension resultType -> protocol-violation. | `packages/core/src/request.ts:739` | `packages/core/test/core.test.ts` |
 
 ## packages/ext-server-cards
 
@@ -98,32 +98,38 @@ no test is either on the explicit exemption list (technical debt) or a CI failur
 | SEC-ICON-1 | Icon metadata helpers (SEC-ICON-1..5). The library fetches and renders nothing. | `packages/ops/src/icons.ts:1` `packages/ops/src/icons.ts:59` | — (exempt) |
 | SEC-ICON-5 | Detect by magic bytes (SEC-ICON-5). | `packages/ops/src/icons.ts:34` | — (exempt) |
 
+## packages/server-transport
+
+| ID | Requirement (excerpt) | Source | Tests |
+|---|---|---|---|
+| WIRE-DIR-2 | continue; // Never reply to stray response envelopes (WIRE-DIR-2). | `packages/server-transport/src/stdio.ts:41` `packages/transport-stdio/src/transport.ts:614` | `packages/core/test/req-wire.test.ts` |
+
 ## packages/transport-http
 
 | ID | Requirement (excerpt) | Source | Tests |
 |---|---|---|---|
-| AUTH-HTTP-1 | // Auth challenges (AUTH-HTTP-1/2): 401 always; 403 only with insufficient_scope. | `packages/transport-http/src/transport.ts:421` | — (exempt) |
-| EDGE-20 | this.emit("violation", "SSE data is not valid JSON (EDGE-20); event dropped"); | `packages/transport-http/src/transport.ts:733` | `packages/transport-http/test/req-edge-b.test.ts` |
-| EDGE-21 | this.emit("violation", "HTTP 200 with empty body for a request (EDGE-21)"); | `packages/transport-http/src/transport.ts:581` | `packages/transport-http/test/req-edge-b.test.ts` |
+| AUTH-HTTP-1 | // Auth challenges (AUTH-HTTP-1/2): 401 always; 403 only with insufficient_scope. | `packages/transport-http/src/transport.ts:435` | — (exempt) |
+| EDGE-20 | this.emit("violation", "SSE data is not valid JSON (EDGE-20); event dropped"); | `packages/transport-http/src/transport.ts:751` | `packages/transport-http/test/req-edge-b.test.ts` |
+| EDGE-21 | this.emit("violation", "HTTP 200 with empty body for a request (EDGE-21)"); | `packages/transport-http/src/transport.ts:595` | `packages/transport-http/test/req-edge-b.test.ts` |
 | HTTP-CASE-1 | Case-insensitive lookup in a plain header record (HTTP-CASE-1). Values stay case-sensitive. | `packages/transport-http/src/headers.ts:48` | `packages/transport-http/test/headers.test.ts` `packages/transport-http/test/req-http-a.test.ts` |
-| HTTP-HDR-3 | // Mcp-Name (HTTP-HDR-3) | `packages/transport-http/src/transport.ts:871` | `packages/transport-http/test/transport.test.ts` |
-| HTTP-LIMIT-1 | export const DEFAULT_MAX_JSON_BYTES = 64 * 1024 * 1024; // HTTP-LIMIT-1 | `packages/transport-http/src/transport.ts:34` `packages/transport-http/src/transport.ts:951` | `packages/transport-http/test/req-http-b.test.ts` `packages/transport-http/test/transport.test.ts` |
+| HTTP-HDR-3 | // Mcp-Name (HTTP-HDR-3 + SEP-3415 + SEP-2663) | `packages/transport-http/src/transport.ts:950` | `packages/transport-http/test/transport.test.ts` |
+| HTTP-LIMIT-1 | export const DEFAULT_MAX_JSON_BYTES = 64 * 1024 * 1024; // HTTP-LIMIT-1 | `packages/transport-http/src/transport.ts:34` `packages/transport-http/src/transport.ts:1033` | `packages/transport-http/test/req-http-b.test.ts` `packages/transport-http/test/transport.test.ts` |
 | HTTP-LIMIT-3 | export const DEFAULT_MAX_SSE_STREAM_BYTES = 64 * 1024 * 1024; // HTTP-LIMIT-3 | `packages/transport-http/src/transport.ts:35` | `packages/transport-http/test/req-http-b.test.ts` |
-| HTTP-NOGET-1 | method: "POST", // POST only: never GET/DELETE (HTTP-NOGET-1) | `packages/transport-http/src/transport.ts:318` | — (exempt) |
-| HTTP-NOTIF-1 | // Extension notifications only: same version/method headers, expect 202 (HTTP-NOTIF-1). | `packages/transport-http/src/transport.ts:165` | `packages/transport-http/test/req-http-a.test.ts` |
-| HTTP-PARAM-2 | continue; // HTTP-PARAM-2 | `packages/transport-http/src/transport.ts:848` | — (exempt) |
-| HTTP-PARAM-4 | // Mcp-Param-* mirroring (HTTP-PARAM-4/5) | `packages/transport-http/src/transport.ts:879` | — (exempt) |
-| HTTP-PARAM-5 | Annotated params cached from the most recent tools/list (HTTP-PARAM-5). | `packages/transport-http/src/transport.ts:141` | `packages/transport-http/test/req-http-a.test.ts` `packages/transport-http/test/transport.test.ts` |
-| HTTP-PARAM-6 | // HTTP-PARAM-6: refresh tools/list, rebuild headers, retry once with a new id. | `packages/transport-http/src/transport.ts:211` | `packages/transport-http/test/transport.test.ts` |
-| HTTP-REQ-2 | this.emit("violation", "JSON-RPC batch array rejected (HTTP-REQ-2)"); | `packages/transport-http/src/transport.ts:609` | — (exempt) |
+| HTTP-NOGET-1 | method: "POST", // POST only: never GET/DELETE (HTTP-NOGET-1) | `packages/transport-http/src/transport.ts:332` | — (exempt) |
+| HTTP-NOTIF-1 | // Extension notifications only: same version/method headers, expect 202 (HTTP-NOTIF-1). | `packages/transport-http/src/transport.ts:171` | `packages/transport-http/test/req-http-a.test.ts` |
+| HTTP-PARAM-2 | continue; // HTTP-PARAM-2 | `packages/transport-http/src/transport.ts:892` | — (exempt) |
+| HTTP-PARAM-4 | // Mcp-Param-* mirroring (HTTP-PARAM-4/5 + SEP-3415) | `packages/transport-http/src/transport.ts:959` | — (exempt) |
+| HTTP-PARAM-5 | Annotated params cached from the most recent tools/list (HTTP-PARAM-5). | `packages/transport-http/src/transport.ts:142` | `packages/transport-http/test/req-http-a.test.ts` `packages/transport-http/test/transport.test.ts` |
+| HTTP-PARAM-6 | // HTTP-PARAM-6: refresh tools/list (or events/list), rebuild headers, retry once with a new id. | `packages/transport-http/src/transport.ts:222` | `packages/transport-http/test/transport.test.ts` |
+| HTTP-REQ-2 | this.emit("violation", "JSON-RPC batch array rejected (HTTP-REQ-2)"); | `packages/transport-http/src/transport.ts:623` | — (exempt) |
 | HTTP-SSE-1 | if (line.startsWith(":")) return undefined; // comment / keep-alive (HTTP-SSE-1) | `packages/transport-http/src/sse.ts:115` | — (exempt) |
-| HTTP-SSE-2 | this.emit("violation", "ignored non-message SSE event (HTTP-SSE-2)"); | `packages/transport-http/src/transport.ts:725` | `packages/transport-http/test/req-http-b.test.ts` |
-| HTTP-SSE-3 | if (!value.includes("\0")) this.lastId = value; // parsed, discarded by transport (HTTP-SSE-3) | `packages/transport-http/src/sse.ts:138` `packages/transport-http/src/transport.ts:728` | — (exempt) |
-| HTTP-SSE-4 | this.emit("violation", "server sent an independent JSON-RPC request on the SSE stream (HTTP-SSE-4)"); | `packages/transport-http/src/transport.ts:747` | — (exempt) |
-| HTTP-SSE-5 | this.emit("violation", "dropped unrelated SSE notification (HTTP-SSE-5)"); | `packages/transport-http/src/transport.ts:753` | — (exempt) |
-| HTTP-SSE-6 | // Final response should terminate the stream: cancel body, ignore later events (HTTP-SSE-6). | `packages/transport-http/src/transport.ts:769` | `packages/transport-http/test/req-http-b.test.ts` |
-| HTTP-SSE-7 | this.emit("violation", "second response for same id on SSE stream (HTTP-SSE-7)"); | `packages/transport-http/src/transport.ts:765` | `packages/transport-http/test/req-http-b.test.ts` |
-| HTTP-SSE-8 | if (method === "subscriptions/listen") return false; // HTTP-SSE-8 | `packages/transport-http/src/transport.ts:803` | `packages/transport-http/test/req-http-b.test.ts` |
+| HTTP-SSE-2 | this.emit("violation", "ignored non-message SSE event (HTTP-SSE-2)"); | `packages/transport-http/src/transport.ts:743` | `packages/transport-http/test/req-http-b.test.ts` |
+| HTTP-SSE-3 | if (!value.includes("\0")) this.lastId = value; // parsed, discarded by transport (HTTP-SSE-3) | `packages/transport-http/src/sse.ts:138` `packages/transport-http/src/transport.ts:746` | — (exempt) |
+| HTTP-SSE-4 | this.emit("violation", "server sent an independent JSON-RPC request on the SSE stream (HTTP-SSE-4)"); | `packages/transport-http/src/transport.ts:765` | — (exempt) |
+| HTTP-SSE-5 | this.emit("violation", "dropped unrelated SSE notification (HTTP-SSE-5)"); | `packages/transport-http/src/transport.ts:771` | — (exempt) |
+| HTTP-SSE-6 | // Final response should terminate the stream: cancel body, ignore later events (HTTP-SSE-6). | `packages/transport-http/src/transport.ts:787` | `packages/transport-http/test/req-http-b.test.ts` |
+| HTTP-SSE-7 | this.emit("violation", "second response for same id on SSE stream (HTTP-SSE-7)"); | `packages/transport-http/src/transport.ts:783` | `packages/transport-http/test/req-http-b.test.ts` |
+| HTTP-SSE-8 | if (method === "subscriptions/listen") return false; // HTTP-SSE-8 | `packages/transport-http/src/transport.ts:823` | `packages/transport-http/test/req-http-b.test.ts` |
 
 ## packages/transport-stdio
 
@@ -146,7 +152,6 @@ no test is either on the explicit exemption list (technical debt) or a CI failur
 | STDIO-STDERR-2 | Bounded stderr ring buffer with per-line cap (STDIO-STDERR-1, STDIO-STDERR-2). | `packages/transport-stdio/src/stderr-ring.ts:10` | — (exempt) |
 | STDIO-STDIN-1 | (never a response envelope, WIRE-DIR-1 / STDIO-STDIN-1). | `packages/transport-stdio/src/framing.ts:12` `packages/transport-stdio/src/transport.ts:270` | — (exempt) |
 | STDIO-WRITE-1 | for `notifications/cancelled` (STDIO-WRITE-1, STDIO-CANCEL-1). | `packages/transport-stdio/src/write-queue.ts:26` | — (exempt) |
-| WIRE-DIR-2 | // WIRE-DIR-2 / EDGE-35: never reply to server-initiated JSON-RPC requests | `packages/transport-stdio/src/transport.ts:614` | `packages/core/test/req-wire.test.ts` |
 | WIRE-ERR-2 | // WIRE-ERR-2 / EDGE-4: error with null/missing id is diagnostic only | `packages/transport-stdio/src/transport.ts:631` | `packages/core/test/req-wire.test.ts` |
 
 ## Test-only IDs

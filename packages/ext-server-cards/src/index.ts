@@ -79,7 +79,14 @@ function cleanHeaders(o: DiscoverCardOptions): Record<string, string> {
   return out;
 }
 
-const port = (o: DiscoverCardOptions): FetchPort => o.fetch ?? new SafeFetch({ allowInsecureDev: o.allowInsecureDev === true });
+const port = (o: DiscoverCardOptions): FetchPort =>
+  o.fetch ??
+  new SafeFetch({
+    allowInsecureDev: o.allowInsecureDev === true,
+    ...(o.allowInsecureDev === true
+      ? { allowAddress: (_host, ip) => ip === "127.0.0.1" || ip === "::1" }
+      : {}),
+  });
 
 /** `<streamable-http base>/server-card` helper. */
 export function canonicalServerCardUrl(streamableHttpUrl: string): string {
@@ -184,9 +191,11 @@ export interface Reconciliation { readonly effective: DiscoverResult; readonly m
 export function reconcileWithDiscover(card: ServerCard | ParsedServerCard, liveDiscover: DiscoverResult): Reconciliation {
   const c: ServerCard = "card" in card ? card.card : card;
   const live = liveDiscover as DiscoverResult & { serverInfo?: { name?: string; version?: string } };
+  const metaInfo = rec(live._meta)?.["io.modelcontextprotocol/serverInfo"];
+  const info = rec(metaInfo) ?? live.serverInfo;
   const mismatches: string[] = [];
-  if (live.serverInfo?.name !== undefined && live.serverInfo.name !== c.name) mismatches.push("name");
-  if (live.serverInfo?.version !== undefined && live.serverInfo.version !== c.version) mismatches.push("version");
+  if (typeof info?.name === "string" && info.name !== c.name) mismatches.push("name");
+  if (typeof info?.version === "string" && info.version !== c.version) mismatches.push("version");
   const cardVersions = [...new Set((c.remotes ?? []).flatMap((r) => r.supportedVersions ?? []))].sort();
   const liveVersions = [...(live.supportedVersions ?? [])].sort();
   if (cardVersions.length > 0 && JSON.stringify(cardVersions) !== JSON.stringify(liveVersions)) mismatches.push("supportedVersions");

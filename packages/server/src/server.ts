@@ -1,15 +1,24 @@
 import type { JsonRpcNotification, JsonRpcRequest, RequestId } from "@mcp/core";
 import { createBuiltinValidator, type SchemaValidator, type ValidationResult } from "@mcp/ops";
 import {
-	EventsServer,
+	object,
 	ServerError,
-	SubscriptionsServer,
-	TaskCenter,
+	type EventsServer,
 	type Obj,
+	type SubscriptionsServer,
+	type TaskCenter,
 } from "@mcp/server-events";
-import { complete, DEFAULT_CACHE_HINTS, paginate, PROTOCOL_VERSION, validateRequestMeta, type CacheHints } from "./protocol.js";
-import { matchUriTemplate } from "./uri.js";
+import {
+	complete,
+	DEFAULT_CACHE_HINTS,
+	paginate,
+	PROTOCOL_VERSION,
+	validateRequestMeta,
+	type CacheHints,
+	type ServerInfo,
+} from "./protocol.js";
 import { SkillsRegistry, type SkillInput } from "./skills.js";
+import { matchUriTemplate } from "./uri.js";
 
 export interface ToolDefinition {
 	readonly name: string;
@@ -17,7 +26,10 @@ export interface ToolDefinition {
 	readonly inputSchema?: Obj;
 	readonly outputSchema?: Obj;
 	readonly annotations?: Obj;
-	readonly handler: (args: unknown, ctx: { readonly signal: AbortSignal; readonly requestId: RequestId }) => unknown | Promise<unknown>;
+	readonly handler: (
+		args: unknown,
+		ctx: { readonly signal: AbortSignal; readonly requestId: RequestId; readonly meta: Obj },
+	) => unknown | Promise<unknown>;
 }
 
 export interface ResourceDefinition {
@@ -50,7 +62,7 @@ export type CompletionHandler = (input: {
 }) => { readonly values: string[]; readonly total?: number; readonly hasMore?: boolean } | Promise<{ readonly values: string[]; readonly total?: number; readonly hasMore?: boolean }>;
 
 export interface McpServerOptions {
-	readonly serverInfo: { readonly name: string; readonly version: string; readonly title?: string };
+	readonly serverInfo: ServerInfo;
 	readonly instructions?: string;
 	readonly supportedVersions?: readonly string[];
 	readonly cache?: CacheHints;
@@ -90,6 +102,14 @@ export class McpServer {
 		this.#options = options;
 		this.#validator = options.validator ?? createBuiltinValidator();
 		this.#versions = options.supportedVersions ?? [PROTOCOL_VERSION];
+	}
+
+	get serverInfo(): ServerInfo {
+		return this.#options.serverInfo;
+	}
+
+	get supportedVersions(): readonly string[] {
+		return this.#versions;
 	}
 
 	registerTool(def: ToolDefinition): this {
@@ -162,12 +182,34 @@ export class McpServer {
 	}
 
 	discover(): Obj {
-		return complete({
+		return this.#complete({
 			supportedVersions: [...this.#versions],
 			capabilities: this.capabilities(),
-			serverInfo: this.#options.serverInfo,
 			...(this.#options.instructions !== undefined ? { instructions: this.#options.instructions } : {}),
 		}, this.#options.cache ?? DEFAULT_CACHE_HINTS);
+	}
+
+	#complete(result: Obj, cache?: CacheHints): Obj {
+		return complete(result, cache, this.#options.serverInfo);
+	}
+
+	/** Validate _meta (and SEP-2663 taskIds client capability) on long-lived stream requests. */
+	validateStreamRequest(msg: JsonRpcRequest): Obj {
+		const meta = validateRequestMeta(msg.params as Obj | undefined, this.#versions);
+		if (msg.method === "subscriptions/listen" && object(msg.params) && object(msg.params.notifications)) {
+			if (Array.isArray(msg.params.notifications.taskIds)) {
+				const caps = object(meta["io.modelcontextprotocol/clientCapabilities"])
+					? meta["io.modelcontextprotocol/clientCapabilities"]
+					: undefined;
+				const exts = caps && object(caps.extensions) ? caps.extensions : undefined;
+				if (!exts || !object(exts["io.modelcontextprotocol/tasks"])) {
+					throw new ServerError(-32021, "Missing required client capability", {
+						requiredCapabilities: { extensions: { "io.modelcontextprotocol/tasks": {} } },
+					});
+				}
+			}
+		}
+		return meta;
 	}
 
 	/** Handle notifications/cancelled: aborts the in-flight request, if any. */
@@ -186,6 +228,7 @@ export class McpServer {
 	wasCancelled(requestId: RequestId): boolean {
 		return this.#cancelled.has(requestId);
 	}
+
 	/** Handle one ordinary JSON-RPC request; throws ServerError for the host to map. */
 	async handleRequest(msg: JsonRpcRequest): Promise<Obj> {
 		const ac = new AbortController();
@@ -199,33 +242,48 @@ export class McpServer {
 	}
 
 	async #handleRequest(msg: JsonRpcRequest, signal: AbortSignal): Promise<Obj> {
-		const params = (msg.params ?? {}) as Obj;
-		validateRequestMeta(params, this.#versions);
+		const rawParams = msg.params;
+		if (msg.method === "initialize" && (!object(rawParams) || rawParams["_meta"] === undefined)) {
+			throw new ServerError(
+				-32601,
+				`method not found: initialize (supported protocol versions: ${this.#versions.join(", ")})`,
+			);
+		}
+		const meta = validateRequestMeta(rawParams as Obj | undefined, this.#versions);
+		const params = (rawParams ?? {}) as Obj;
+		const cache = this.#options.cache ?? DEFAULT_CACHE_HINTS;
 		switch (msg.method) {
 			case "server/discover":
 				return this.discover();
 			case "tools/list": {
 				const tools = [...this.#tools.values()].sort((a, b) => a.name.localeCompare(b.name));
 				const page = paginate(tools, params.cursor, this.#options.pageSize);
-				return complete({
+				return this.#complete({
 					tools: page.items.map((tool) => this.#toolSchema(tool)),
 					...(page.nextCursor !== undefined ? { nextCursor: page.nextCursor } : {}),
-				}, this.#options.cache ?? DEFAULT_CACHE_HINTS);
+				}, cache);
 			}
 			case "tools/call":
-				return this.#callTool(params, msg.id, signal);
+				return this.#callTool(params, msg.id, signal, meta);
 			case "resources/list": {
-				const resources = [...this.#resources.values()].sort((a, b) => a.uri.localeCompare(b.uri));
+				const merged = new Map<string, Obj>();
+				for (const s of this.#options.skills?.resourceSchemas() ?? []) {
+					if (typeof s.uri === "string") merged.set(s.uri, s);
+				}
+				for (const r of this.#resources.values()) {
+					merged.set(r.uri, this.#resourceSchema(r));
+				}
+				const resources = [...merged.values()].sort((a, b) => String(a.uri).localeCompare(String(b.uri)));
 				const page = paginate(resources, params.cursor, this.#options.pageSize);
-				return complete({
-					resources: page.items.map((r) => this.#resourceSchema(r)),
+				return this.#complete({
+					resources: page.items,
 					...(page.nextCursor !== undefined ? { nextCursor: page.nextCursor } : {}),
-				}, this.#options.cache ?? DEFAULT_CACHE_HINTS);
+				}, cache);
 			}
 			case "resources/templates/list": {
 				const templates = [...this.#templates.values()].sort((a, b) => a.uriTemplate.localeCompare(b.uriTemplate));
 				const page = paginate(templates, params.cursor, this.#options.pageSize);
-				return complete({
+				return this.#complete({
 					resourceTemplates: page.items.map((t) => ({
 						uriTemplate: t.uriTemplate,
 						name: t.name,
@@ -233,45 +291,57 @@ export class McpServer {
 						...(t.mimeType !== undefined ? { mimeType: t.mimeType } : {}),
 					})),
 					...(page.nextCursor !== undefined ? { nextCursor: page.nextCursor } : {}),
-				}, this.#options.cache ?? DEFAULT_CACHE_HINTS);
+				}, cache);
 			}
 			case "resources/read":
 				return this.#readResource(params);
 			case "prompts/list": {
 				const prompts = [...this.#prompts.values()].sort((a, b) => a.name.localeCompare(b.name));
 				const page = paginate(prompts, params.cursor, this.#options.pageSize);
-				return complete({
+				return this.#complete({
 					prompts: page.items.map((p) => ({
 						name: p.name,
 						...(p.description !== undefined ? { description: p.description } : {}),
 						...(p.arguments !== undefined ? { arguments: p.arguments } : {}),
 					})),
 					...(page.nextCursor !== undefined ? { nextCursor: page.nextCursor } : {}),
-				}, this.#options.cache ?? DEFAULT_CACHE_HINTS);
+				}, cache);
 			}
 			case "prompts/get":
 				return this.#getPrompt(params);
 			case "completion/complete":
-				return this.#complete(params);
+				return this.#completeOp(params);
 			case "events/list":
-				return this.#events().list();
+				return this.#complete(this.#events().list(params), cache);
 			case "events/poll":
-				return this.#events().poll(params);
+				return this.#complete(this.#events().poll(params));
+			case "events/subscribe":
+			case "events/unsubscribe":
+				return this.#events().unsupportedWebhook(params);
 			case "tasks/get":
-				return this.#tasks().get(params);
+				return this.#complete(this.#tasks().get(params));
 			case "tasks/cancel":
-				return this.#tasks().cancel(params);
+				return this.#complete(this.#tasks().cancel(params));
 			case "tasks/update":
-				return this.#tasks().update(params);
+				return this.#complete(this.#tasks().update(params));
 			case "skills/list":
-				return this.#skills().list(params.cursor, this.#options.cache ?? DEFAULT_CACHE_HINTS);
+				return this.#complete(this.#skills().list(params.cursor, cache), cache);
 			case "skills/get": {
 				if (typeof params.uri !== "string") throw new ServerError(-32602, "skill uri required");
-				return this.#skills().get(params.uri, this.#options.cache ?? DEFAULT_CACHE_HINTS);
+				return this.#complete(this.#skills().get(params.uri, cache), cache);
+			}
+			case "resources/directory/read": {
+				if (typeof params.uri !== "string") throw new ServerError(-32602, "directory uri required");
+				return this.#complete(this.#skills().readDirectory(params.uri, params.cursor, cache), cache);
 			}
 			case "subscriptions/listen":
 			case "events/stream":
 				throw new ServerError(-32601, `${msg.method} requires a PushChannel from the host transport`);
+			case "initialize":
+				throw new ServerError(
+					-32601,
+					`method not found: initialize (supported protocol versions: ${this.#versions.join(", ")})`,
+				);
 			default:
 				throw new ServerError(-32601, `method not found: ${msg.method}`);
 		}
@@ -301,10 +371,15 @@ export class McpServer {
 		};
 	}
 
-	/** Public schema view for transports validating Mcp-Param-* headers. */
+	/** Public schema view for transports validating Mcp-Param-* headers on tools/call. */
 	toolSchema(name: string): Obj | undefined {
 		const tool = this.#tools.get(name);
 		return tool ? this.#toolSchema(tool) : undefined;
+	}
+
+	/** Public schema view for transports validating Mcp-Param-* headers on events/*. */
+	eventSchema(name: string): Obj | undefined {
+		return this.#options.events?.eventSchema(name);
 	}
 
 	#resourceSchema(resource: ResourceDefinition): Obj {
@@ -316,7 +391,7 @@ export class McpServer {
 		};
 	}
 
-	async #callTool(params: Obj, requestId: RequestId, signal: AbortSignal): Promise<Obj> {
+	async #callTool(params: Obj, requestId: RequestId, signal: AbortSignal, meta: Obj): Promise<Obj> {
 		const name = params.name;
 		if (typeof name !== "string") throw new ServerError(-32602, "tool name required");
 		const tool = this.#tools.get(name);
@@ -331,17 +406,25 @@ export class McpServer {
 		let returned: unknown;
 		try {
 			if (signal.aborted) throw new ServerError(-32800, "request cancelled");
-			returned = await tool.handler(args, { signal, requestId });
+			returned = await tool.handler(args, { signal, requestId, meta });
 			if (signal.aborted) throw new ServerError(-32800, "request cancelled");
 		} catch (error) {
 			if (error instanceof ServerError) throw error;
 			if (signal.aborted) throw new ServerError(-32800, "request cancelled");
-			return complete({
+			return this.#complete({
 				content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }],
 				isError: true,
 			});
 		}
-		if (typeof returned === "object" && returned !== null && "resultType" in returned) return returned as Obj;
+		if (typeof returned === "object" && returned !== null && "resultType" in returned) {
+			const r = returned as Obj;
+			if (r.resultType === "complete") return this.#complete(r);
+			const existingMeta = object(r._meta) ? r._meta : undefined;
+			return {
+				...r,
+				_meta: { ...existingMeta, "io.modelcontextprotocol/serverInfo": this.#options.serverInfo },
+			};
+		}
 		const result = normalizeToolResult(returned);
 		if (tool.outputSchema && result.structuredContent !== undefined) {
 			const output = this.#validator.compile(tool.outputSchema);
@@ -349,24 +432,25 @@ export class McpServer {
 			const verdict = output.validate(result.structuredContent);
 			if (!verdict.valid) throw new ServerError(-32603, `tool ${name}: output does not match outputSchema`, { issues: verdict.errors });
 		}
-		return complete(result);
+		return this.#complete(result);
 	}
 
 	async #readResource(params: Obj): Promise<Obj> {
+		const cache = this.#options.cache ?? DEFAULT_CACHE_HINTS;
 		const uri = params.uri;
 		if (typeof uri !== "string") throw new ServerError(-32602, "resource uri required");
 		const exact = this.#resources.get(uri);
 		if (exact) {
-			return complete({ contents: await resourceContents(uri, exact.mimeType, await exact.handler()) }, this.#options.cache ?? DEFAULT_CACHE_HINTS);
+			return this.#complete({ contents: await resourceContents(uri, exact.mimeType, await exact.handler()) }, cache);
 		}
 		for (const template of this.#templates.values()) {
 			const vars = matchUriTemplate(template.uriTemplate, uri);
 			if (vars) {
-				return complete({ contents: await resourceContents(uri, template.mimeType, await template.handler(uri, vars)) }, this.#options.cache ?? DEFAULT_CACHE_HINTS);
+				return this.#complete({ contents: await resourceContents(uri, template.mimeType, await template.handler(uri, vars)) }, cache);
 			}
 		}
 		const skillFile = this.#options.skills?.read(uri);
-		if (skillFile) return complete({ contents: [skillFile] }, this.#options.cache ?? DEFAULT_CACHE_HINTS);
+		if (skillFile) return this.#complete({ contents: [skillFile] }, cache);
 		throw new ServerError(-32602, `resource not found: ${uri}`);
 	}
 
@@ -376,36 +460,36 @@ export class McpServer {
 		const prompt = this.#prompts.get(name);
 		if (!prompt) throw new ServerError(-32602, `unknown prompt: ${name}`);
 		const args = params.arguments ?? {};
-		if (typeof args !== "object" || args === null || Array.isArray(args)) throw new ServerError(-32602, "prompt arguments must be an object");
+		if (!object(args)) throw new ServerError(-32602, "prompt arguments must be an object");
 		for (const arg of prompt.arguments ?? []) {
-			if (arg.required === true && typeof (args as Obj)[arg.name] !== "string") {
+			if (arg.required === true && typeof args[arg.name] !== "string") {
 				throw new ServerError(-32602, `missing required prompt argument: ${arg.name}`);
 			}
 		}
 		const returned = await prompt.handler(args as Record<string, string>);
 		const result = Array.isArray(returned) ? { messages: returned } : returned;
-		if (typeof result !== "object" || result === null || !Array.isArray((result as Obj).messages)) {
+		if (!object(result) || !Array.isArray(result.messages)) {
 			throw new ServerError(-32603, `prompt ${name}: handler must return messages`);
 		}
-		return complete(result as Obj);
+		return this.#complete(result);
 	}
 
-	async #complete(params: Obj): Promise<Obj> {
+	async #completeOp(params: Obj): Promise<Obj> {
 		const handler = this.#options.onComplete;
 		if (!handler) throw new ServerError(-32601, "completion unavailable");
 		const argument = params.argument;
-		if (typeof argument !== "object" || argument === null || typeof (argument as Obj).name !== "string" || typeof (argument as Obj).value !== "string") {
+		if (!object(argument) || typeof argument.name !== "string" || typeof argument.value !== "string") {
 			throw new ServerError(-32602, "completion argument.name/value required");
 		}
 		const ref = params.ref;
-		if (typeof ref !== "object" || ref === null) throw new ServerError(-32602, "completion ref required");
+		if (!object(ref)) throw new ServerError(-32602, "completion ref required");
 		const result = await handler({
-			ref: ref as Obj,
+			ref,
 			argument: argument as { name: string; value: string },
-			...(params.context !== undefined ? { context: params.context as Obj } : {}),
+			...(object(params.context) ? { context: params.context } : {}),
 		});
 		const values = result.values.slice(0, 100);
-		return complete({
+		return this.#complete({
 			completion: {
 				values,
 				...(result.total !== undefined ? { total: result.total } : {}),
@@ -416,7 +500,7 @@ export class McpServer {
 }
 
 function normalizeToolResult(returned: unknown): Obj {
-	if (typeof returned === "object" && returned !== null && Array.isArray((returned as Obj).content)) return returned as Obj;
+	if (object(returned) && Array.isArray(returned.content)) return returned;
 	return { content: [{ type: "text", text: typeof returned === "string" ? returned : JSON.stringify(returned) }] };
 }
 
@@ -424,11 +508,10 @@ async function resourceContents(uri: string, mimeType: string | undefined, retur
 	const entries = Array.isArray(returned) ? returned : [returned];
 	return entries.map((entry) => {
 		if (typeof entry === "string") return { uri, text: entry, ...(mimeType !== undefined ? { mimeType } : {}) };
-		if (typeof entry !== "object" || entry === null) throw new ServerError(-32603, "resource handler returned invalid contents");
-		const obj = entry as Obj;
-		const hasText = "text" in obj;
-		const hasBlob = "blob" in obj;
+		if (!object(entry)) throw new ServerError(-32603, "resource handler returned invalid contents");
+		const hasText = "text" in entry;
+		const hasBlob = "blob" in entry;
 		if (hasText === hasBlob) throw new ServerError(-32603, "resource contents need exactly one of text/blob");
-		return { uri, ...obj, ...(mimeType !== undefined && obj.mimeType === undefined ? { mimeType } : {}) };
+		return { uri, ...entry, ...(mimeType !== undefined && entry.mimeType === undefined ? { mimeType } : {}) };
 	});
 }

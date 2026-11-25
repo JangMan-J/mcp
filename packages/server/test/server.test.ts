@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { McpServer } from "../src/server.js";
 import { inputRequired, issueRequestState, MrtrRegistry, verifyRequestState } from "../src/mrtr.js";
-import { ServerError } from "@mcp/server-events";
+import { SessionHandleRegistry } from "../src/sessions.js";
+import { EventsServer, ServerError } from "@mcp/server-events";
 
 function server(): McpServer {
 	const s = new McpServer({
@@ -52,12 +53,21 @@ function req(method: string, params: Record<string, unknown> = {}) {
 }
 
 describe("McpServer", () => {
-	it("discovers capabilities and cache hints", () => {
+	it("discovers capabilities, cache hints, and _meta serverInfo without legacy top-level serverInfo", () => {
 		const result = server().discover();
 		expect(result.resultType).toBe("complete");
 		expect(result.ttlMs).toBe(1000);
 		expect(result.cacheScope).toBe("public");
+		expect("serverInfo" in result).toBe(false);
+		expect(result._meta).toEqual({ "io.modelcontextprotocol/serverInfo": { name: "test", version: "1.0.0" } });
 		expect(result.capabilities).toMatchObject({ tools: {}, resources: {}, prompts: {}, completions: {} });
+	});
+
+	it("names supported versions on legacy initialize requests", async () => {
+		await expect(server().handleRequest({ jsonrpc: "2.0", id: 1, method: "initialize" })).rejects.toMatchObject({
+			code: -32601,
+			message: expect.stringContaining("2026-07-28"),
+		});
 	});
 
 	it("rejects missing metadata and unsupported versions", async () => {
@@ -123,11 +133,45 @@ describe("McpServer", () => {
 		expect(() => registry.resume("tools/call", { requestState, inputResponses: { q: { answer: 1 } } })).toThrow(ServerError);
 	});
 
-	it("provides MRTR interim results and integrity-protected requestState", () => {
+	it("provides MRTR interim results, rejects deprecated sampling/roots, and enforces principal/TTL claims", () => {
 		expect(inputRequired({ requestState: "x" }).resultType).toBe("input_required");
-		const state = issueRequestState("secret", "tools/call", { attempt: 1 });
-		expect(verifyRequestState("secret", state, "tools/call")).toEqual({ attempt: 1 });
-		expect(() => verifyRequestState("secret", state, "tools/list")).toThrow(ServerError);
-		expect(() => verifyRequestState("wrong", state, "tools/call")).toThrow(ServerError);
+		expect(() =>
+			inputRequired({ inputRequests: { s: { method: "sampling/createMessage", params: {} } } }),
+		).toThrowError(expect.objectContaining({ code: -32602 }));
+		expect(() =>
+			inputRequired({ inputRequests: { r: { method: "roots/list", params: {} } } }),
+		).toThrowError(expect.objectContaining({ code: -32602 }));
+		expect(() =>
+			inputRequired({
+				inputRequests: { q: { method: "elicitation/create", params: {} } },
+				clientCapabilities: {},
+			}),
+		).toThrowError(expect.objectContaining({ code: -32021 }));
+
+		const state = issueRequestState("secret", "tools/call", { attempt: 1 }, { principal: "alice", expMs: 5_000 });
+		expect(verifyRequestState("secret", state, "tools/call", { principal: "alice", nowMs: 4_000 })).toEqual({ attempt: 1 });
+		expect(() => verifyRequestState("secret", state, "tools/call", { principal: "bob", nowMs: 4_000 })).toThrow(ServerError);
+		expect(() => verifyRequestState("secret", state, "tools/call", { principal: "alice", nowMs: 6_000 })).toThrow(ServerError);
+		expect(() => verifyRequestState("secret", state, "tools/list", { principal: "alice", nowMs: 4_000 })).toThrow(ServerError);
+		expect(() => verifyRequestState("wrong", state, "tools/call", { principal: "alice", nowMs: 4_000 })).toThrow(ServerError);
+	});
+
+	it("manages SEP-2567 explicit session handles with -32023 NotFound and supersession", () => {
+		const events = new EventsServer({ events: [{ name: "roger.mail", delivery: ["push", "poll"] }] });
+		const closed: Array<[string, string]> = [];
+		const sessions = new SessionHandleRegistry<{ addr: string }>({
+			events,
+			idGenerator: (() => {
+				let n = 0;
+				return () => `h-${++n}`;
+			})(),
+			onClose: (entry, reason) => closed.push([entry.handle, reason]),
+		});
+		const first = sessions.register({ addr: "pane-1" }, "pane-1");
+		expect(sessions.require(first.handle).state.addr).toBe("pane-1");
+		const second = sessions.register({ addr: "pane-1" }, "pane-1");
+		expect(closed).toEqual([["h-1", "superseded"]]);
+		expect(() => sessions.require("h-1")).toThrowError(expect.objectContaining({ code: -32023 }));
+		expect(sessions.require(second.handle).handle).toBe("h-2");
 	});
 });

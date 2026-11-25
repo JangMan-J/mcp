@@ -16,6 +16,7 @@ export interface SkillEntry {
   readonly name: string;
   readonly description: string;
   readonly files: readonly SkillFileEntry[];
+  readonly frontmatter?: Record<string, unknown>;
   readonly resources?: "static" | "dynamic";
   readonly allowedTools?: readonly string[];
   readonly metadata?: Record<string, unknown>;
@@ -60,28 +61,53 @@ export function validateSkillEntry(raw: unknown, opts?: { readonly allowDynamic?
   if (typeof r["uri"] !== "string" || !r["uri"]) {
     return { ok: false, kind: "protocol-violation", reason: "skill entry missing uri" };
   }
-  if (typeof r["name"] !== "string" || !r["name"]) {
+  const fm = r["frontmatter"] && typeof r["frontmatter"] === "object" && !Array.isArray(r["frontmatter"])
+    ? (r["frontmatter"] as Record<string, unknown>)
+    : undefined;
+  const name = typeof r["name"] === "string" && r["name"]
+    ? r["name"]
+    : typeof fm?.["name"] === "string" && fm["name"]
+      ? fm["name"]
+      : undefined;
+  if (!name) {
     return { ok: false, kind: "protocol-violation", reason: "skill entry missing name" };
   }
-  if (typeof r["description"] !== "string") {
+  const description = typeof r["description"] === "string"
+    ? r["description"]
+    : typeof fm?.["description"] === "string"
+      ? fm["description"]
+      : undefined;
+  if (description === undefined) {
     return { ok: false, kind: "protocol-violation", reason: "skill entry missing description" };
   }
-  if (!Array.isArray(r["files"])) {
-    return { ok: false, kind: "protocol-violation", reason: "skill entry missing complete files manifest" };
-  }
-  const resources = r["resources"];
-  if (resources !== undefined && resources !== "static" && resources !== "dynamic") {
+
+  const rawResources = r["resources"];
+  let resourcesMode: "static" | "dynamic" | undefined;
+  if (rawResources === "dynamic" || rawResources === "static") {
+    resourcesMode = rawResources;
+  } else if (rawResources !== undefined && !Array.isArray(rawResources)) {
     return { ok: false, kind: "protocol-violation", reason: "invalid resources mode" };
   }
-  if (resources === "dynamic" && !opts?.allowDynamic) {
+  if (resourcesMode === "dynamic" && !opts?.allowDynamic) {
     return { ok: false, kind: "dynamic-declined", reason: "dynamic resources declined by default" };
   }
-  if (r["files"].length > MAX_SKILL_FILES) {
-    return { ok: false, kind: "limit-exceeded", reason: `file count ${r["files"].length} exceeds ${MAX_SKILL_FILES}` };
+
+  const manifestItems = Array.isArray(r["files"])
+    ? r["files"]
+    : Array.isArray(rawResources)
+      ? rawResources
+      : resourcesMode === "dynamic"
+        ? []
+        : undefined;
+  if (!manifestItems) {
+    return { ok: false, kind: "protocol-violation", reason: "skill entry missing complete files manifest" };
+  }
+  if (manifestItems.length > MAX_SKILL_FILES) {
+    return { ok: false, kind: "limit-exceeded", reason: `file count ${manifestItems.length} exceeds ${MAX_SKILL_FILES}` };
   }
   let totalBytes = 0;
   const files: SkillFileEntry[] = [];
-  for (const item of r["files"]) {
+  for (const item of manifestItems) {
     if (!item || typeof item !== "object" || Array.isArray(item)) {
       return { ok: false, kind: "protocol-violation", reason: "manifest file entry must be an object" };
     }
@@ -92,7 +118,12 @@ export function validateSkillEntry(raw: unknown, opts?: { readonly allowDynamic?
     if (typeof f["size"] !== "number" || !Number.isInteger(f["size"]) || f["size"] < 0) {
       return { ok: false, kind: "protocol-violation", reason: `invalid size for ${f["uri"]}` };
     }
-    if (typeof f["sha256"] !== "string" || !SHA256_RE.test(f["sha256"])) {
+    const rawDigest = typeof f["sha256"] === "string"
+      ? f["sha256"]
+      : typeof f["digest"] === "string" && f["digest"].startsWith("sha256:")
+        ? f["digest"].slice(7)
+        : undefined;
+    if (!rawDigest || !SHA256_RE.test(rawDigest)) {
       return { ok: false, kind: "protocol-violation", reason: `invalid sha256 for ${f["uri"]}` };
     }
     totalBytes += f["size"];
@@ -102,24 +133,28 @@ export function validateSkillEntry(raw: unknown, opts?: { readonly allowDynamic?
     files.push({
       uri: f["uri"],
       size: f["size"],
-      sha256: f["sha256"],
+      sha256: rawDigest,
       ...(typeof f["mimeType"] === "string" ? { mimeType: f["mimeType"] } : {}),
     });
   }
-  const rawTools = r["allowed-tools"] ?? r["allowedTools"];
+  const rawTools = r["allowed-tools"] ?? r["allowedTools"] ?? fm?.["allowed-tools"] ?? fm?.["allowedTools"];
   const allowedTools = Array.isArray(rawTools) && rawTools.every((t) => typeof t === "string") ? rawTools : undefined;
+  const metaObj = r["metadata"] && typeof r["metadata"] === "object" && !Array.isArray(r["metadata"])
+    ? (r["metadata"] as Record<string, unknown>)
+    : fm?.["metadata"] && typeof fm["metadata"] === "object" && !Array.isArray(fm["metadata"])
+      ? (fm["metadata"] as Record<string, unknown>)
+      : undefined;
   return {
     ok: true,
     entry: {
       uri: r["uri"],
-      name: r["name"],
-      description: r["description"],
+      name,
+      description,
       files,
-      ...(resources !== undefined ? { resources } : {}),
+      ...(fm !== undefined ? { frontmatter: fm } : {}),
+      ...(resourcesMode !== undefined ? { resources: resourcesMode } : {}),
       ...(allowedTools !== undefined ? { allowedTools } : {}),
-      ...(r["metadata"] && typeof r["metadata"] === "object" && !Array.isArray(r["metadata"])
-        ? { metadata: r["metadata"] as Record<string, unknown> }
-        : {}),
+      ...(metaObj !== undefined ? { metadata: metaObj } : {}),
     },
   };
 }

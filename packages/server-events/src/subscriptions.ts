@@ -4,6 +4,8 @@ export interface SubscriptionCapabilities {
 	readonly tools?: { readonly listChanged?: boolean };
 	readonly prompts?: { readonly listChanged?: boolean };
 	readonly resources?: { readonly listChanged?: boolean; readonly subscribe?: boolean };
+	readonly events?: { readonly listChanged?: boolean };
+	readonly tasks?: boolean;
 }
 
 interface Listener {
@@ -12,14 +14,16 @@ interface Listener {
 		toolsListChanged?: true;
 		promptsListChanged?: true;
 		resourcesListChanged?: true;
+		eventsListChanged?: true;
 		resourceSubscriptions?: string[];
+		taskIds?: string[];
 	};
 }
 
 /**
  * Standard MCP subscriptions/listen: capability-filtered grants, ack-first,
  * list_changed and resource-updated fanout, and graceful stream completion.
- * The host calls notify* when its own tools/prompts/resources change.
+ * The host calls notify* when its own tools/prompts/resources/events change.
  */
 export class SubscriptionsServer {
 	readonly #capabilities: SubscriptionCapabilities;
@@ -30,32 +34,42 @@ export class SubscriptionsServer {
 	}
 
 	capabilities(): Obj {
-		return { ...this.#capabilities };
+		const { events: _events, tasks: _tasks, ...core } = this.#capabilities;
+		return { ...core };
 	}
 
 	listen(channel: PushChannel, params: Obj): void {
+		if (params.notifications !== undefined && !object(params.notifications)) {
+			throw new ServerError(-32602, "expected notifications to be an object");
+		}
 		const requested = object(params.notifications) ? params.notifications : {};
 		const granted: Listener["granted"] = {};
 		const offered: Obj = {};
-		const kinds = ["tools", "prompts", "resources"] as const;
+		const kinds = ["tools", "prompts", "resources", "events"] as const;
 		for (const kind of kinds) {
 			const key = `${kind}ListChanged` as const;
 			if (requested[key] !== true) continue;
-			const supported = this.#capabilities[kind]?.listChanged === true;
-			offered[key] = supported;
-			if (supported) granted[key] = true;
+			if (this.#capabilities[kind]?.listChanged === true) {
+				offered[key] = true;
+				granted[key] = true;
+			}
 		}
 		if (Array.isArray(requested.resourceSubscriptions)) {
 			const uris = requested.resourceSubscriptions.filter((u): u is string => typeof u === "string");
 			if (this.#capabilities.resources?.subscribe === true) {
 				granted.resourceSubscriptions = [...new Set(uris)];
 				offered.resourceSubscriptions = granted.resourceSubscriptions;
-			} else {
-				offered.resourceSubscriptions = [];
+			}
+		}
+		if (Array.isArray(requested.taskIds) && this.#capabilities.tasks !== false) {
+			const ids = [...new Set(requested.taskIds.filter((id): id is string => typeof id === "string" && id !== ""))];
+			if (ids.length > 0) {
+				granted.taskIds = ids;
+				offered.taskIds = ids;
 			}
 		}
 		this.#listeners.set(channel.id, { channel, granted });
-		// Ack is always the first message on a listen stream.
+		// Ack is always the first message on a listen stream; unsupported types are omitted (2026-07-28).
 		channel.notify(notification("notifications/subscriptions/acknowledged", { notifications: offered }, channel.id));
 		channel.onClose(() => this.#listeners.delete(channel.id));
 	}
@@ -75,6 +89,9 @@ export class SubscriptionsServer {
 	notifyResourcesChanged(): void {
 		this.#fanout("resourcesListChanged", "notifications/resources/list_changed");
 	}
+	notifyEventsChanged(): void {
+		this.#fanout("eventsListChanged", "notifications/events/list_changed");
+	}
 	notifyResourceUpdated(uri: string): void {
 		for (const listener of this.#listeners.values()) {
 			if (listener.granted.resourceSubscriptions?.includes(uri)) {
@@ -83,7 +100,7 @@ export class SubscriptionsServer {
 		}
 	}
 
-	#fanout(grant: "toolsListChanged" | "promptsListChanged" | "resourcesListChanged", method: string): void {
+	#fanout(grant: "toolsListChanged" | "promptsListChanged" | "resourcesListChanged" | "eventsListChanged", method: string): void {
 		for (const listener of this.#listeners.values()) {
 			if (listener.granted[grant]) listener.channel.notify(notification(method, {}, listener.channel.id));
 		}

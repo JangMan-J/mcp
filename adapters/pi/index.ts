@@ -19,11 +19,14 @@ import {
 } from "./config.ts";
 import type { ExtensionAPI, McpServerEntry, ModelRegistryLike, SessionContext, Ui } from "./pi-api.ts";
 import { RESOURCE_TOOL_NAMES } from "./resources.ts";
+import { SKILL_TOOL_NAMES } from "./skills.ts";
+import { TASK_TOOL_NAMES } from "./tasks.ts";
 
 const MCP_SERVERS_SECTION = "mcp_servers";
+const MCP_SKILLS_SECTION = "mcp_skills";
 const MAX_SERVER_DESCRIPTION_CHARS = 250;
 const MAX_SERVERS_SECTION_CHARS = 4096;
-const RESOURCE_TOOL_SET = new Set<string>(RESOURCE_TOOL_NAMES);
+const META_TOOL_SET = new Set<string>([...RESOURCE_TOOL_NAMES, ...SKILL_TOOL_NAMES, ...TASK_TOOL_NAMES]);
 
 /** Tolerantly unwrap pi.getMcpServers() / mcp_servers_change event shapes. */
 export function registeredServersOf(x: unknown): Map<string, McpServerEntry> {
@@ -98,6 +101,23 @@ export function renderServersSection(states: readonly ServerState[]): string | u
 		return summary ? `${heads[idx]}: ${summary}` : heads[idx];
 	});
 	return [intro, ...lines, ...omitted(listed.length - kept)].join("\n");
+}
+
+/** Render origin-tagged SEP-2640 MCP skills index so MCP skills never silently shadow filesystem skills. */
+export function renderMcpSkillsSection(states: readonly ServerState[]): string | undefined {
+	const lines: string[] = [];
+	for (const s of [...states].sort((a, b) => a.name.localeCompare(b.name))) {
+		if (!s.config.enabled || s.status !== "connected" || !s.skills || s.skills.length === 0) continue;
+		for (const skill of s.skills) {
+			const desc = skill.description.split("\n")[0]?.trim() ?? "";
+			lines.push(`- [mcp:${s.name}] ${skill.name} (${skill.uri})${desc ? `: ${truncateSummary(desc, 180)}` : ""}`);
+		}
+	}
+	if (lines.length === 0) return undefined;
+	return [
+		"MCP-served skills (untrusted remote origin; load on demand with read_mcp_skill({ server, uri })):",
+		...lines,
+	].join("\n");
 }
 
 function reachesServer(reach: "all" | readonly string[], serverName: string): boolean {
@@ -183,6 +203,13 @@ export default function (pi: ExtensionAPI) {
 					case "resources":
 						if (!name) return fail("usage: /mcp resources <name>");
 						return json(await bridge.resourcesList(name));
+					case "skills":
+						if (!name) return fail("usage: /mcp skills <name>");
+						return json(await bridge.skillsList(name));
+					case "skill":
+						if (!name || !rest[1]) return fail("usage: /mcp skill <name> <uri>");
+						ctx.ui.notify(await bridge.skillRead(name, rest[1]), "info");
+						return;
 					case "task": {
 						if (!name || !rest[1]) return fail("usage: /mcp task <name> <taskId> [cancel]");
 						return json(await bridge.taskState(name, rest[1], rest[2] === "cancel"));
@@ -317,9 +344,13 @@ export default function (pi: ExtensionAPI) {
 
 		const sections = event.systemPromptOptions?.sections;
 		if (!sections) return;
-		const rendered = renderServersSection(bridge.list());
+		const states = bridge.list();
+		const rendered = renderServersSection(states);
 		if (rendered !== undefined) sections[MCP_SERVERS_SECTION] = rendered;
 		else delete sections[MCP_SERVERS_SECTION];
+		const skillsRendered = renderMcpSkillsSection(states);
+		if (skillsRendered !== undefined) sections[MCP_SKILLS_SECTION] = skillsRendered;
+		else delete sections[MCP_SKILLS_SECTION];
 	});
 
 	pi.on("tool_call", async (event, _ctx) => {
@@ -329,7 +360,7 @@ export default function (pi: ExtensionAPI) {
 			await bridge.waitForPending((s) => reachesServer(reach, s.name));
 			return;
 		}
-		if (event.toolName === "codemode" || event.toolName === "tool_search" || RESOURCE_TOOL_SET.has(event.toolName)) {
+		if (event.toolName === "codemode" || event.toolName === "tool_search" || META_TOOL_SET.has(event.toolName)) {
 			await bridge.waitForPending();
 			return;
 		}

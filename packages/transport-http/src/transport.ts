@@ -108,6 +108,7 @@ export class HttpTransport implements Transport {
   private readonly extraHeaders: Readonly<Record<string, string>>;
   private readonly diag: DiagnosticChannel;
   private readonly toolParams = new Map<string, readonly AnnotatedParam[]>();
+  private readonly eventParams = new Map<string, readonly AnnotatedParam[]>();
   private readonly inFlight = new Set<AbortController>();
   private closed = false;
 
@@ -141,6 +142,11 @@ export class HttpTransport implements Transport {
   /** Annotated params cached from the most recent tools/list (HTTP-PARAM-5). */
   cachedToolParams(name: string): readonly AnnotatedParam[] | undefined {
     return this.toolParams.get(name);
+  }
+
+  /** Annotated params cached from the most recent events/list (SEP-3415). */
+  cachedEventParams(name: string): readonly AnnotatedParam[] | undefined {
+    return this.eventParams.get(name);
   }
 
   start(msg: JsonRpcRequest, ctx: TransportCall): Exchange {
@@ -204,13 +210,21 @@ export class HttpTransport implements Transport {
         continue;
       }
       if (outcome.kind === "header-mismatch") {
-        if (headerRetried || msg.method !== "tools/call") {
+        const isEventParamMethod =
+          msg.method === "events/poll" ||
+          msg.method === "events/stream" ||
+          msg.method === "events/subscribe" ||
+          msg.method === "events/unsubscribe";
+        if (headerRetried || (msg.method !== "tools/call" && !isEventParamMethod)) {
           return { kind: "response", message: outcome.message };
         }
         headerRetried = true;
-        // HTTP-PARAM-6: refresh tools/list, rebuild headers, retry once with a new id.
+        // HTTP-PARAM-6: refresh tools/list (or events/list), rebuild headers, retry once with a new id.
         state.delivery = "not-sent";
-        if (!await this.refreshToolsList(msg, ctx)) return { kind: "response", message: outcome.message };
+        const refreshed = isEventParamMethod
+          ? await this.refreshList(msg, ctx, "events/list")
+          : await this.refreshList(msg, ctx, "tools/list");
+        if (!refreshed) return { kind: "response", message: outcome.message };
         wireId = `${String(msg.id)}~header-retry-1`;
         continue;
       }
@@ -218,12 +232,12 @@ export class HttpTransport implements Transport {
     }
   }
 
-  private async refreshToolsList(original: JsonRpcRequest, ctx: TransportCall): Promise<boolean> {
+  private async refreshList(original: JsonRpcRequest, ctx: TransportCall, listMethod: "tools/list" | "events/list"): Promise<boolean> {
     const params = isRecord(original.params) ? original.params : {};
     const refresh: JsonRpcRequest = {
       jsonrpc: "2.0",
-      id: `${String(original.id)}~tools-list-refresh`,
-      method: "tools/list",
+      id: `${String(original.id)}~${listMethod.replace("/", "-")}-refresh`,
+      method: listMethod,
       params: { ...(isRecord(params["_meta"]) ? { _meta: params["_meta"] } : {}) },
     };
     const end = await this.execute(refresh, ctx, new NotificationQueue<JsonRpcNotification>(), attemptState());
@@ -655,8 +669,12 @@ export class HttpTransport implements Transport {
       };
     }
     const outMessage =
-      method === "tools/list" && !("error" in message)
-        ? this.processToolsList(message as JsonRpcResponse, args.credentials)
+      ! ("error" in message)
+        ? method === "tools/list"
+          ? this.processToolsList(message as JsonRpcResponse, args.credentials)
+          : method === "events/list"
+            ? this.processEventsList(message as JsonRpcResponse, args.credentials)
+            : message
         : message;
     return { kind: "final", end: { kind: "response", message: outMessage } };
   }
@@ -753,7 +771,7 @@ export class HttpTransport implements Transport {
               this.emit("violation", "dropped unrelated SSE notification (HTTP-SSE-5)");
               continue;
             }
-            notifications.push(notif);
+            notifications.push(this.normalizeNotificationId(notif, args.wireId, expectedId));
             continue;
           }
           const message = this.normalizeResponseId(inbound.message as JsonRpcResponse | JsonRpcErrorResponse, args.wireId, expectedId);
@@ -770,6 +788,8 @@ export class HttpTransport implements Transport {
           await reader.cancel().catch(() => undefined);
           if (method === "tools/list" && !("error" in finalMessage)) {
             finalMessage = this.processToolsList(finalMessage as JsonRpcResponse, args.credentials);
+          } else if (method === "events/list" && !("error" in finalMessage)) {
+            finalMessage = this.processEventsList(finalMessage as JsonRpcResponse, args.credentials);
           }
           if ("error" in finalMessage && finalMessage.error.code === -32020) {
             return { kind: "header-mismatch", message: finalMessage };
@@ -807,13 +827,37 @@ export class HttpTransport implements Transport {
       return args.expectedId === undefined && token !== undefined;
     }
     const meta = isRecord(params["_meta"]) ? params["_meta"] : undefined;
-    const subId = meta?.[META_SUBSCRIPTION_ID] ?? params["subscriptionId"];
-    if (typeof subId === "string") {
-      // Accept only when it matches a token/id we know; otherwise still accept on listen streams carrying any sub id.
-      return method === "subscriptions/listen" || typeof params["subscriptionId"] === "string";
+    const metaSubId = meta?.[META_SUBSCRIPTION_ID];
+    if (metaSubId !== undefined) {
+      if (metaSubId === args.expectedId || metaSubId === args.wireId) return true;
+      return args.expectedId === undefined && (typeof metaSubId === "string" || typeof metaSubId === "number");
+    }
+    const legacySubId = params["subscriptionId"];
+    if (legacySubId !== undefined) {
+      return method === "subscriptions/listen" || typeof legacySubId === "string" || legacySubId === args.expectedId || legacySubId === args.wireId;
     }
     // Non-progress notifications without routing keys are treated as related to this request-scoped stream.
     return true;
+  }
+
+  private normalizeNotificationId(
+    notif: JsonRpcNotification,
+    wireId: JsonRpcRequest["id"] | undefined,
+    expectedId: JsonRpcRequest["id"] | undefined,
+  ): JsonRpcNotification {
+    if (wireId === undefined || expectedId === undefined || wireId === expectedId) return notif;
+    const params = isRecord(notif.params) ? notif.params : undefined;
+    const meta = params && isRecord(params["_meta"]) ? params["_meta"] : undefined;
+    if (meta && meta[META_SUBSCRIPTION_ID] === wireId) {
+      return {
+        ...notif,
+        params: {
+          ...params,
+          _meta: { ...meta, [META_SUBSCRIPTION_ID]: expectedId },
+        },
+      };
+    }
+    return notif;
   }
 
   private normalizeResponseId(
@@ -853,6 +897,32 @@ export class HttpTransport implements Transport {
     return { ...message, result: { ...result, tools: kept } };
   }
 
+  private processEventsList(message: JsonRpcResponse, credentials: ReadonlySet<string>): JsonRpcResponse {
+    const result = message.result;
+    if (!isRecord(result) || !Array.isArray(result["events"])) return message;
+    const kept: unknown[] = [];
+    for (const ev of result["events"] as unknown[]) {
+      if (!isRecord(ev)) {
+        kept.push(ev);
+        continue;
+      }
+      const name = typeof ev["name"] === "string" ? ev["name"] : "(unnamed)";
+      const validation = validateXmcpHeaderSchema(ev["inputSchema"]);
+      if (!validation.valid) {
+        for (const v of validation.violations) {
+          const detail = `x-mcp-header: event '${name}' excluded: ${v}`;
+          this.emit("violation", [...credentials].some(secret => detail.includes(secret))
+            ? "x-mcp-header: event excluded due to invalid header annotations" : detail);
+          this.logger?.warn("x-mcp-header event excluded", { event: name, violation: v });
+        }
+        continue;
+      }
+      kept.push(ev);
+      if (typeof ev["name"] === "string") this.eventParams.set(ev["name"], validation.params);
+    }
+    return { ...message, result: { ...result, events: kept } };
+  }
+
   private buildHeaders(
     wireMsg: JsonRpcRequest | JsonRpcNotification,
     ctx: TransportCall,
@@ -868,20 +938,32 @@ export class HttpTransport implements Transport {
         : (this.protocolVersion ?? SUPPORTED_PROTOCOL_VERSION);
     headers.set("MCP-Protocol-Version", version);
     headers.set("Mcp-Method", wireMsg.method);
-    // Mcp-Name (HTTP-HDR-3)
+    const isEventNameMethod =
+      wireMsg.method === "events/poll" ||
+      wireMsg.method === "events/stream" ||
+      wireMsg.method === "events/subscribe" ||
+      wireMsg.method === "events/unsubscribe";
+    const isTaskMethod =
+      wireMsg.method === "tasks/get" ||
+      wireMsg.method === "tasks/update" ||
+      wireMsg.method === "tasks/cancel";
+    // Mcp-Name (HTTP-HDR-3 + SEP-3415 + SEP-2663)
     let name: string | undefined;
     if ("id" in wireMsg) {
       if (ctx.headersHint?.name) name = ctx.headersHint.name;
-      else if ((wireMsg.method === "tools/call" || wireMsg.method === "prompts/get") && typeof params["name"] === "string") name = params["name"] as string;
+      else if ((wireMsg.method === "tools/call" || wireMsg.method === "prompts/get" || isEventNameMethod) && typeof params["name"] === "string") name = params["name"] as string;
       else if (wireMsg.method === "resources/read" && typeof params["uri"] === "string") name = params["uri"] as string;
+      else if (isTaskMethod && typeof params["taskId"] === "string") name = params["taskId"] as string;
     }
     if (name !== undefined) headers.set("Mcp-Name", encodeHeaderValue(name));
-    // Mcp-Param-* mirroring (HTTP-PARAM-4/5)
-    if ("id" in wireMsg && wireMsg.method === "tools/call") {
-      const toolName = typeof params["name"] === "string" ? (params["name"] as string) : undefined;
-      const annotated = toolName ? this.toolParams.get(toolName) : undefined;
+    // Mcp-Param-* mirroring (HTTP-PARAM-4/5 + SEP-3415)
+    if ("id" in wireMsg && (wireMsg.method === "tools/call" || isEventNameMethod)) {
+      const targetName = typeof params["name"] === "string" ? (params["name"] as string) : undefined;
+      const annotated = targetName
+        ? (wireMsg.method === "tools/call" ? this.toolParams.get(targetName) : this.eventParams.get(targetName))
+        : undefined;
       if (annotated) {
-        const args = isRecord(params["arguments"]) ? params["arguments"] : params;
+        const args = isRecord(params["arguments"]) ? params["arguments"] : (wireMsg.method === "tools/call" ? params : {});
         for (const p of annotated) {
           const value = extractAtPath(args, p.path);
           if (value === undefined || value === null) continue;

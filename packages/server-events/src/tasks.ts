@@ -10,7 +10,9 @@ export type TaskStatus = "working" | "input_required" | "completed" | "failed" |
 export interface TaskState extends Obj {
 	taskId: string;
 	status: TaskStatus;
-	ttlMs?: number;
+	createdAt?: string;
+	lastUpdatedAt?: string;
+	ttlMs?: number | null;
 	pollIntervalMs?: number;
 	inputRequests?: Record<string, { method: string; params: Obj }>;
 }
@@ -26,7 +28,7 @@ export class TaskCenter {
 	readonly #tasks = new Map<string, TaskState>();
 	readonly #clock: Clock;
 	readonly #bus: EventBus | undefined;
-	readonly #channels = new Set<PushChannel>();
+	readonly #channels = new Map<PushChannel, ReadonlySet<string> | undefined>();
 
 	constructor(opts: { readonly bus?: EventBus; readonly clock?: Clock } = {}) {
 		this.#bus = opts.bus;
@@ -38,17 +40,19 @@ export class TaskCenter {
 	}
 
 	/** Attach a push channel (e.g. a subscriptions/listen channel) for notifications/tasks. */
-	attach(channel: PushChannel): void {
-		this.#channels.add(channel);
+	attach(channel: PushChannel, taskIds?: readonly string[]): void {
+		this.#channels.set(channel, taskIds ? new Set(taskIds) : undefined);
 		channel.onClose(() => this.#channels.delete(channel));
 	}
 
-	create(init: { taskId?: string; ttlMs?: number; pollIntervalMs?: number; inputRequests?: TaskState["inputRequests"] } = {}): TaskState {
+	create(init: { taskId?: string; ttlMs?: number | null; pollIntervalMs?: number; inputRequests?: TaskState["inputRequests"] } = {}): TaskState {
+		const nowIso = new Date(this.#clock.now()).toISOString();
 		const state: TaskState = {
 			taskId: init.taskId ?? randomUUID(),
 			status: init.inputRequests ? "input_required" : "working",
-			createdAt: new Date(this.#clock.now()).toISOString(),
-			...(init.ttlMs !== undefined ? { ttlMs: init.ttlMs } : {}),
+			createdAt: nowIso,
+			lastUpdatedAt: nowIso,
+			ttlMs: init.ttlMs ?? null,
 			...(init.pollIntervalMs !== undefined ? { pollIntervalMs: init.pollIntervalMs } : {}),
 			...(init.inputRequests !== undefined ? { inputRequests: init.inputRequests } : {}),
 		};
@@ -100,7 +104,7 @@ export class TaskCenter {
 	}
 
 	#expireIfNeeded(state: TaskState): TaskState {
-		if (TERMINAL.has(state.status) || state.ttlMs === undefined) return state;
+		if (TERMINAL.has(state.status) || state.ttlMs === undefined || state.ttlMs === null) return state;
 		const createdAt = typeof state.createdAt === "string" ? Date.parse(state.createdAt) : Number.NaN;
 		if (Number.isFinite(createdAt) && createdAt + state.ttlMs <= this.#clock.now()) {
 			return this.#set(state.taskId, { status: "failed", error: { code: "task-expired" } });
@@ -109,14 +113,23 @@ export class TaskCenter {
 	}
 
 	#set(taskId: string, patch: Partial<TaskState>): TaskState {
-		const state = { ...this.#state(taskId), ...patch, taskId };
+		const state = {
+			...this.#state(taskId),
+			...patch,
+			taskId,
+			lastUpdatedAt: new Date(this.#clock.now()).toISOString(),
+		};
 		this.#tasks.set(taskId, state);
 		this.#emit(state);
 		return state;
 	}
 
 	#emit(state: TaskState): void {
-		for (const channel of this.#channels) channel.notify(notification("notifications/tasks", { ...state }, channel.id));
+		for (const [channel, filter] of this.#channels.entries()) {
+			if (filter === undefined || filter.has(state.taskId)) {
+				channel.notify(notification("notifications/tasks", { ...state }, channel.id));
+			}
+		}
 		this.#bus?.publish("tasks", state, {});
 	}
 }

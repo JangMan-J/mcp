@@ -34,6 +34,7 @@ export interface ConnectBaseOptions {
 	/** Server identity; defaults to the command or URL. */
 	readonly server?: ServerRef;
 	readonly clientInfo?: McpClientOptions["clientInfo"];
+	readonly idGenerator?: McpClientOptions["idGenerator"];
 	/** Per-request timeout; defaults to the library default. */
 	readonly timeoutMs?: number;
 	/** Probe server/discover during connect and throw on failure. Default false. */
@@ -136,6 +137,7 @@ class ConnectionImpl implements Connection {
 				? {}
 				: { extensions: [createEventsExtension({ enabled: true })] }),
 			...(this.#options.clientInfo !== undefined ? { clientInfo: this.#options.clientInfo } : {}),
+			...(this.#options.idGenerator !== undefined ? { idGenerator: this.#options.idGenerator } : {}),
 			...(this.#options.timeoutMs !== undefined
 				? { defaults: { timeoutMs: this.#options.timeoutMs } }
 				: {}),

@@ -46,6 +46,12 @@ export class MemorySkillCache implements SkillCache {
   getOrigin(serverKey: string, skillUri: string, fileUri: string): SkillOrigin | undefined {
     return this.entries.get(cacheKey(serverKey, skillUri, fileUri))?.origin;
   }
+
+  evictServer(serverKey: string): void {
+    for (const [k, entry] of this.entries.entries()) {
+      if (entry.origin.serverKey === serverKey) this.entries.delete(k);
+    }
+  }
 }
 
 interface DiskMeta {

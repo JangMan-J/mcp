@@ -53,7 +53,7 @@ export interface TaskState extends Obj {
   taskId: string;
   status: TaskStatus;
   ttl?: number | null;
-  ttlMs?: number;
+  ttlMs?: number | null;
   pollIntervalMs?: number;
   inputRequests?: Record<string, { method: string; params: Obj }>;
 }
@@ -68,7 +68,7 @@ function valid(x: unknown): x is TaskState {
     x.taskId.trim().length > 0 &&
     ["working", "input_required", "completed", "failed", "cancelled"].includes(String(x.status)) &&
     (x.ttl === null || duration(x.ttl)) &&
-    duration(x.ttlMs) &&
+    (x.ttlMs === null || duration(x.ttlMs)) &&
     duration(x.pollIntervalMs) &&
     (x.result === undefined || object(x.result)) &&
     (x.error === undefined || object(x.error)) &&
@@ -156,7 +156,7 @@ export class TasksRuntime {
   remember(s: TaskState) {
     this.states.set(s.taskId, structuredClone(s));
     const old = this.store.get(this.serverKey, s.taskId);
-    const ttl = s.ttl === null ? undefined : s.ttlMs ?? s.ttl ?? old?.ttlMs;
+    const ttl = s.ttl === null || s.ttlMs === null ? undefined : s.ttlMs ?? s.ttl ?? old?.ttlMs;
     const interval = s.pollIntervalMs ?? old?.pollIntervalMs;
     this.store.put({
       serverKey: this.serverKey,
@@ -313,8 +313,18 @@ export class TaskHandle {
           ? out.value
           : undefined;
     if (out.kind !== "ok" && out.kind !== "task-handle") return out;
-    if (!valid(s) || s.taskId !== this.id) return violation(method, "invalid task response");
-    const cloned = structuredClone(s);
+    let resolved: TaskState | undefined = valid(s) && s.taskId === this.id ? s : undefined;
+    if (!resolved && (method === "tasks/cancel" || method === "tasks/update") && object(s) && !("taskId" in s)) {
+      const prev = this.currentState();
+      resolved = {
+        ...(prev ? structuredClone(prev) : {}),
+        taskId: this.id,
+        status: method === "tasks/cancel" ? "cancelled" : "working",
+      };
+      if (method === "tasks/update") delete resolved.inputRequests;
+    }
+    if (!resolved) return violation(method, "invalid task response");
+    const cloned = structuredClone(resolved);
     this.state = cloned;
     rt.remember(cloned);
     if (opts?.notifyWatchers) rt.emitUpdate(cloned);

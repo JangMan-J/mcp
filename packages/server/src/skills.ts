@@ -18,6 +18,7 @@ export interface SkillInput {
 	readonly name: string;
 	readonly description: string;
 	readonly files: readonly SkillFileInput[];
+	readonly frontmatter?: Record<string, unknown>;
 	readonly resources?: "static" | "dynamic";
 	readonly allowedTools?: readonly string[];
 	readonly metadata?: Record<string, unknown>;
@@ -27,15 +28,23 @@ export interface SkillFileEntry {
 	readonly uri: string;
 	readonly size: number;
 	readonly sha256: string;
+	readonly digest: string;
 	readonly mimeType?: string;
+}
+
+export interface SkillResourceRef {
+	readonly uri: string;
+	readonly digest: string;
+	readonly size: number;
 }
 
 export interface SkillEntry {
 	readonly uri: string;
 	readonly name: string;
 	readonly description: string;
+	readonly frontmatter: Record<string, unknown>;
+	readonly resources: readonly SkillResourceRef[] | "dynamic";
 	readonly files: readonly SkillFileEntry[];
-	readonly resources?: "static" | "dynamic";
 	readonly allowedTools?: readonly string[];
 	readonly metadata?: Record<string, unknown>;
 }
@@ -43,15 +52,17 @@ export interface SkillEntry {
 interface StoredFile {
 	readonly bytes: Uint8Array;
 	readonly mimeType?: string;
+	readonly name: string;
+	readonly description?: string;
 }
 
-/** Server-side skills publisher: manifests, hashes, and file contents. */
+/** Server-side SEP-2640 skills publisher: manifests, SHA-256 digests, directory listing, and file contents. */
 export class SkillsRegistry {
 	readonly #skills = new Map<string, SkillEntry>();
 	readonly #files = new Map<string, StoredFile>();
 
 	capabilities(): Obj {
-		return { extensions: { [SKILLS_EXTENSION_ID]: {} } };
+		return { extensions: { [SKILLS_EXTENSION_ID]: { directoryRead: true } } };
 	}
 
 	register(input: SkillInput): SkillEntry {
@@ -59,25 +70,46 @@ export class SkillsRegistry {
 		if (input.files.length > MAX_SKILL_FILES) throw new ServerError(-32602, "too many skill files");
 		let total = 0;
 		const files: SkillFileEntry[] = [];
+		const resourceRefs: SkillResourceRef[] = [];
 		for (const file of input.files) {
 			const bytes = file.bytes ?? new TextEncoder().encode(file.text ?? "");
 			total += bytes.byteLength;
 			if (total > MAX_SKILL_BYTES) throw new ServerError(-32602, "skill files too large");
+			const sha256 = createHash("sha256").update(bytes).digest("hex");
+			const digest = `sha256:${sha256}`;
+			const isRoot = file.uri === input.uri || file.uri.endsWith("/SKILL.md");
+			const mimeType = file.mimeType ?? (file.uri.endsWith(".md") ? "text/markdown" : undefined);
 			const entry: SkillFileEntry = {
 				uri: file.uri,
 				size: bytes.byteLength,
-				sha256: createHash("sha256").update(bytes).digest("hex"),
-				...(file.mimeType !== undefined ? { mimeType: file.mimeType } : {}),
+				sha256,
+				digest,
+				...(mimeType !== undefined ? { mimeType } : {}),
 			};
 			files.push(entry);
-			this.#files.set(file.uri, { bytes, ...(file.mimeType !== undefined ? { mimeType: file.mimeType } : {}) });
+			resourceRefs.push({ uri: file.uri, digest, size: bytes.byteLength });
+			const fileName = isRoot ? input.name : (file.uri.split("/").pop() ?? file.uri);
+			this.#files.set(file.uri, {
+				bytes,
+				name: fileName,
+				...(isRoot ? { description: input.description } : {}),
+				...(mimeType !== undefined ? { mimeType } : {}),
+			});
 		}
+		const frontmatter: Record<string, unknown> = {
+			...(input.frontmatter ?? {}),
+			name: input.name,
+			description: input.description,
+			...(input.allowedTools !== undefined ? { "allowed-tools": input.allowedTools } : {}),
+			...(input.metadata !== undefined ? { metadata: input.metadata } : {}),
+		};
 		const entry: SkillEntry = {
 			uri: input.uri,
 			name: input.name,
 			description: input.description,
+			frontmatter,
+			resources: input.resources === "dynamic" ? "dynamic" : resourceRefs,
 			files,
-			...(input.resources !== undefined ? { resources: input.resources } : {}),
 			...(input.allowedTools !== undefined ? { allowedTools: input.allowedTools } : {}),
 			...(input.metadata !== undefined ? { metadata: input.metadata } : {}),
 		};
@@ -98,6 +130,52 @@ export class SkillsRegistry {
 		const skill = this.#skills.get(uri);
 		if (!skill) throw new ServerError(-32602, `unknown skill: ${uri}`);
 		return complete({ skill }, cache);
+	}
+
+	/** Resource metadata entries for resources/list inclusion. */
+	resourceSchemas(): Obj[] {
+		return [...this.#files.entries()]
+			.sort(([a], [b]) => a.localeCompare(b))
+			.map(([uri, file]) => ({
+				uri,
+				name: file.name,
+				...(file.description !== undefined ? { description: file.description } : {}),
+				...(file.mimeType !== undefined ? { mimeType: file.mimeType } : {}),
+			}));
+	}
+
+	/** SEP-2640 resources/directory/read: direct child files and subdirectories under dirUri. */
+	readDirectory(dirUri: string, cursor: unknown, cache: CacheHints = DEFAULT_CACHE_HINTS): Obj {
+		const prefix = dirUri.replace(/\/+$/u, "") + "/";
+		const children = new Map<string, Obj>();
+		for (const [uri, file] of this.#files.entries()) {
+			if (!uri.startsWith(prefix)) continue;
+			const rest = uri.slice(prefix.length);
+			if (!rest) continue;
+			const slash = rest.indexOf("/");
+			if (slash < 0) {
+				children.set(uri, {
+					uri,
+					name: file.name,
+					...(file.description !== undefined ? { description: file.description } : {}),
+					...(file.mimeType !== undefined ? { mimeType: file.mimeType } : {}),
+				});
+			} else {
+				const subName = rest.slice(0, slash);
+				const subUri = `${dirUri.replace(/\/+$/u, "")}/${subName}`;
+				if (!children.has(subUri)) {
+					children.set(subUri, { uri: subUri, name: subName, mimeType: "inode/directory" });
+				}
+			}
+		}
+		if (children.size === 0) throw new ServerError(-32602, `directory not found: ${dirUri}`);
+		const sorted = [...children.values()].sort((a, b) => String(a.uri).localeCompare(String(b.uri)));
+		const page = paginate(sorted, cursor);
+		return complete({
+			resources: page.items,
+			uris: page.items.map((item) => item.uri),
+			...(page.nextCursor !== undefined ? { nextCursor: page.nextCursor } : {}),
+		}, cache);
 	}
 
 	/** File contents for the host's resources/read fallback. */

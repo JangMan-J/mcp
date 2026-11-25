@@ -17,7 +17,6 @@ describe("SubscriptionsServer", () => {
 		expect(channel.methods()).toEqual(["notifications/subscriptions/acknowledged"]);
 		expect(channel.notifications[0]?.params?.notifications).toEqual({
 			toolsListChanged: true,
-			promptsListChanged: false,
 			resourceSubscriptions: ["file:///a"],
 		});
 		server.notifyToolsChanged();

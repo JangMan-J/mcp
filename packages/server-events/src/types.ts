@@ -28,6 +28,30 @@ export class ServerError extends Error {
 	}
 }
 
+/** SEP-3415 general-purpose error helpers (-32023 .. -32027). */
+export function notFoundError(kind: string, message: string, extra?: Obj): ServerError {
+	return new ServerError(-32023, message, { kind, ...extra });
+}
+
+export function forbiddenError(message: string, data?: Obj): ServerError {
+	return new ServerError(-32024, message, data);
+}
+
+export function resourceExhaustedError(limit: string, message: string, max?: number): ServerError {
+	return new ServerError(-32025, message, { limit, ...(max !== undefined ? { max } : {}) });
+}
+
+export function unsupportedError(feature: string, value: string, message: string, extra?: Obj): ServerError {
+	return new ServerError(-32026, message, { feature, value, ...extra });
+}
+
+export function callbackEndpointError(
+	reason: "connection_refused" | "timeout" | "tls_error" | "http_4xx" | "http_5xx" | "challenge_failed",
+	message: string,
+): ServerError {
+	return new ServerError(-32027, message, { reason });
+}
+
 export function notification(method: string, params: Obj, subscriptionId?: RequestId): JsonRpcNotification {
 	return {
 		jsonrpc: "2.0",

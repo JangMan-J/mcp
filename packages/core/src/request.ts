@@ -47,6 +47,7 @@ export const META_PROTOCOL_VERSION = "io.modelcontextprotocol/protocolVersion" a
 export const META_CLIENT_CAPABILITIES = "io.modelcontextprotocol/clientCapabilities" as const;
 export const META_CLIENT_INFO = "io.modelcontextprotocol/clientInfo" as const;
 export const META_PROGRESS_TOKEN = "io.modelcontextprotocol/progressToken" as const;
+export const META_SERVER_INFO = "io.modelcontextprotocol/serverInfo" as const;
 
 const META_KEY_RE = /^(?:[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\/)?[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
 
@@ -372,13 +373,34 @@ export class RequestManager {
     notificationsQueue: NotificationQueue<JsonRpcNotification>,
     progressQueue: NotificationQueue<ProgressEvent>,
   ): Promise<Outcome<T>> {
-    const baseMeta = (reqId: RequestId, attempts: number): OutcomeMeta => ({
-      requestId: reqId,
-      method,
-      binding: this.transport.binding,
-      attempts,
-      ...(opts.retryOf !== undefined ? { retryOf: opts.retryOf } : {}),
-    });
+    const baseMeta = (reqId: RequestId, attempts: number, result?: Record<string, unknown>): OutcomeMeta => {
+      const resultMeta = result && typeof result["_meta"] === "object" && result["_meta"] !== null && !Array.isArray(result["_meta"])
+        ? (result["_meta"] as Record<string, unknown>)
+        : undefined;
+      const rawServerInfo = resultMeta?.[META_SERVER_INFO];
+      const serverInfo =
+        typeof rawServerInfo === "object" &&
+        rawServerInfo !== null &&
+        !Array.isArray(rawServerInfo) &&
+        typeof (rawServerInfo as Record<string, unknown>)["name"] === "string" &&
+        typeof (rawServerInfo as Record<string, unknown>)["version"] === "string"
+          ? {
+              name: (rawServerInfo as Record<string, unknown>)["name"] as string,
+              version: (rawServerInfo as Record<string, unknown>)["version"] as string,
+              ...(typeof (rawServerInfo as Record<string, unknown>)["title"] === "string"
+                ? { title: (rawServerInfo as Record<string, unknown>)["title"] as string }
+                : {}),
+            }
+          : undefined;
+      return {
+        requestId: reqId,
+        method,
+        binding: this.transport.binding,
+        attempts,
+        ...(opts.retryOf !== undefined ? { retryOf: opts.retryOf } : {}),
+        ...(serverInfo !== undefined ? { serverInfo } : {}),
+      };
+    };
 
     // HTTP-AMBIG-3: re-issue after uncertain-write is opt-in; refuse locally, nothing sent.
     if (opts.retryOf !== undefined && opts.acceptDuplicate !== true) {
@@ -686,16 +708,16 @@ export class RequestManager {
           return {
             kind: "protocol-violation",
             detail: { reason: "non-string resultType", resultType },
-            meta: baseMeta(currentId, attempts),
+            meta: baseMeta(currentId, attempts, result),
           };
         }
         // WIRE-RT-2: Absent resultType treated as "complete".
         const effectiveType = resultType ?? "complete";
         if (effectiveType === "complete") {
           if (method === "tools/call" && result["isError"] === true) {
-            return { kind: "tool-isError", result, meta: baseMeta(currentId, attempts) };
+            return { kind: "tool-isError", result, meta: baseMeta(currentId, attempts, result) };
           }
-          return { kind: "ok", value: result as T, meta: baseMeta(currentId, attempts) };
+          return { kind: "ok", value: result as T, meta: baseMeta(currentId, attempts, result) };
         }
         if (effectiveType === "input_required") {
           const reqState = typeof result["requestState"] === "string" ? result["requestState"] : undefined;
@@ -707,7 +729,7 @@ export class RequestManager {
             kind: "mrtr-interim",
             ...(inputReq ? { inputRequests: inputReq } : {}),
             ...(reqState !== undefined ? { requestState: reqState } : {}),
-            meta: baseMeta(currentId, attempts),
+            meta: baseMeta(currentId, attempts, result),
           };
         }
         const extHandler = this.extensions.resolveResultType(effectiveType);

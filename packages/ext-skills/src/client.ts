@@ -303,7 +303,7 @@ export class SkillsClient {
       return { kind: "ok", value: { file: fileEntry, bytes: cached.bytes, text, fromCache: true }, meta };
     }
     const reader = opts?.resourceClient ?? this.client;
-    const out = await reader.request<Record<string, unknown>>("resources/read", { uri: fileUri });
+    const out = await reader.request<Record<string, unknown>>("resources/read", { uri: fileUri }, { headersHint: { name: fileUri } });
     if (out.kind !== "ok") return out as Outcome<SkillReadFileResult>;
     const contents = out.value["contents"];
     if (!Array.isArray(contents) || contents.length === 0 || !isObj(contents[0])) {
@@ -355,10 +355,15 @@ export class SkillsClient {
     }
     const out = await this.client.request<Record<string, unknown>>("resources/directory/read", { uri: dirUri });
     if (out.kind !== "ok") return out as Outcome<{ readonly uris: readonly string[] }>;
-    const rawUris = Array.isArray(out.value["uris"])
-      ? out.value["uris"].filter((u): u is string => typeof u === "string")
+    const rawList = Array.isArray(out.value["resources"])
+      ? out.value["resources"]
       : Array.isArray(out.value["entries"])
         ? out.value["entries"]
+        : undefined;
+    const rawUris = Array.isArray(out.value["uris"])
+      ? out.value["uris"].filter((u): u is string => typeof u === "string")
+      : rawList
+        ? rawList
             .map((e) => (isObj(e) && typeof e["uri"] === "string" ? e["uri"] : undefined))
             .filter((u): u is string => Boolean(u))
         : [];

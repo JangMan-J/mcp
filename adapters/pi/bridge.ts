@@ -8,6 +8,12 @@ import { createHash } from "node:crypto";
 import { statSync } from "node:fs";
 import { McpClient, type Outcome } from "@jangmanj/mcp/core";
 import { createEventsExtension } from "@jangmanj/mcp/ext-events";
+import {
+	createSkillsExtension,
+	MemorySkillCache,
+	type SkillEntry,
+	type SkillsClient,
+} from "@jangmanj/mcp/ext-skills";
 import { createTasksExtension } from "@jangmanj/mcp/mrtr-cache";
 import {
 	createOps,
@@ -28,7 +34,8 @@ import { canonicalResource, createOAuthProvider, FileCredentialStore } from "./o
 import type { ExtensionAPI, ToolAnnotations, ToolDefinition, ToolExposure, ToolResult, Ui } from "./pi-api.ts";
 import { ResourceTools } from "./resources.ts";
 import { createMcpResultSchema, normalizeMcpInputSchema } from "./schema.ts";
-import { cancelTask, getTask, taskHandleResult } from "./tasks.ts";
+import { createServerSkillsClient, formatOriginTaggedSkill, hasSkills, SkillTools } from "./skills.ts";
+import { cancelTask, getTask, taskHandleResult, TaskTools } from "./tasks.ts";
 
 export type ServerStatus = "connecting" | "connected" | "error" | "disabled";
 
@@ -53,6 +60,10 @@ export interface ServerState {
 	listenClose?: (() => void) | undefined;
 	/** Active SEP-3415 push-events handle, if subscribed. */
 	eventsHandle?: PiMcpEventsHandle | undefined;
+	/** Active SEP-2640 skills client, if advertised. */
+	skillsClient?: SkillsClient | undefined;
+	/** Enumerated SEP-2640 skills (frontmatter/manifest only, lazy body). */
+	skills?: readonly SkillEntry[] | undefined;
 	/** Registered definitions by Pi tool name (for updates/withdrawal). */
 	readonly definitions: Map<string, ToolDefinition>;
 	/** Pi tool name -> server tool name. */
@@ -221,6 +232,9 @@ export class McpBridge {
 	private readonly browserOpen: BridgeOptions["browserOpen"];
 	private readonly allowInsecureAuth: boolean;
 	private readonly resourceTools: ResourceTools;
+	private readonly skillTools: SkillTools;
+	private readonly taskTools: TaskTools;
+	private readonly skillCache = new MemorySkillCache();
 	private readonly exposureByServer = new Map<string, Exposure>();
 	private readonly toolOwner = new Map<string, string>(); // piToolName -> serverName
 	private readonly eventCursors = new Map<string, string>();
@@ -249,11 +263,10 @@ export class McpBridge {
 		this.log = opts.diagnosticsLogPath !== undefined ? new DiagnosticsLog(opts.diagnosticsLogPath) : undefined;
 		this.providerToken = opts.providerToken;
 		this.onPushEvent = opts.onPushEvent;
-		this.resourceTools = new ResourceTools(
-			this.pi,
-			() => this.list().map((s) => ({ ...s, enabled: s.config.enabled })),
-			this.exposureByServer,
-		);
+		const liveStates = () => this.list().map((s) => ({ ...s, enabled: s.config.enabled }));
+		this.resourceTools = new ResourceTools(this.pi, liveStates, this.exposureByServer);
+		this.skillTools = new SkillTools(this.pi, liveStates, this.exposureByServer);
+		this.taskTools = new TaskTools(this.pi, liveStates, this.exposureByServer);
 	}
 
 	get(name: string): ServerState | undefined {
@@ -320,6 +333,8 @@ export class McpBridge {
 			}
 		}
 		this.resourceTools.ensure();
+		this.skillTools.ensure();
+		this.taskTools.ensure();
 		this.ensureReachTools();
 	}
 
@@ -459,6 +474,8 @@ export class McpBridge {
 			}
 		}
 		this.resourceTools.ensure();
+		this.skillTools.ensure();
+		this.taskTools.ensure();
 	}
 
 	private async teardown(state: ServerState): Promise<void> {
@@ -467,6 +484,9 @@ export class McpBridge {
 		state.client = undefined;
 		state.ops = undefined;
 		state.eventsHandle = undefined;
+		state.skillsClient = undefined;
+		state.skills = undefined;
+		this.skillCache.evictServer(state.name);
 		state.listenClose?.();
 		state.listenClose = undefined;
 		state.closeRedirect?.();
@@ -541,6 +561,7 @@ export class McpBridge {
 				peerCapabilities: () => (state.capabilities ?? {}) as Record<string, unknown>,
 			}),
 		);
+		client.use(createSkillsExtension());
 		let eventsExtension: ReturnType<typeof createEventsExtension> | undefined;
 		if (config.subscribe !== undefined && config.subscribe !== false) {
 			eventsExtension = createEventsExtension({ enabled: true, healthy: true });
@@ -612,11 +633,26 @@ export class McpBridge {
 			} else {
 				throw new Error(describeOutcome(listed));
 			}
+			if (hasSkills({ name: state.name, status: "connected", capabilities: state.capabilities })) {
+				state.skillsClient = createServerSkillsClient(
+					state.name,
+					client,
+					state.capabilities,
+					this.skillCache,
+				);
+				const listedSkills = await state.skillsClient.listAll();
+				if (listedSkills.kind === "ok") {
+					state.skills = listedSkills.value.skills;
+				}
+			}
+
 			state.status = "connected";
 			state.error = undefined;
 			state.authRequired = undefined;
 			this.exposureByServer.set(state.name, config.exposure);
 			this.resourceTools.ensure();
+			this.skillTools.ensure();
+			this.taskTools.ensure();
 			this.startListen(state);
 			this.log?.line(state.name, `connected (${state.toolCount} tools)`);
 		} catch (err) {
@@ -741,6 +777,9 @@ export class McpBridge {
 				for await (const notification of stream) {
 					if (notification.method === "notifications/tools/list_changed") {
 						await this.refreshTools(state);
+					} else if (notification.method === "notifications/resources/list_changed" && state.skillsClient) {
+						const refreshed = await state.skillsClient.listAll();
+						if (refreshed.kind === "ok") state.skills = refreshed.value.skills;
 					}
 				}
 			} catch {
@@ -917,6 +956,27 @@ export class McpBridge {
 		return cancel ? cancelTask(state, taskId) : getTask(state, taskId);
 	}
 
+	async skillsList(name: string): Promise<readonly SkillEntry[]> {
+		const state = this.states.get(name);
+		if (!state?.skillsClient) throw new Error(`MCP server "${name}" does not advertise io.modelcontextprotocol/skills`);
+		const out = await state.skillsClient.listAll();
+		if (out.kind !== "ok") throw new Error(`skills/list failed: ${out.kind}`);
+		state.skills = out.value.skills;
+		return out.value.skills;
+	}
+
+	async skillRead(name: string, uri: string): Promise<string> {
+		const state = this.states.get(name);
+		if (!state?.skillsClient) throw new Error(`MCP server "${name}" does not advertise io.modelcontextprotocol/skills`);
+		if (!state.skillsClient.isKnownSkill(uri)) {
+			const got = await state.skillsClient.get(uri);
+			if (got.kind !== "ok") throw new Error(`skills/get failed: ${got.kind}`);
+		}
+		const read = await state.skillsClient.readFile(uri, uri);
+		if (read.kind !== "ok") throw new Error(`skill read failed: ${read.kind}`);
+		return formatOriginTaggedSkill(name, uri, uri, read.value.text);
+	}
+
 	/** Session-only enable/disable; persistence is handled by the command layer. */
 	setEnabled(name: string, enabled: boolean): void {
 		const state = this.states.get(name);
@@ -960,6 +1020,8 @@ export class McpBridge {
 			this.pi.setActiveTools(this.pi.getActiveTools().filter((n) => !demotedFromDirect.has(n)));
 		}
 		this.resourceTools.ensure();
+		this.skillTools.ensure();
+		this.taskTools.ensure();
 		this.ensureReachTools();
 	}
 
