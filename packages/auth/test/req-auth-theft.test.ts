@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { afterEach, expect, it, vi } from 'vitest';
-import type { FetchPort } from '@mcp-client/core';
+import type { FetchPort } from '@mcp/core';
 import { MemoryCredentialStore, OAuthAuthorization } from '../src/index.js';
 
 // Wrap every Node write entry point so any write during the flow is recorded.

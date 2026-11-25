@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { SafeFetch } from "@mcp-client/auth";
-import type { DiscoverResult, FetchPort } from "@mcp-client/core";
+import { SafeFetch } from "@mcp/auth";
+import type { DiscoverResult, FetchPort } from "@mcp/core";
 import {
   CORE_PROTOCOL_VERSION,
   ServerCardCache,

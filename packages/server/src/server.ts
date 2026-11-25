@@ -1,12 +1,12 @@
-import type { JsonRpcNotification, JsonRpcRequest, RequestId } from "@mcp-client/core";
-import { createBuiltinValidator, type SchemaValidator, type ValidationResult } from "@mcp-client/ops";
+import type { JsonRpcNotification, JsonRpcRequest, RequestId } from "@mcp/core";
+import { createBuiltinValidator, type SchemaValidator, type ValidationResult } from "@mcp/ops";
 import {
 	EventsServer,
 	ServerError,
 	SubscriptionsServer,
 	TaskCenter,
 	type Obj,
-} from "@mcp-client/server-events";
+} from "@mcp/server-events";
 import { complete, DEFAULT_CACHE_HINTS, paginate, PROTOCOL_VERSION, validateRequestMeta, type CacheHints } from "./protocol.js";
 import { matchUriTemplate } from "./uri.js";
 import { SkillsRegistry, type SkillInput } from "./skills.js";
@@ -71,7 +71,7 @@ export function taskResult(state: Obj): Obj {
 /**
  * Transport-agnostic MCP 2026-07-28 server for the ordinary request surface:
  * server/discover, tools, resources/templates, prompts, and completion.
- * Push streams live in @mcp-client/server-events; the host owns JSON-RPC
+ * Push streams live in @mcp/server-events; the host owns JSON-RPC
  * dispatch, error mapping, and transports.
  */
 export class McpServer {

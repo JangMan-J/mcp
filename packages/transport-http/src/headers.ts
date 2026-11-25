@@ -161,4 +161,4 @@ export function extractAtPath(args: unknown, path: readonly string[]): unknown {
   return cur;
 }
 
-export { isReadOnlyMethod } from "@mcp-client/core";
+export { isReadOnlyMethod } from "@mcp/core";

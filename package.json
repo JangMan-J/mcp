@@ -17,11 +17,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/JangMan-J/mcp-client.git"
+    "url": "git+https://github.com/JangMan-J/mcp.git"
   },
-  "homepage": "https://github.com/JangMan-J/mcp-client#readme",
+  "homepage": "https://github.com/JangMan-J/mcp#readme",
   "bugs": {
-    "url": "https://github.com/JangMan-J/mcp-client/issues"
+    "url": "https://github.com/JangMan-J/mcp/issues"
   },
   "type": "module",
   "sideEffects": false,

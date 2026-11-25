@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const packagesDir = join(root, "packages");
-const linkDir = join(root, "node_modules", "@mcp-client");
+const linkDir = join(root, "node_modules", "@mcp");
 mkdirSync(linkDir, { recursive: true });
 
 const present = new Map(); // shortName -> dirName
@@ -16,8 +16,8 @@ for (const entry of readdirSync(packagesDir, { withFileTypes: true })) {
   if (!existsSync(pkgFile)) continue;
   try {
     const pkg = JSON.parse(readFileSync(pkgFile, "utf8"));
-    if (typeof pkg.name === "string" && pkg.name.startsWith("@mcp-client/")) {
-      present.set(pkg.name.slice("@mcp-client/".length), entry.name);
+    if (typeof pkg.name === "string" && pkg.name.startsWith("@mcp/")) {
+      present.set(pkg.name.slice("@mcp/".length), entry.name);
     }
   } catch {}
 }
@@ -53,10 +53,10 @@ for (const [short, dirName] of present) {
 for (const entry of readdirSync(linkDir)) {
   const p = join(linkDir, entry);
   let real;
-  try { real = realpathSync(p); } catch { throw new Error(`build-workspaces: dangling @mcp-client link ${entry}`); }
+  try { real = realpathSync(p); } catch { throw new Error(`build-workspaces: dangling $@ link ${entry}`); }
   const rel = relative(packagesDir, real);
   if (rel.startsWith("..") || resolve(packagesDir, rel) !== real && rel === "") {}
-  if (rel.startsWith("..")) throw new Error(`build-workspaces: @mcp-client/${entry} resolves outside packages/: ${real}`);
+  if (rel.startsWith("..")) throw new Error(`build-workspaces: @mcp/${entry} resolves outside packages/: ${real}`);
 }
 
 // Clean workspace dist/ and incremental tsbuildinfo before tsc -b so removed/renamed files never linger.
@@ -111,7 +111,7 @@ function rewriteDistImports(dir) {
     if (!entry.name.endsWith(".js") && !entry.name.endsWith(".d.ts")) continue;
     const text = readFileSync(full, "utf8");
     let replaced = text.replace(
-      /(["'])@mcp-client\/([a-z0-9-]+)\1/g,
+      /(["'])@mcp\/([a-z0-9-]+)\1/g,
       (match, quote, short) => {
         const targetDir = present.get(short);
         if (!targetDir) return match;
@@ -136,7 +136,7 @@ function assertNoUnrewrittenWorkspaceSpecifiers(dir) {
     }
     if (!entry.name.endsWith(".js") && !entry.name.endsWith(".d.ts")) continue;
     const text = readFileSync(full, "utf8");
-    const m = text.match(/(["'])@mcp-client\/[^"']+\1/);
+    const m = text.match(/(["'])@mcp\/[^"']+\1/);
     if (m) {
       throw new Error(`build-workspaces: unrewritten workspace specifier ${m[0]} in ${full}`);
     }

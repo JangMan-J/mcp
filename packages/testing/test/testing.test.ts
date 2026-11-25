@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { McpClient } from "@mcp-client/core";
-import { createOps } from "@mcp-client/ops";
+import { McpClient } from "@mcp/core";
+import { createOps } from "@mcp/ops";
 import { createToolServer } from "../src/index.js";
 
 describe("createToolServer", () => {

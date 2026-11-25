@@ -1,5 +1,5 @@
 {
-  "name": "@mcp-client/server-transport",
+  "name": "@mcp/server-transport",
   "version": "0.1.1",
   "private": true,
   "type": "module",
@@ -10,14 +10,14 @@
     }
   },
   "dependencies": {
-    "@mcp-client/core": "*",
-    "@mcp-client/server": "*",
-    "@mcp-client/server-events": "*",
-    "@mcp-client/transport-http": "*"
+    "@mcp/core": "*",
+    "@mcp/server": "*",
+    "@mcp/server-events": "*",
+    "@mcp/transport-http": "*"
   },
   "devDependencies": {
-    "@mcp-client/client": "*",
-    "@mcp-client/testing": "*"
+    "@mcp/client": "*",
+    "@mcp/testing": "*"
   },
   "scripts": {
     "build": "tsc -b",

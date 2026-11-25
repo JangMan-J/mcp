@@ -1,4 +1,4 @@
-import type { McpClient, RequestOptions, StreamHandle } from "@mcp-client/core";
+import type { McpClient, RequestOptions, StreamHandle } from "@mcp/core";
 import type { ListenOptions } from "./subscriptions.js";
 
 export type ListenClient = Pick<McpClient, "request"> & Partial<Pick<McpClient, "notify">>;

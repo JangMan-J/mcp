@@ -7,7 +7,7 @@ import {
   type Transport,
   type JsonRpcRequest,
   type Outcome,
-} from "@mcp-client/core";
+} from "@mcp/core";
 import {
   StatefulClient,
   SubscriptionManager,

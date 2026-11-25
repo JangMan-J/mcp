@@ -4,7 +4,7 @@ import type {
   ExtensionCapabilities,
   RequestOptions,
   TelemetrySpan,
-} from "@mcp-client/core";
+} from "@mcp/core";
 import { MrtrSession, type MrtrOptions } from "./mrtr.js";
 import { ResultCache, type CacheOptions } from "./cache.js";
 import {

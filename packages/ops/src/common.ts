@@ -1,4 +1,4 @@
-import type { ClientRequest, Outcome, OutcomeMeta, RequestOptions } from "@mcp-client/core";
+import type { ClientRequest, Outcome, OutcomeMeta, RequestOptions } from "@mcp/core";
 
 /** The slice of McpClient the operations use. */
 export interface OpsClient {

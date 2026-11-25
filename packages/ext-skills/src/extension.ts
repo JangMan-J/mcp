@@ -1,4 +1,4 @@
-import type { Extension, ExtensionCapabilities } from "@mcp-client/core";
+import type { Extension, ExtensionCapabilities } from "@mcp/core";
 
 export const SKILLS_EXTENSION_ID = "io.modelcontextprotocol/skills";
 export const SKILLS_REVISION = "2026-10-30";

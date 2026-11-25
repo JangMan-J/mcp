@@ -18,7 +18,7 @@ import {
   type TransportCall,
   type TransportDiagnostic,
   type TransportFailure,
-} from "@mcp-client/core";
+} from "@mcp/core";
 import { DEFAULT_MAX_LINE_BYTES, encodeStdioMessage, LineSplitter } from "./framing.js";
 import {
   DEFAULT_STDERR_MAX_BYTES,

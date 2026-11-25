@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Outcome } from "@mcp-client/core";
+import type { Outcome } from "@mcp/core";
 import { listAll, nextCursorOf, type Page } from "../src/index.js";
 
 const meta = { requestId: 1, method: "x/list", binding: "test", attempts: 1 };

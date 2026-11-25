@@ -8,8 +8,8 @@ import {
   type ExchangeEnd,
   type JsonRpcNotification,
   type Transport,
-} from "@mcp-client/core";
-import { StdioTransport } from "@mcp-client/transport-stdio";
+} from "@mcp/core";
+import { StdioTransport } from "@mcp/transport-stdio";
 import {
   EVENTS_EXTENSION_ID,
   EventsClient,
@@ -48,7 +48,7 @@ function makeManualClock(start = 1000) {
   return { clock, advance };
 }
 
-describe("@mcp-client/ext-events", () => {
+describe("@mcp/ext-events", () => {
   it("routes a live stdio Events frame and cancels its request id on the wire", async () => {
     let ack!: (line: string) => void;
     const cancelled = new Promise<string>((r) => {

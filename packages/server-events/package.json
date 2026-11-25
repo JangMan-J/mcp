@@ -1,5 +1,5 @@
 {
-  "name": "@mcp-client/server-events",
+  "name": "@mcp/server-events",
   "version": "0.1.1",
   "private": true,
   "type": "module",
@@ -10,11 +10,11 @@
     }
   },
   "dependencies": {
-    "@mcp-client/core": "*"
+    "@mcp/core": "*"
   },
   "devDependencies": {
-    "@mcp-client/client": "*",
-    "@mcp-client/testing": "*"
+    "@mcp/client": "*",
+    "@mcp/testing": "*"
   },
   "scripts": {
     "build": "tsc -b",

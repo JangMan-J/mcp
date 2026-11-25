@@ -1,5 +1,5 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
-import type { JsonRpcRequest, Outcome } from "@mcp-client/core";
+import type { JsonRpcRequest, Outcome } from "@mcp/core";
 import { createOps, latestWins, mapOutcome, measure, MAX_COMPLETION_VALUES, type ToolCallResult } from "../src/index.js";
 import { err, installNetworkSpy, makeClient, ok, paramsOf, settle } from "./helpers.js";
 

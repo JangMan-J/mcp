@@ -2,9 +2,9 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it } from 'vitest';
-import { StdioTransport } from '@mcp-client/transport-stdio';
-import { HttpTransport } from '@mcp-client/transport-http';
-import { StatefulClient } from '@mcp-client/mrtr-cache';
+import { StdioTransport } from '@mcp/transport-stdio';
+import { HttpTransport } from '@mcp/transport-http';
+import { StatefulClient } from '@mcp/mrtr-cache';
 import {
   McpClient, McpOutcomeError, META_CLIENT_CAPABILITIES, META_CLIENT_INFO,
   META_PROTOCOL_VERSION, NotificationQueue, unwrapOutcome,

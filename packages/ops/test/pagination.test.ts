@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Outcome } from "@mcp-client/core";
+import type { Outcome } from "@mcp/core";
 import { createOps, cursorParams, listAll, nextCursorOf, type Page } from "../src/index.js";
 import { installNetworkSpy, makeClient, paramsOf, settle } from "./helpers.js";
 

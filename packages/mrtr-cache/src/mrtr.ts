@@ -6,7 +6,7 @@ import {
   type OutcomeMeta,
   type RequestOptions,
   type TransportFailure,
-} from "@mcp-client/core";
+} from "@mcp/core";
 import { object, Violation, type Obj, type RequestFn } from "./common.js";
 import {
   elicit,

@@ -1,5 +1,5 @@
-import { SafeFetch } from "@mcp-client/auth";
-import type { Clock, DiscoverResult, Extension, ExtensionCapabilities, FetchPort } from "@mcp-client/core";
+import { SafeFetch } from "@mcp/auth";
+import type { Clock, DiscoverResult, Extension, ExtensionCapabilities, FetchPort } from "@mcp/core";
 
 /** Advisory MCP Server Cards (SEP-2127). Import has no side effects (EXT-REG-1). */
 export const SERVER_CARDS_EXTENSION_ID = "io.modelcontextprotocol/server-card";

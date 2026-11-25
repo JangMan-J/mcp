@@ -1,4 +1,4 @@
-import type { Outcome, RequestOptions } from "@mcp-client/core";
+import type { Outcome, RequestOptions } from "@mcp/core";
 import { object, withAbort, type Diagnostic, type Obj, type RequestFn } from "./common.js";
 
 const methods = new Set([

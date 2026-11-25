@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { systemClock, type Clock } from "@mcp-client/core";
+import { systemClock, type Clock } from "@mcp/core";
 import { streamKey, type Obj } from "./types.js";
 
 export interface ServerOccurrence {

@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
-import { McpClient, type FetchPort } from "@mcp-client/core";
-import { HttpTransport } from "@mcp-client/transport-http";
+import { McpClient, type FetchPort } from "@mcp/core";
+import { HttpTransport } from "@mcp/transport-http";
 import { OAuthAuthorization } from "../src/index.js";
 
 const resource = "https://resource.test/mcp";

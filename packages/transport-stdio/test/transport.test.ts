@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
-import { McpClient, type Exchange, type RequestId, type TransportCall } from "@mcp-client/core";
+import { McpClient, type Exchange, type RequestId, type TransportCall } from "@mcp/core";
 import { afterEach, expect, test } from "vitest";
 import { META_PROGRESS_TOKEN, META_SUBSCRIPTION_ID, StdioTransport, type StdioTransportOptions } from "../src/index.js";
 

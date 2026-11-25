@@ -1,5 +1,5 @@
 import { expect, it, vi } from "vitest";
-import { McpClient, type FetchPort } from "@mcp-client/core";
+import { McpClient, type FetchPort } from "@mcp/core";
 import { HttpTransport } from "../src/index.js";
 
 const url = "https://service.test/mcp";

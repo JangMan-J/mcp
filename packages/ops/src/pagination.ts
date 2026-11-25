@@ -1,4 +1,4 @@
-import type { Outcome, RequestOptions } from "@mcp-client/core";
+import type { Outcome, RequestOptions } from "@mcp/core";
 import { local, mapOutcome, isObj } from "./common.js";
 
 export const DEFAULT_MAX_PAGES = 1000;

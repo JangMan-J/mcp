@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { AuthError, McpClient, type AuthProvider } from "@mcp-client/core";
+import { AuthError, McpClient, type AuthProvider } from "@mcp/core";
 import { HttpTransport } from "../src/index.js";
 
 const url = "https://mcp.example.test/rpc";

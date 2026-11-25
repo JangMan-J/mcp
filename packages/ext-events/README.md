@@ -1,4 +1,4 @@
-# @mcp-client/ext-events
+# @mcp/ext-events
 
 **Stage: draft — OFF BY DEFAULT; explicit opt-in only**
 

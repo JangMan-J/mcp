@@ -1,4 +1,4 @@
-import { ServerError, type Obj } from "@mcp-client/server-events";
+import { ServerError, type Obj } from "@mcp/server-events";
 
 export const PROTOCOL_VERSION = "2026-07-28";
 

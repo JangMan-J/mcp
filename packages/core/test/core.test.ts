@@ -44,7 +44,7 @@ function makeScriptedTransport(
   return { transport, sent };
 }
 
-describe("@mcp-client/core S1.0 contracts", () => {
+describe("@mcp/core S1.0 contracts", () => {
   it("generates 1e5 unique safe-integer request ids without null (WIRE-ID-1)", () => {
     const gen = createMonotonicIdGenerator();
     const seen = new Set<string | number>();

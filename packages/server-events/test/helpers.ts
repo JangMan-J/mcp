@@ -1,4 +1,4 @@
-import type { JsonRpcNotification, RequestId } from "@mcp-client/core";
+import type { JsonRpcNotification, RequestId } from "@mcp/core";
 import type { Obj, PushChannel } from "../src/types.js";
 
 export class FakeChannel implements PushChannel {

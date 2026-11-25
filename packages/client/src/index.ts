@@ -12,22 +12,22 @@ import {
 	type McpClientOptions,
 	type ServerRef,
 	type Transport,
-} from "@mcp-client/core";
+} from "@mcp/core";
 import {
 	createOps,
 	type Ops,
 	type ToolCallOptions,
 	type ToolCallResult,
 	type ToolEntry,
-} from "@mcp-client/ops";
-import { HttpTransport, type HttpTransportOptions } from "@mcp-client/transport-http";
-import { StdioTransport, type StdioTransportOptions } from "@mcp-client/transport-stdio";
-import { createEventsExtension } from "@mcp-client/ext-events";
+} from "@mcp/ops";
+import { HttpTransport, type HttpTransportOptions } from "@mcp/transport-http";
+import { StdioTransport, type StdioTransportOptions } from "@mcp/transport-stdio";
+import { createEventsExtension } from "@mcp/ext-events";
 import {
 	SubscriptionManager,
 	type ListenFilter,
 	type Subscription,
-} from "@mcp-client/mrtr-cache";
+} from "@mcp/mrtr-cache";
 import { EventsFacade, type Events } from "./events.js";
 
 export interface ConnectBaseOptions {
@@ -197,8 +197,8 @@ export async function connect(options: ConnectOptions): Promise<Connection> {
 	return connection;
 }
 
-export { McpOutcomeError, unwrapOutcome } from "@mcp-client/core";
-export type { ToolCallOptions, ToolCallResult, ToolEntry } from "@mcp-client/ops";
+export { McpOutcomeError, unwrapOutcome } from "@mcp/core";
+export type { ToolCallOptions, ToolCallResult, ToolEntry } from "@mcp/ops";
 export type { Events, EventSubscription, EventsPollResult } from "./events.js";
-export type { Occurrence } from "@mcp-client/ext-events";
-export type { ListenFilter, Subscription, ChangeEvent, Acknowledgment } from "@mcp-client/mrtr-cache";
+export type { Occurrence } from "@mcp/ext-events";
+export type { ListenFilter, Subscription, ChangeEvent, Acknowledgment } from "@mcp/mrtr-cache";

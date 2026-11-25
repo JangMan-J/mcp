@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { McpClient, type AuthProvider, type FetchPort, type JsonRpcNotification, type JsonRpcRequest, type JsonRpcResponse } from "@mcp-client/core";
+import { McpClient, type AuthProvider, type FetchPort, type JsonRpcNotification, type JsonRpcRequest, type JsonRpcResponse } from "@mcp/core";
 import { HttpTransport } from "../src/index.js";
 import { createHttpTestServer, respondError, respondJson } from "./helpers/http-server.js";
 import { formatSseComment, formatSseJson } from "./helpers/sse.js";

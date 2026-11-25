@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import type { Outcome } from "@mcp-client/core";
+import type { Outcome } from "@mcp/core";
 import { MrtrSession, type RequestFn } from "../src/index.js";
 
 const meta = { binding: "stdio", requestId: 1, method: "tools/call", attempts: 1 };

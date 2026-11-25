@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { connect } from "@mcp-client/client";
-import { ConfiguredBearer } from "@mcp-client/auth";
-import { McpServer } from "@mcp-client/server";
-import { EventBus, EventsServer, SubscriptionsServer, TaskCenter } from "@mcp-client/server-events";
+import { connect } from "@mcp/client";
+import { ConfiguredBearer } from "@mcp/auth";
+import { McpServer } from "@mcp/server";
+import { EventBus, EventsServer, SubscriptionsServer, TaskCenter } from "@mcp/server-events";
 import { HttpServerHost, StaticBearerAuth } from "../src/index.js";
 
 async function startServer(opts: { auth?: boolean } = {}) {

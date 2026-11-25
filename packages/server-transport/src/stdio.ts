@@ -1,8 +1,8 @@
 import { createInterface } from "node:readline";
 import type { Readable, Writable } from "node:stream";
-import type { JsonRpcNotification, JsonRpcRequest, RequestId } from "@mcp-client/core";
-import type { McpServer } from "@mcp-client/server";
-import type { Obj } from "@mcp-client/server-events";
+import type { JsonRpcNotification, JsonRpcRequest, RequestId } from "@mcp/core";
+import type { McpServer } from "@mcp/server";
+import type { Obj } from "@mcp/server-events";
 import { errorResponse, HostChannel, resultResponse } from "./channel.js";
 
 export interface StdioServerHostOptions {

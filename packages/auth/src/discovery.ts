@@ -1,4 +1,4 @@
-import type { FetchPort } from '@mcp-client/core';
+import type { FetchPort } from '@mcp/core';
 import { AuthError, fail, secureUrl } from './protocol.js';
 
 export type JsonObject = Record<string, unknown>;

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { McpClient } from "@mcp-client/core";
-import { SkillsClient } from "@mcp-client/ext-skills";
-import { InMemoryTransport } from "@mcp-client/testing";
+import { McpClient } from "@mcp/core";
+import { SkillsClient } from "@mcp/ext-skills";
+import { InMemoryTransport } from "@mcp/testing";
 import { McpServer } from "../src/server.js";
 
 const SKILL_MD = `---

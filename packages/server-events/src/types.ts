@@ -1,4 +1,4 @@
-import type { JsonRpcNotification, RequestId } from "@mcp-client/core";
+import type { JsonRpcNotification, RequestId } from "@mcp/core";
 
 export type Obj = Record<string, unknown>;
 

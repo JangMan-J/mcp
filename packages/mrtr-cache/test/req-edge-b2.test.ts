@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import type { Outcome, StreamHandle, JsonRpcNotification } from "@mcp-client/core";
+import type { Outcome, StreamHandle, JsonRpcNotification } from "@mcp/core";
 import { ResultCache, MrtrSession, SubscriptionManager, type RequestFn } from "../src/index.js";
 
 const ctx = { serverRef: "server", authContextId: "grant" },

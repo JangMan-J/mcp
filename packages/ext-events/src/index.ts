@@ -6,7 +6,7 @@ import {
   type ExtensionCapabilities,
   type RequestOptions,
   type StreamHandle,
-} from "@mcp-client/core";
+} from "@mcp/core";
 import { object, cursor, type Obj, type Occurrence } from "./model.js";
 import { watchStream, type PushMessage } from "./push.js";
 export type { PushMessage } from "./push.js";

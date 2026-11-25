@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { McpClient, type Transport } from "@mcp-client/core";
+import { McpClient, type Transport } from "@mcp/core";
 import { createOps } from "../src/index.js";
 
 it("[EDGE-28] stops on the second copy of an opaque pagination cursor", async () => {

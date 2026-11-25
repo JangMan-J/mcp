@@ -5,7 +5,7 @@ import {
   type RequestId,
   type Outcome,
   type Transport,
-} from "@mcp-client/core";
+} from "@mcp/core";
 import type { EventsOptions, Obj } from "./index.js";
 
 /** Use the host's authenticated transport, shared request-id allocator and per-request metadata. */

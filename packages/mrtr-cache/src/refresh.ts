@@ -1,4 +1,4 @@
-import { systemClock, type Clock } from "@mcp-client/core";
+import { systemClock, type Clock } from "@mcp/core";
 /** Explicit host opt-in; TTL alone never schedules work. The task returns false on a retryable failure. */
 export function autoRefresh(
   task: (signal: AbortSignal) => Promise<boolean>,

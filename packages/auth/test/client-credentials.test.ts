@@ -1,6 +1,6 @@
 import { generateKeyPairSync, verify as cryptoVerify, type KeyObject } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import type { FetchPort } from '@mcp-client/core';
+import type { FetchPort } from '@mcp/core';
 import {
   AuthError,
   ClientCredentialsAuth,

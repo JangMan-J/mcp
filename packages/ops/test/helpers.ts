@@ -9,7 +9,7 @@ import {
   type Transport,
   type TransportCall,
   type TransportDiagnostic,
-} from "@mcp-client/core";
+} from "@mcp/core";
 
 const emptyNotifications: AsyncIterable<JsonRpcNotification> = {
   async *[Symbol.asyncIterator]() {},

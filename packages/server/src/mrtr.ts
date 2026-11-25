@@ -1,5 +1,5 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { ServerError, type Obj } from "@mcp-client/server-events";
+import { ServerError, type Obj } from "@mcp/server-events";
 
 /** Multi Round-Trip Request interim result. At least one field is required. */
 export function inputRequired(input: {

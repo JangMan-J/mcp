@@ -162,22 +162,22 @@ describe("icons (SEC-ICON helpers)", () => {
 describe("ops package boundary", () => {
   const SRC = join(dirname(fileURLToPath(import.meta.url)), "../src");
   const files = readdirSync(SRC).filter((f) => f.endsWith(".ts"));
-  it("imports only @mcp-client/core and its own modules; no network APIs", () => {
+  it("imports only @mcp/core and its own modules; no network APIs", () => {
     for (const f of files) {
       const txt = readFileSync(join(SRC, f), "utf8");
       for (const m of txt.matchAll(/\bfrom\s+"([^"]+)"/g)) {
         const spec = m[1]!;
         expect(
-          spec === "@mcp-client/core" || spec === "ajv/dist/2020.js" || spec.startsWith("./"),
+          spec === "@mcp/core" || spec === "ajv/dist/2020.js" || spec.startsWith("./"),
           `${f} imports ${spec}`,
         ).toBe(true);
       }
       expect(txt, f).not.toMatch(/\bfetch\s*\(|XMLHttpRequest|WebSocket|node:(net|http|https|tls|dns|dgram)|import\s*\(/);
     }
   });
-  it("package.json runtime deps are only @mcp-client/core and ajv", () => {
+  it("package.json runtime deps are only @mcp/core and ajv", () => {
     const pkg = JSON.parse(readFileSync(join(SRC, "../package.json"), "utf8")) as Record<string, Record<string, string>>;
-    expect(Object.keys(pkg["dependencies"] ?? {})).toEqual(["@mcp-client/core", "ajv"]);
+    expect(Object.keys(pkg["dependencies"] ?? {})).toEqual(["@mcp/core", "ajv"]);
     expect(pkg["scripts"]?.["build"]).toBe("tsc -b");
   });
 });

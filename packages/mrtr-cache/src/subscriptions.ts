@@ -5,7 +5,7 @@ import {
   type JsonRpcNotification,
   type RequestId,
   type StreamHandle,
-} from "@mcp-client/core";
+} from "@mcp/core";
 import { object, type Obj, type Diagnostic } from "./common.js";
 import type { ResultCache } from "./cache.js";
 export const SUBSCRIPTION_ID = "io.modelcontextprotocol/subscriptionId";

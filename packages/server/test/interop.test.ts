@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { connect } from "@mcp-client/client";
-import { InMemoryTransport } from "@mcp-client/testing";
+import { connect } from "@mcp/client";
+import { InMemoryTransport } from "@mcp/testing";
 import { McpServer } from "../src/server.js";
 
 describe("McpServer <-> client interop", () => {

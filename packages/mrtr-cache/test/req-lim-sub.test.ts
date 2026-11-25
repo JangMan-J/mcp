@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Outcome, StreamHandle } from "@mcp-client/core";
+import type { Outcome, StreamHandle } from "@mcp/core";
 import { SubscriptionManager } from "../src/index.js";
 
 function fakeStream(id: number): StreamHandle {

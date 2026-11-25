@@ -1,5 +1,5 @@
 import { expect, it, vi } from "vitest";
-import { ResultCache } from "@mcp-client/mrtr-cache";
+import { ResultCache } from "@mcp/mrtr-cache";
 import { McpClient, SUPPORTED_PROTOCOL_VERSION, type ExchangeEnd, type JsonRpcRequest, type Transport } from "../src/index.js";
 
 function scriptedClient(reply: (req: JsonRpcRequest) => ExchangeEnd | Promise<ExchangeEnd>) {

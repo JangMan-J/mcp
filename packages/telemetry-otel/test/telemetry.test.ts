@@ -7,7 +7,7 @@ import {
   type JsonRpcRequest,
   type Transport,
   type TransportDiagnostic,
-} from "@mcp-client/core";
+} from "@mcp/core";
 import { describe, expect, it } from "vitest";
 import {
   OtelSpanKind,
@@ -58,7 +58,7 @@ function makeMemoryTransport(opts: {
   };
 }
 
-describe("@mcp-client/telemetry-otel", () => {
+describe("@mcp/telemetry-otel", () => {
   it("packages/core/src has zero @opentelemetry imports", () => {
     const checkDir = (dir: string) => {
       for (const entry of readdirSync(dir, { withFileTypes: true })) {

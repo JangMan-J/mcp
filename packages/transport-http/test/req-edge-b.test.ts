@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { McpClient, type FetchPort, type JsonRpcNotification, type JsonRpcRequest } from "@mcp-client/core";
+import { McpClient, type FetchPort, type JsonRpcNotification, type JsonRpcRequest } from "@mcp/core";
 import { HttpTransport, SseParser } from "../src/index.js";
 
 const URL1 = "http://example.test/mcp";

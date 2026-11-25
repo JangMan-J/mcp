@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import type { AuthChallenge, AuthHeaderResult, AuthProvider, AuthRequestContext, CredentialStore, FetchPort, RandomPort } from '@mcp-client/core';
+import type { AuthChallenge, AuthHeaderResult, AuthProvider, AuthRequestContext, CredentialStore, FetchPort, RandomPort } from '@mcp/core';
 import { discover, getDocument, object, strings, type DiscoveryOptions, type Metadata } from './discovery.js';
 import { AuthError, basicAuthorization, bearerValue, cancelled, canonicalResource, fail, hash, isLoopback, parseBearerChallenges, pkceChallenge, secureUrl, withAbort, type BearerChallenge } from './protocol.js';
 import { SafeFetch } from './safe-fetch.js';

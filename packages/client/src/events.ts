@@ -1,17 +1,17 @@
 /**
- * Push-first events facade over @mcp-client/ext-events.
+ * Push-first events facade over @mcp/ext-events.
  *
  * subscribe() returns an AsyncIterable of occurrences backed by the live
  * events/stream (with heartbeat + reconnect); poll() is available explicitly
  * for servers or callers that prefer pull.
  */
-import { NotificationQueue, type McpClient } from "@mcp-client/core";
+import { NotificationQueue, type McpClient } from "@mcp/core";
 import {
 	createEventsExtension,
 	EventsClient,
 	type Obj,
 	type Occurrence,
-} from "@mcp-client/ext-events";
+} from "@mcp/ext-events";
 
 export type EventsPollResult = Awaited<ReturnType<EventsClient["poll"]>>;
 

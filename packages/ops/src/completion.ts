@@ -1,4 +1,4 @@
-import type { Outcome, RequestOptions } from "@mcp-client/core";
+import type { Outcome, RequestOptions } from "@mcp/core";
 import { gate, isObj, mapMethodNotFound, mapOutcome, type CapabilitySource, type OpsClient } from "./common.js";
 
 export const MAX_COMPLETION_VALUES = 100;

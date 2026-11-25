@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import type { AuthRequestContext } from '@mcp-client/core';
+import type { AuthRequestContext } from '@mcp/core';
 import { startTestAuthorizationServer } from './fixtures/test-as.js';
 import { ConfiguredBearer, OAuthAuthorization, SafeFetch } from '../src/index.js';
 

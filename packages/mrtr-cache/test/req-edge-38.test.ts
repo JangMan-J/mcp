@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { Outcome } from "@mcp-client/core";
+import type { Outcome } from "@mcp/core";
 import { ResultCache, type RequestFn } from "../src/index.js";
 
 const ctx = { serverRef: "server", authContextId: "grant" };

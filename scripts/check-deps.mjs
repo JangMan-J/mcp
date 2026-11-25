@@ -38,8 +38,8 @@ for (const entry of readdirSync(PACKAGES_DIR, { withFileTypes: true })) {
   if (!existsSync(pkgFile)) continue;
   packageDirs.push(entry.name);
   const pkg = JSON.parse(readFileSync(pkgFile, "utf8"));
-  if (typeof pkg.name === "string" && pkg.name.startsWith("@mcp-client/")) {
-    workspaceDirs.set(pkg.name.slice("@mcp-client/".length), entry.name);
+  if (typeof pkg.name === "string" && pkg.name.startsWith("@mcp/")) {
+    workspaceDirs.set(pkg.name.slice("@mcp/".length), entry.name);
   }
 }
 
@@ -370,8 +370,8 @@ function classifyEdge(fromFile, dep) {
     const targetRel = relative(ROOT, resolved).split("\\").join("/");
     return { kind: "repo", spec, typeOnly, targetRel, resolved };
   }
-  if (spec.startsWith("@mcp-client/")) {
-    const rest = spec.slice("@mcp-client/".length);
+  if (spec.startsWith("@mcp/")) {
+    const rest = spec.slice("@mcp/".length);
     const slash = rest.indexOf("/");
     const short = slash === -1 ? rest : rest.slice(0, slash);
     const subpath = slash === -1 ? "" : rest.slice(slash + 1);

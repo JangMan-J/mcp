@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import type { Exchange } from "@mcp-client/core";
+import type { Exchange } from "@mcp/core";
 import { META_SUBSCRIPTION_ID, StdioTransport } from "../src/index.js";
 
 const transports: StdioTransport[] = [];

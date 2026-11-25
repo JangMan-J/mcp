@@ -17,7 +17,7 @@ import {
 	type Transport,
 	type TransportCall,
 	type TransportDiagnostic,
-} from "@mcp-client/core";
+} from "@mcp/core";
 
 /** Throw from a handler to return a JSON-RPC error instead of a result. */
 export class FakeJsonRpcError extends Error {

@@ -22,7 +22,7 @@ import {
   type TransportCall,
   type TransportDiagnostic,
   type TransportFailure,
-} from "@mcp-client/core";
+} from "@mcp/core";
 import {
   encodeHeaderValue,
   extractAtPath,

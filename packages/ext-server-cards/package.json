@@ -1,11 +1,11 @@
 {
-  "name": "@mcp-client/ext-server-cards",
+  "name": "@mcp/ext-server-cards",
   "version": "0.1.1",
   "private": true,
   "type": "module",
   "exports": {
     ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" }
   },
-  "dependencies": { "@mcp-client/core": "*", "@mcp-client/auth": "*" },
+  "dependencies": { "@mcp/core": "*", "@mcp/auth": "*" },
   "scripts": { "build": "tsc -b", "test": "vitest run test" }
 }

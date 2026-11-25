@@ -10,7 +10,7 @@ import {
   type JsonRpcNotification,
   type Outcome,
   type StreamHandle,
-} from "@mcp-client/core";
+} from "@mcp/core";
 import { object, type Obj, type RequestFn } from "./common.js";
 import { elicit, type ElicitationOptions } from "./elicitation.js";
 

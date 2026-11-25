@@ -28,7 +28,7 @@ const sha256 = (s) => createHash("sha256").update(s).digest("hex");
 
 async function gh(path) {
   const res = await fetch(`https://api.github.com/repos/${path}`, {
-    headers: { Accept: "application/vnd.github+json", "User-Agent": "mcp-client-spec-drift" },
+    headers: { Accept: "application/vnd.github+json", "User-Agent": "mcp-spec-drift" },
   });
   if (!res.ok) throw new Error(`GitHub API ${res.status} for ${path}`);
   return res.json();

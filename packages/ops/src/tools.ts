@@ -1,4 +1,4 @@
-import type { Outcome, RequestOptions } from "@mcp-client/core";
+import type { Outcome, RequestOptions } from "@mcp/core";
 import {
   gate,
   isObj,

@@ -1,11 +1,11 @@
 {
-  "name": "@mcp-client/auth",
+  "name": "@mcp/auth",
   "version": "0.1.1",
   "private": true,
   "type": "module",
   "exports": {
     ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" }
   },
-  "dependencies": { "@mcp-client/core": "*" },
+  "dependencies": { "@mcp/core": "*" },
   "scripts": { "build": "tsc -b", "test": "vitest run test" }
 }

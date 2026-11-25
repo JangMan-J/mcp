@@ -1,5 +1,5 @@
 {
-  "name": "@mcp-client/client",
+  "name": "@mcp/client",
   "version": "0.1.1",
   "private": true,
   "type": "module",
@@ -10,15 +10,15 @@
     }
   },
   "dependencies": {
-    "@mcp-client/core": "*",
-    "@mcp-client/ext-events": "*",
-    "@mcp-client/mrtr-cache": "*",
-    "@mcp-client/ops": "*",
-    "@mcp-client/transport-http": "*",
-    "@mcp-client/transport-stdio": "*"
+    "@mcp/core": "*",
+    "@mcp/ext-events": "*",
+    "@mcp/mrtr-cache": "*",
+    "@mcp/ops": "*",
+    "@mcp/transport-http": "*",
+    "@mcp/transport-stdio": "*"
   },
   "devDependencies": {
-    "@mcp-client/testing": "*"
+    "@mcp/testing": "*"
   },
   "scripts": {
     "build": "tsc -b",

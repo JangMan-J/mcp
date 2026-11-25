@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
-import { AuthError } from '@mcp-client/core';
+import { AuthError } from '@mcp/core';
 
-export { AuthError, parseBearerChallenges, withAbort, type BearerChallenge } from '@mcp-client/core';
+export { AuthError, parseBearerChallenges, withAbort, type BearerChallenge } from '@mcp/core';
 export function fail(reason: string): never { throw new AuthError('auth-failure', reason); }
 export const cancelled = (): AuthError => new AuthError('auth-failure', 'cancelled');
 export const hash = (input: string) => createHash('sha256').update(input).digest('base64url');

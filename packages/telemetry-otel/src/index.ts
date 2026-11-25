@@ -7,8 +7,8 @@ import type {
   Transport,
   TransportCall,
   W3cTraceContext,
-} from "@mcp-client/core";
-import { validateTraceContext } from "@mcp-client/core";
+} from "@mcp/core";
+import { validateTraceContext } from "@mcp/core";
 
 export const OtelSpanKind = {
   INTERNAL: 0,

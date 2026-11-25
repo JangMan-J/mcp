@@ -1,5 +1,5 @@
-import type { JsonRpcErrorResponse, JsonRpcNotification, JsonRpcResponse, RequestId } from "@mcp-client/core";
-import { ServerError, type Obj, type PushChannel } from "@mcp-client/server-events";
+import type { JsonRpcErrorResponse, JsonRpcNotification, JsonRpcResponse, RequestId } from "@mcp/core";
+import { ServerError, type Obj, type PushChannel } from "@mcp/server-events";
 
 export function resultResponse(id: RequestId, result: Obj): JsonRpcResponse {
 	return { jsonrpc: "2.0", id, result };

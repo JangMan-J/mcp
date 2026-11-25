@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { McpServer } from "../src/server.js";
 import { inputRequired, issueRequestState, MrtrRegistry, verifyRequestState } from "../src/mrtr.js";
-import { ServerError } from "@mcp-client/server-events";
+import { ServerError } from "@mcp/server-events";
 
 function server(): McpServer {
 	const s = new McpServer({

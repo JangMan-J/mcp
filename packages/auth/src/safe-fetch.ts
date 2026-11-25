@@ -2,7 +2,7 @@ import { lookup } from 'node:dns/promises';
 import { request as http } from 'node:http';
 import { request as https } from 'node:https';
 import { BlockList, isIP } from 'node:net';
-import type { FetchPort } from '@mcp-client/core';
+import type { FetchPort } from '@mcp/core';
 import { AuthError, fail, secureUrl } from './protocol.js';
 
 const blocked = new BlockList();

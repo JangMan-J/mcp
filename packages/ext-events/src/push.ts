@@ -1,4 +1,4 @@
-import type { Clock, StreamHandle, RequestId } from "@mcp-client/core";
+import type { Clock, StreamHandle, RequestId } from "@mcp/core";
 import { object, cursor, type Occurrence } from "./model.js";
 export type PushMessage =
   | {

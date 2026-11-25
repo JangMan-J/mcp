@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { systemClock, type Clock } from "@mcp-client/core";
+import { systemClock, type Clock } from "@mcp/core";
 import type { EventBus } from "./bus.js";
 import { notification, object, ServerError, type Obj, type PushChannel } from "./types.js";
 import { requireTaskId } from "./subscriptions.js";

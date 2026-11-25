@@ -1,5 +1,5 @@
 {
-  "name": "@mcp-client/ops",
+  "name": "@mcp/ops",
   "version": "0.1.1",
   "private": true,
   "type": "module",
@@ -10,7 +10,7 @@
     }
   },
   "dependencies": {
-    "@mcp-client/core": "*",
+    "@mcp/core": "*",
     "ajv": "8.20.0"
   },
   "scripts": {

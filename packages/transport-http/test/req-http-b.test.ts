@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { McpClient, type FetchPort, type JsonRpcNotification, type JsonRpcRequest } from "@mcp-client/core";
+import { McpClient, type FetchPort, type JsonRpcNotification, type JsonRpcRequest } from "@mcp/core";
 import {
   DEFAULT_MAX_JSON_BYTES,
   DEFAULT_MAX_SSE_EVENT_BYTES,

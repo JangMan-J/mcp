@@ -1,4 +1,4 @@
-import type { Outcome, RequestOptions } from "@mcp-client/core";
+import type { Outcome, RequestOptions } from "@mcp/core";
 import { gate, isObj, mapMethodNotFound, mapOutcome, type CapabilitySource, type OpsClient } from "./common.js";
 import { checkAnnotations, isRfc3986Uri, normalizeResourceContents, type ResourceEntry } from "./content.js";
 import { cursorParams, listAll, nextCursorOf, type ListAllOptions, type ListAllResult } from "./pagination.js";

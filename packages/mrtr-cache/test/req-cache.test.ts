@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { NotificationQueue, type JsonRpcNotification, type Outcome, type StreamHandle } from "@mcp-client/core";
+import { NotificationQueue, type JsonRpcNotification, type Outcome, type StreamHandle } from "@mcp/core";
 import {
   MrtrSession,
   ResultCache,

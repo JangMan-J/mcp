@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { McpClient } from "@mcp-client/core";
+import { McpClient } from "@mcp/core";
 import { expect, it } from "vitest";
 import { StdioTransport } from "../src/index.js";
 

@@ -1,4 +1,4 @@
-import { systemClock, type Clock } from "@mcp-client/core";
+import { systemClock, type Clock } from "@mcp/core";
 import { EventBus, type ServerOccurrence } from "./bus.js";
 import { notification, object, ServerError, type Obj, type PushChannel } from "./types.js";
 

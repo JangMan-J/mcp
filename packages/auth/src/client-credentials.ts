@@ -1,5 +1,5 @@
 import { createHash, createPrivateKey, sign as cryptoSign, type KeyObject } from 'node:crypto';
-import type { AuthChallenge, AuthHeaderResult, AuthProvider, AuthRequestContext, Clock, CredentialStore, FetchPort, RandomPort } from '@mcp-client/core';
+import type { AuthChallenge, AuthHeaderResult, AuthProvider, AuthRequestContext, Clock, CredentialStore, FetchPort, RandomPort } from '@mcp/core';
 import { getDocument, object, strings, type JsonObject } from './discovery.js';
 import { AuthError, basicAuthorization, cancelled, canonicalResource, fail, parseBearerChallenges, secureUrl, withAbort } from './protocol.js';
 import { SafeFetch } from './safe-fetch.js';

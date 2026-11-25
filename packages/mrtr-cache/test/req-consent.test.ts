@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { AuthProvider } from "@mcp-client/core";
+import type { AuthProvider } from "@mcp/core";
 import {
   StatefulClient,
   type FormRequest,

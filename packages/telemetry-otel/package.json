@@ -1,5 +1,5 @@
 {
-  "name": "@mcp-client/telemetry-otel",
+  "name": "@mcp/telemetry-otel",
   "version": "0.1.1",
   "private": true,
   "type": "module",
@@ -10,7 +10,7 @@
     }
   },
   "dependencies": {
-    "@mcp-client/core": "*"
+    "@mcp/core": "*"
   },
   "scripts": {
     "build": "tsc -b",

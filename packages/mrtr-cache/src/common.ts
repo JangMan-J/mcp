@@ -1,5 +1,5 @@
-import type { Outcome, RequestOptions } from "@mcp-client/core";
-export { withAbort } from "@mcp-client/core";
+import type { Outcome, RequestOptions } from "@mcp/core";
+export { withAbort } from "@mcp/core";
 export type Obj = Record<string, unknown>;
 export const object = (v: unknown): v is Obj =>
   typeof v === "object" && v !== null && !Array.isArray(v);

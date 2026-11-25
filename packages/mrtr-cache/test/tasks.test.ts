@@ -9,7 +9,7 @@ import {
   type Outcome,
   type StreamHandle,
   type Transport,
-} from "@mcp-client/core";
+} from "@mcp/core";
 import {
   createTasksExtension,
   MemoryTaskStore,
@@ -24,7 +24,7 @@ const meta = { requestId: 1, method: "tasks/get", binding: "test", attempts: 1 }
 
 it("EXT-REG-1: importing never registers an extension", async () => {
   vi.resetModules();
-  const { ExtensionRegistry: Registry } = await import("@mcp-client/core");
+  const { ExtensionRegistry: Registry } = await import("@mcp/core");
   const spy = vi.spyOn(Registry.prototype, "register");
   try {
     await import("../src/index.js");
@@ -47,7 +47,7 @@ it("EXT-PORT-1: extension-owned store isolates server namespaces", () => {
 it("EXT-STREAM-1: runtime depends on public ports, not transports or extensions", () => {
   for (const f of readdirSync(path("../src/"))) {
     for (const m of text("../src/" + f).matchAll(/from ['"]([^'"]+)['"]/g)) {
-      expect(m[1]).toMatch(/^(?:\.\/|node:|@mcp-client\/core$)/);
+      expect(m[1]).toMatch(/^(?:\.\/|node:|@mcp\/core$)/);
     }
   }
 });

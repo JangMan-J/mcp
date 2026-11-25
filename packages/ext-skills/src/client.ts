@@ -1,4 +1,4 @@
-import type { McpClient, Outcome, OutcomeMeta } from "@mcp-client/core";
+import type { McpClient, Outcome, OutcomeMeta } from "@mcp/core";
 import type { SkillCache } from "./cache.js";
 import { SKILLS_EXTENSION_ID, SKILLS_REVISION } from "./extension.js";
 import {

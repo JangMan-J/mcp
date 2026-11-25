@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { ServerError, type Obj } from "@mcp-client/server-events";
+import { ServerError, type Obj } from "@mcp/server-events";
 import { complete, DEFAULT_CACHE_HINTS, paginate, type CacheHints } from "./protocol.js";
 
 export const SKILLS_EXTENSION_ID = "io.modelcontextprotocol/skills";

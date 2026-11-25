@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Outcome, StreamHandle } from "@mcp-client/core";
+import type { Outcome, StreamHandle } from "@mcp/core";
 import { ResultCache, SubscriptionManager, type RequestFn } from "../src/index.js";
 
 const ok = (value: unknown): Outcome<unknown> =>

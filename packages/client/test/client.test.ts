@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createToolServer, FakeJsonRpcError, InMemoryTransport } from "@mcp-client/testing";
+import { createToolServer, FakeJsonRpcError, InMemoryTransport } from "@mcp/testing";
 import { connect, McpOutcomeError } from "../src/index.js";
 
 describe("connect (high-level consumer API)", () => {

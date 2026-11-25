@@ -3,7 +3,7 @@ import {
   JSONRPC_VERSION,
   type JsonRpcNotification,
   type JsonRpcRequest,
-} from "@mcp-client/core";
+} from "@mcp/core";
 
 export const DEFAULT_MAX_LINE_BYTES = 16 * 1024 * 1024; // 16 MiB (STDIO-LIMIT-1)
 

@@ -1,7 +1,7 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { connect } from "@mcp-client/client";
+import { connect } from "@mcp/client";
 
 const fixture = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "stdio-server.mjs");
 

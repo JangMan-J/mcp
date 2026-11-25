@@ -6,7 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const tmp = mkdtempSync(join(tmpdir(), "mcp-client-smoke-"));
+const tmp = mkdtempSync(join(tmpdir(), "mcp-smoke-"));
 
 try {
   const packed = execFileSync("npm", ["pack", "--silent", "--pack-destination", tmp], {

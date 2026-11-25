@@ -1,5 +1,5 @@
 {
-  "name": "@mcp-client/ext-skills",
+  "name": "@mcp/ext-skills",
   "version": "0.1.1",
   "private": true,
   "type": "module",
@@ -10,8 +10,8 @@
     }
   },
   "dependencies": {
-    "@mcp-client/core": "*",
-    "@mcp-client/ops": "*"
+    "@mcp/core": "*",
+    "@mcp/ops": "*"
   },
   "scripts": {
     "build": "tsc -b",

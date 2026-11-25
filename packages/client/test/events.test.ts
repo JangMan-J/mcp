@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { InMemoryTransport } from "@mcp-client/testing";
+import { InMemoryTransport } from "@mcp/testing";
 import { connect } from "../src/index.js";
 
 function eventsTransport() {

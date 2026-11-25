@@ -1,8 +1,8 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import type { JsonRpcNotification, JsonRpcRequest } from "@mcp-client/core";
-import type { McpServer } from "@mcp-client/server";
-import { ServerError, type Obj } from "@mcp-client/server-events";
-import { encodeHeaderValue, extractAtPath, validateXmcpHeaderSchema } from "@mcp-client/transport-http";
+import type { JsonRpcNotification, JsonRpcRequest } from "@mcp/core";
+import type { McpServer } from "@mcp/server";
+import { ServerError, type Obj } from "@mcp/server-events";
+import { encodeHeaderValue, extractAtPath, validateXmcpHeaderSchema } from "@mcp/transport-http";
 import { bearerChallenge, type BearerAuthenticator } from "./auth.js";
 import { errorResponse, HostChannel, resultResponse } from "./channel.js";
 

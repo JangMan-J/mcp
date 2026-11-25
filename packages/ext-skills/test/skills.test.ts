@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { McpClient, type JsonRpcRequest, type Transport } from "@mcp-client/core";
+import { McpClient, type JsonRpcRequest, type Transport } from "@mcp/core";
 import {
   DiskSkillCache,
   MAX_SKILL_BYTES,
@@ -50,7 +50,7 @@ function makeScriptedClient(
   return { client: new McpClient({ transport, server: { key: serverKey } }), sent };
 }
 
-describe("@mcp-client/ext-skills", () => {
+describe("@mcp/ext-skills", () => {
   it("exposes capability when healthy and working, and omits when unhealthy or not working", async () => {
     const ext = createSkillsExtension();
     expect(ext).toBeInstanceOf(SkillsExtension);

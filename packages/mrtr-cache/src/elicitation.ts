@@ -1,4 +1,4 @@
-import type { BrowserPort } from "@mcp-client/core";
+import type { BrowserPort } from "@mcp/core";
 import {
   object,
   Violation,
