@@ -275,9 +275,9 @@ describe("@mcp-client/ext-events", () => {
     });
     await new Promise((r) => setImmediate(r));
 
-    // Expire heartbeat (100ms) + jitter (25ms) -> reconnects with stream id 2.
-    await advance(130);
-    expect(aborts).toEqual([1100]);
+    // Expire heartbeat watchdog (2 * 100ms) + jitter (25ms) -> reconnects with stream id 2.
+    await advance(230);
+    expect(aborts).toEqual([1200]);
     expect(queues).toHaveLength(2);
 
     queues[1]!.push({

@@ -52,7 +52,7 @@ export function watchStream(
     let heartbeat = 0;
     const arm = () => {
       timer?.();
-      timer = clock.setTimeout(reconnect, heartbeat);
+      timer = clock.setTimeout(reconnect, heartbeat * 2);
     };
     void stream.done.then(reconnect, reconnect);
     void (async () => {
