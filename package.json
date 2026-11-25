@@ -1,12 +1,19 @@
 {
   "name": "@jangmanj/mcp-client",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "MCP 2026-07-28 client library: core, transports, auth, ops, MRTR/cache, OTEL telemetry, and extensions.",
   "license": "MIT",
   "author": "JangMan-J",
-  "keywords": ["mcp", "model-context-protocol", "pi-package", "pi-extension"],
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "pi-package",
+    "pi-extension"
+  ],
   "pi": {
-    "extensions": ["./extensions/index.ts"]
+    "extensions": [
+      "./extensions/index.ts"
+    ]
   },
   "repository": {
     "type": "git",
