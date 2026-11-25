@@ -292,8 +292,8 @@ Pi as `mcp__<server>__<tool>`.
 ```sh
 pi install npm:@jangmanj/mcp
 # or from a checkout / git ref:
-pi install ./path/to/mcp-client
-pi install git:github.com/JangMan-J/mcp-client@v0.1.1
+pi install ./path/to/mcp
+pi install git:github.com/JangMan-J/mcp-client@v0.13.0
 ```
 
 The extension reads the same `mcp.json` files as built-in MCP
@@ -310,13 +310,14 @@ Beyond tools, it covers built-in MCP parity: `list_mcp_resources`,
 tool updates, `/mcp prompts|prompt|resources|task|enable|disable|exposure`
 subcommands, MRTR elicitation through Pi's UI, task handles with `tasks/get`
 and `tasks/cancel`, 20 KB middle-out text truncation with temp-file offload,
-and a rotating `$PI_CODING_AGENT_DIR/mcp-client.log`.
+and a rotating `$PI_CODING_AGENT_DIR/mcp.log`.
 
 OAuth works out of the box for HTTP servers without a static `Authorization` header: the
 first 401 marks the server "needs sign-in" in `/mcp`, and `/mcp login <name>` runs the
 authorization-code + PKCE flow with CIMD/DCR registration through the system browser.
-Credentials persist in `$PI_CODING_AGENT_DIR/mcp-client-oauth.json` (issuer-keyed);
-`/mcp logout <name>` deletes them. The full `oauth` config shape is supported:
+Credentials persist in `$PI_CODING_AGENT_DIR/mcp-oauth.json` (issuer-keyed);
+`/mcp logout <name>` deletes them. Earlier versions stored them in
+`mcp-client-oauth.json`; rename that file once to keep existing sign-ins. The full `oauth` config shape is supported:
 `clientId`, `clientSecret`, `clientName`, `callbackPort`, `callbackUrl` (loopback HTTP),
 `scope` (space-separated, merged with advertised scopes), and `authServerMetadataUrl`
 (trusted as configured, skips PRM discovery).

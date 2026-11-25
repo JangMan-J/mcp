@@ -1,4 +1,4 @@
-/** Bounded diagnostics log (mcp-client.log), rotated at 5 MB like Pi's mcp.log. */
+/** Bounded diagnostics log (mcp.log), rotated at 5 MB like Pi's mcp.log. */
 
 import { appendFile, mkdir, rename, stat } from "node:fs/promises";
 import { dirname } from "node:path";

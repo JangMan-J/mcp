@@ -44,8 +44,8 @@ export default function (pi: ExtensionAPI) {
 	const bridge = new McpBridge({
 		pi,
 		notify: (message, level) => currentUi?.notify(message, level),
-		credentialStorePath: join(agentDir(process.env, homedir()), "mcp-client-oauth.json"),
-		diagnosticsLogPath: join(agentDir(process.env, homedir()), "mcp-client.log"),
+		credentialStorePath: join(agentDir(process.env, homedir()), "mcp-oauth.json"),
+		diagnosticsLogPath: join(agentDir(process.env, homedir()), "mcp.log"),
 		confirm: (title, message) => currentUi?.confirm?.(title, message) ?? Promise.resolve(false),
 		ui: {
 			notify: (message, level) => currentUi?.notify(message, level),
@@ -57,7 +57,7 @@ export default function (pi: ExtensionAPI) {
 
 	// Registering /mcp replaces built-in MCP support for sessions.
 	pi.registerCommand("mcp", {
-		description: "MCP (mcp-client bridge): list, reconnect, login, logout, tools, prompts, resources, task, enable/disable, exposure",
+		description: "MCP (mcp bridge): list, reconnect, login, logout, tools, prompts, resources, task, enable/disable, exposure",
 		handler: async (args, ctx) => {
 			const [sub, ...rest] = args.trim().split(/\s+/).filter(Boolean);
 			const name = rest[0];

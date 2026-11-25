@@ -15,7 +15,7 @@ export interface OffloadedText {
 /** Middle-out truncation at 20 KB with the full text saved to a temp file. */
 export async function offloadText(text: string): Promise<OffloadedText> {
 	if (text.length <= MAX_INLINE_TEXT) return { text };
-	const filePath = join(tmpdir(), `mcp-client-${randomUUID()}.txt`);
+	const filePath = join(tmpdir(), `mcp-${randomUUID()}.txt`);
 	await writeFile(filePath, text);
 	const removed = text.length - MAX_INLINE_TEXT;
 	const half = MAX_INLINE_TEXT / 2;
@@ -26,7 +26,7 @@ export async function offloadText(text: string): Promise<OffloadedText> {
 }
 
 export async function offloadBinary(bytes: Uint8Array, extension = "bin"): Promise<string> {
-	const filePath = join(tmpdir(), `mcp-client-${randomUUID()}.${extension}`);
+	const filePath = join(tmpdir(), `mcp-${randomUUID()}.${extension}`);
 	await writeFile(filePath, bytes);
 	return filePath;
 }

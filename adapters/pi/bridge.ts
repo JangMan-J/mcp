@@ -184,7 +184,7 @@ export interface BridgeOptions {
 	readonly allowInsecureAuth?: boolean;
 	/** Host UI for elicitation prompts; without it elicitations decline. */
 	readonly ui?: Ui;
-	/** Diagnostics log path (mcp-client.log). */
+	/** Diagnostics log path (mcp.log). */
 	readonly diagnosticsLogPath?: string;
 }
 
@@ -394,7 +394,7 @@ export class McpBridge {
 		const client = new McpClient({
 			transport,
 			server: { key: config.name, label: config.name },
-			clientInfo: { name: "pi", version: "mcp-client-bridge" },
+			clientInfo: { name: "pi", version: "pi-adapter" },
 			defaults: { timeoutMs: config.timeoutMs },
 			ports: { consent: consentPort(this.ui, config.name) },
 		});
