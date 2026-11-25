@@ -28,7 +28,7 @@ const syntheticRoot = {
 
 const generated = await compile(syntheticRoot, "McpSchema20260728", {
   bannerComment:
-    "/* eslint-disable */\n/**\n * AUTO-GENERATED from packages/core/src/schema/schema.json (MCP 2026-07-28, tag 5f5440bb).\n * Do not edit manually; regenerate with `npm run gen:schema`.\n */",
+    "/* eslint-disable */\n/**\n * AUTO-GENERATED from packages/core/src/schema/schema.json (MCP 2026-07-28, tag 2bbace55).\n * Do not edit manually; regenerate with `npm run gen:schema`.\n */",
   unreachableDefinitions: true,
   strictIndexSignatures: true,
 });
