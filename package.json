@@ -52,6 +52,10 @@
       "types": "./dist/testing/index.d.ts",
       "default": "./dist/testing/index.js"
     },
+    "./server-events": {
+      "types": "./dist/server-events/index.d.ts",
+      "default": "./dist/server-events/index.js"
+    },
     "./auth": {
       "types": "./dist/auth/index.d.ts",
       "default": "./dist/auth/index.js"

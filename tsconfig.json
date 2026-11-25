@@ -4,6 +4,7 @@
     { "path": "./packages/core" },
     { "path": "./packages/client" },
     { "path": "./packages/testing" },
+    { "path": "./packages/server-events" },
     { "path": "./packages/transport-stdio" },
     { "path": "./packages/transport-http" },
     { "path": "./packages/auth" },

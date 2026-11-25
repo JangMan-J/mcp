@@ -75,6 +75,43 @@ const connection = await connect({
 For interactive OAuth (discovery, PKCE, CIMD/DCR), construct `OAuthAuthorization` from
 `/auth` with your consent/browser/redirect ports and pass it as `authProvider`.
 
+## Push on the server side
+
+`@jangmanj/mcp-client/server-events` is the modular, transport-agnostic server
+companion: event logs with cursors, live `events/stream`, standard
+`subscriptions/listen`, notices, and optional async tasks. It is deliberately
+not a tools/resources/prompts server framework — mount it in your own host and
+let the host own JSON-RPC dispatch and transports.
+
+```ts
+import { EventBus, EventsServer, SubscriptionsServer, TaskCenter, Notices } from "@jangmanj/mcp-client/server-events";
+
+const bus = new EventBus();
+const events = new EventsServer({ bus });
+const subscriptions = new SubscriptionsServer({ capabilities: { tools: { listChanged: true } } });
+const tasks = new TaskCenter({ bus });
+const notices = new Notices(bus);
+
+// Ordinary requests return plain results for your host to send:
+const page = events.poll({ name: "mail", arguments: {}, cursor: null });
+
+// Long-lived requests use a host channel (notify/finish/onClose):
+// events.stream(channel, { name: "mail", arguments: {}, cursor: null });
+// subscriptions.listen(channel, { notifications: { toolsListChanged: true } });
+
+// Application code publishes; subscribed clients receive push notices:
+bus.publish("mail", { subject: "hello" });
+subscriptions.notifyToolsChanged();
+notices.info("ready");
+const task = tasks.create({ pollIntervalMs: 1000 });
+tasks.complete(task.taskId, { ok: true });
+```
+
+Scope: `events/list`, `events/poll`, `events/stream`, `subscriptions/listen`,
+`notifications/*` fanout, and `tasks/get`/`tasks/cancel`/`tasks/update` state.
+Webhook delivery and skills are intentionally out of scope; deprecated MCP
+Logging is not used — notices travel as ordinary events.
+
 ## Errors, cancellation, progress
 
 - **Simple mode** (`/client`): failures throw `McpOutcomeError`; inspect `error.outcome.kind`
@@ -138,6 +175,7 @@ const ops = createOps(client);
 - `@jangmanj/mcp-client/core`
 - `@jangmanj/mcp-client/client` (high-level `connect()` API)
 - `@jangmanj/mcp-client/testing` (in-memory transport / fake tool server)
+- `@jangmanj/mcp-client/server-events` (push-first server building blocks)
 - `@jangmanj/mcp-client/auth`
 - `@jangmanj/mcp-client/ops`
 - `@jangmanj/mcp-client/mrtr-cache`
