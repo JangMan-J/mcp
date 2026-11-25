@@ -206,3 +206,64 @@ export function createServerCardsExtension(defaults: DiscoverCardOptions = {}): 
     discoverFromDomain: (d, o) => discoverFromDomain(d, { ...defaults, ...o }),
   };
 }
+
+export const DEFAULT_SERVER_CARD_SCHEMA = "https://modelcontextprotocol.io/schemas/server-card.json";
+
+export interface ServerCardInput {
+  readonly $schema?: string;
+  readonly name: string;
+  readonly version: string;
+  readonly description: string;
+  readonly title?: string;
+  readonly icons?: unknown;
+  readonly repository?: unknown;
+  readonly websiteUrl?: string;
+  readonly remotes?: readonly ServerCardRemote[];
+  readonly _meta?: Record<string, unknown>;
+}
+
+function required(value: unknown, field: string): string {
+  if (typeof value !== "string" || value.trim() === "") throw new ServerCardError(`card-field-${field}`);
+  return value;
+}
+
+/**
+ * Build an advisory Server Card for a server you operate.
+ *
+ * Cards are discovery metadata only: tools/resources/prompts primitives are
+ * rejected so a card cannot become an inferred capability document. Live
+ * server/discover remains authoritative.
+ */
+export function buildServerCard(input: ServerCardInput): ServerCard {
+  for (const primitive of ["tools", "resources", "prompts"]) {
+    if (primitive in input) throw new ServerCardError("card-primitives-not-allowed");
+  }
+  const card: Record<string, unknown> = {
+    $schema: input.$schema ?? DEFAULT_SERVER_CARD_SCHEMA,
+    name: required(input.name, "name"),
+    version: required(input.version, "version"),
+    description: required(input.description, "description"),
+  };
+  if (input.title !== undefined) card["title"] = input.title;
+  if (input.websiteUrl !== undefined) card["websiteUrl"] = input.websiteUrl;
+  if (input.icons !== undefined) card["icons"] = input.icons;
+  if (input.repository !== undefined) card["repository"] = input.repository;
+  if (input.remotes !== undefined) {
+    card["remotes"] = input.remotes.map((remote) => {
+      const type = required(remote.type, "remote-type");
+      const url = required(remote.url, "remote-url");
+      const supportedVersions = remote.supportedVersions ?? [];
+      if (!Array.isArray(supportedVersions) || supportedVersions.some((v) => typeof v !== "string")) {
+        throw new ServerCardError("card-field-supportedVersions");
+      }
+      return { ...remote, type, url, supportedVersions: [...supportedVersions] };
+    });
+  }
+  if (input._meta !== undefined) card["_meta"] = input._meta;
+  return card as unknown as ServerCard;
+}
+
+/** Wrap cards in the /.well-known/ai-catalog.json document shape. */
+export function buildAiCatalog(cards: readonly ServerCard[]): { entries: Array<{ type: "mcp-server-card"; data: ServerCard }> } {
+  return { entries: cards.map((card) => ({ type: "mcp-server-card", data: card })) };
+}

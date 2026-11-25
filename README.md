@@ -112,6 +112,24 @@ Scope: `events/list`, `events/poll`, `events/stream`, `subscriptions/listen`,
 Webhook delivery and skills are intentionally out of scope; deprecated MCP
 Logging is not used — notices travel as ordinary events.
 
+For discovery metadata, `@jangmanj/mcp-client/ext-server-cards` also includes a
+card builder for servers you operate:
+
+```ts
+import { buildServerCard, buildAiCatalog } from "@jangmanj/mcp-client/ext-server-cards";
+
+const card = buildServerCard({
+  name: "roger-wilco",
+  version: "0.1.0",
+  description: "Durable cross-machine mail with push/poll event streams.",
+  remotes: [{ type: "streamable-http", url: "https://roger.example.net/mcp", supportedVersions: ["2026-07-28"] }],
+});
+const catalog = buildAiCatalog([card]); // serve as /.well-known/ai-catalog.json
+```
+
+Cards are advisory only: primitive capability fields are rejected, and live
+`server/discover` remains authoritative.
+
 ## Errors, cancellation, progress
 
 - **Simple mode** (`/client`): failures throw `McpOutcomeError`; inspect `error.outcome.kind`
