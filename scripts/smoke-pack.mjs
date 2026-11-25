@@ -25,6 +25,7 @@ try {
     "@jangmanj/mcp-client/client",
     "@jangmanj/mcp-client/testing",
     "@jangmanj/mcp-client/server-events",
+    "@jangmanj/mcp-client/server",
     "@jangmanj/mcp-client/auth",
     "@jangmanj/mcp-client/ops",
     "@jangmanj/mcp-client/mrtr-cache",

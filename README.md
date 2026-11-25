@@ -75,13 +75,59 @@ const connection = await connect({
 For interactive OAuth (discovery, PKCE, CIMD/DCR), construct `OAuthAuthorization` from
 `/auth` with your consent/browser/redirect ports and pass it as `authProvider`.
 
+## Building a server
+
+`@jangmanj/mcp-client/server` covers the ordinary MCP 2026-07-28 request
+surface; `@jangmanj/mcp-client/server-events` covers push. Both are
+transport-agnostic — your host owns JSON-RPC dispatch, error mapping, and
+listeners.
+
+```ts
+import { McpServer } from "@jangmanj/mcp-client/server";
+import { EventBus, EventsServer, SubscriptionsServer, TaskCenter } from "@jangmanj/mcp-client/server-events";
+
+const bus = new EventBus();
+const subscriptions = new SubscriptionsServer({ capabilities: { tools: { listChanged: true } } });
+const server = new McpServer({
+  serverInfo: { name: "roger-wilco", version: "0.1.0" },
+  subscriptions,
+  events: new EventsServer({ bus }),
+  tasks: new TaskCenter({ bus }),
+});
+
+server.registerTool({
+  name: "roger_send",
+  inputSchema: { type: "object", properties: { body: { type: "string" } }, required: ["body"] },
+  handler: async ({ body }) => {
+    const mail = bus.publish("roger.mail", { body });
+    return { content: [{ type: "text", text: mail.eventId }] };
+  },
+});
+server.registerResource({ uri: "file:///board", name: "board", handler: () => "..." });
+server.registerPrompt({ name: "reply", handler: () => ({ messages: [] }) });
+
+// Ordinary JSON-RPC requests (tools/list, tools/call, resources/read,
+// prompts/get, completion/complete, server/discover, events/*, tasks/*):
+const result = await server.handleRequest(msg); // throws ServerError(code) for the host to map
+
+// Long-lived streams still use host channels:
+// subscriptions.listen(channel, params) / server.events?.stream(channel, params)
+```
+
+Included: deterministic pagination with opaque cursors, required `resultType`
+and cache hints, input/output schema validation (Ajv 2020-12), resource
+templates, prompt arguments, completion capping, MRTR `input_required` and
+HMAC-protected `requestState` helpers, and task-handle results. Deprecated
+Logging/Roots/Sampling are intentionally absent.
+
 ## Push on the server side
 
 `@jangmanj/mcp-client/server-events` is the modular, transport-agnostic server
 companion: event logs with cursors, live `events/stream`, standard
-`subscriptions/listen`, notices, and optional async tasks. It is deliberately
-not a tools/resources/prompts server framework — mount it in your own host and
-let the host own JSON-RPC dispatch and transports.
+`subscriptions/listen`, notices, and optional async tasks. It contains no
+tools/resources/prompts registry of its own — that lives in
+`@jangmanj/mcp-client/server` — so you can adopt push without adopting a
+framework.
 
 ```ts
 import { EventBus, EventsServer, SubscriptionsServer, TaskCenter, Notices } from "@jangmanj/mcp-client/server-events";
@@ -194,6 +240,7 @@ const ops = createOps(client);
 - `@jangmanj/mcp-client/client` (high-level `connect()` API)
 - `@jangmanj/mcp-client/testing` (in-memory transport / fake tool server)
 - `@jangmanj/mcp-client/server-events` (push-first server building blocks)
+- `@jangmanj/mcp-client/server` (tools/resources/prompts/discover/completion server)
 - `@jangmanj/mcp-client/auth`
 - `@jangmanj/mcp-client/ops`
 - `@jangmanj/mcp-client/mrtr-cache`

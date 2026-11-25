@@ -5,6 +5,7 @@
     { "path": "./packages/client" },
     { "path": "./packages/testing" },
     { "path": "./packages/server-events" },
+    { "path": "./packages/server" },
     { "path": "./packages/transport-stdio" },
     { "path": "./packages/transport-http" },
     { "path": "./packages/auth" },

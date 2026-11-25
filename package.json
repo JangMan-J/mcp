@@ -1,7 +1,7 @@
 {
   "name": "@jangmanj/mcp-client",
   "version": "0.8.0",
-  "description": "MCP 2026-07-28 client library: push events/subscriptions, core, transports, auth, ops, MRTR/cache, OTEL telemetry, and extensions.",
+  "description": "MCP 2026-07-28 client and server library: push events/subscriptions, core, transports, auth, ops, MRTR/cache, OTEL telemetry, and extensions.",
   "license": "MIT",
   "author": "JangMan-J",
   "keywords": [
@@ -55,6 +55,10 @@
     "./server-events": {
       "types": "./dist/server-events/index.d.ts",
       "default": "./dist/server-events/index.js"
+    },
+    "./server": {
+      "types": "./dist/server/index.d.ts",
+      "default": "./dist/server/index.js"
     },
     "./auth": {
       "types": "./dist/auth/index.d.ts",
