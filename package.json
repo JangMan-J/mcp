@@ -1,6 +1,6 @@
 {
   "name": "@jangmanj/mcp",
-  "version": "0.12.3",
+  "version": "0.13.0",
   "description": "MCP 2026-07-28 client and server library: push events/subscriptions, core, transports, auth, ops, MRTR/cache, OTEL telemetry, and extensions.",
   "license": "MIT",
   "author": "JangMan-J",
