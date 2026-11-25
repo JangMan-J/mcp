@@ -11,6 +11,82 @@ npm install @jangmanj/mcp-client
 ## Quickstart
 
 ```ts
+import { connect } from "@jangmanj/mcp-client/client";
+
+const connection = await connect({
+  stdio: { command: "npx", args: ["-y", "@modelcontextprotocol/server-filesystem", "."] },
+  reconnectOnDrop: true, // optional: rebuild + retry once after a dropped connection
+});
+
+try {
+  const tools = await connection.tools.list();
+  console.log(tools.map((t) => t.name));
+  const result = await connection.tools.call("list_allowed_directories");
+  console.log(result.content);
+} finally {
+  await connection.close();
+}
+```
+
+`tools.list()` / `tools.call()` return values or throw `McpOutcomeError` — no `Outcome`
+matching required. For the full protocol surface (MRTR, tasks, uncertain writes), use
+`connection.ops` directly and match on `Outcome.kind`.
+
+HTTP servers use `http:` instead of `stdio:`:
+
+```ts
+import { ConfiguredBearer } from "@jangmanj/mcp-client/auth";
+
+const connection = await connect({
+  http: {
+    url: "https://mcp.example.com/mcp",
+    authProvider: new ConfiguredBearer({
+      resource: "https://mcp.example.com/mcp",
+      token: process.env.MCP_TOKEN!,
+    }),
+  },
+});
+```
+
+For interactive OAuth (discovery, PKCE, CIMD/DCR), construct `OAuthAuthorization` from
+`/auth` with your consent/browser/redirect ports and pass it as `authProvider`.
+
+## Errors, cancellation, progress
+
+- **Simple mode** (`/client`): failures throw `McpOutcomeError`; inspect `error.outcome.kind`
+  for `jsonrpc-error`, `transport-failure`, `tool-isError`, etc.
+- **Full mode** (`/ops` + `/core`): every call returns a discriminated `Outcome` instead of
+  throwing. `unwrapOutcome(outcome)` converts to throw-style.
+- Pass `signal` (AbortSignal) and `timeoutMs` in request options to cancel or bound a call;
+  pass `onProgress` to receive progress notifications. Cancellation is cooperative and
+  sends `notifications/cancelled` when the request is already on the wire.
+- `listAll()` follows cursors for you; single-page `list({ cursor })` is available when you
+  need manual pagination. Cursors are opaque strings — never parse them.
+
+## Testing your own tools
+
+`@jangmanj/mcp-client/testing` provides an in-memory transport and a scriptable tool
+server — no child processes or sockets:
+
+```ts
+import { connect } from "@jangmanj/mcp-client/client";
+import { createToolServer } from "@jangmanj/mcp-client/testing";
+
+const connection = await connect({
+  transport: createToolServer({
+    echo: { handler: (args) => ({ content: [{ type: "text", text: String(args.message) }] }) },
+  }),
+});
+```
+
+Throw `FakeJsonRpcError(code, message)` from a handler to simulate protocol errors.
+
+## Low-level API
+
+The quickstart above is a thin wrapper. The underlying pieces remain available when you
+need them:
+
+```ts
 import { McpClient } from "@jangmanj/mcp-client";
 import { createOps } from "@jangmanj/mcp-client/ops";
 import { StdioTransport } from "@jangmanj/mcp-client/transport-stdio";
@@ -19,27 +95,23 @@ const client = new McpClient({
   transport: new StdioTransport({ command: "npx", args: ["-y", "@modelcontextprotocol/server-filesystem", "."] }),
   server: { key: "filesystem" },
 });
-
 const ops = createOps(client);
-const tools = await ops.tools.listAll();
-if (tools.kind === "ok") {
-  console.log(tools.value.items.map((t) => t.name));
-  const result = await ops.tools.call("list_allowed_directories");
-  if (result.kind === "ok") console.log(result.value.content);
-}
-
-await client.close();
+// ... await ops.tools.listAll() / ops.tools.call(...), then await client.close()
 ```
 
-Every call returns a discriminated `Outcome` (`ok` / `jsonrpc-error` / `transport-failure` /
-`mrtr-interim` / …) instead of throwing — pattern-match on `kind`. HTTP servers use
-`HttpTransport` from `/transport-http`; OAuth, bearer, and client-credentials live in
-`/auth` (`OAuthAuthorization`, `ConfiguredBearer`, `ClientCredentialsAuth`).
+## Compatibility expectations
+
+- This library targets **MCP 2026-07-28** (stateless, per-request `_meta`). Older servers
+  are detected and diagnosed via era probing; it is not a full 2025-style `initialize` client.
+- Node **>= 22.19**, ESM-first (CJS `require(esm)` works on supported Node versions).
+- Roots, sampling, and logging are deprecated upstream and intentionally not implemented.
 
 ## Subpath exports
 
 - `@jangmanj/mcp-client` (re-exports `./core`)
 - `@jangmanj/mcp-client/core`
+- `@jangmanj/mcp-client/client` (high-level `connect()` API)
+- `@jangmanj/mcp-client/testing` (in-memory transport / fake tool server)
 - `@jangmanj/mcp-client/auth`
 - `@jangmanj/mcp-client/ops`
 - `@jangmanj/mcp-client/mrtr-cache`

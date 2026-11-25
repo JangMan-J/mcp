@@ -1,0 +1,25 @@
+{
+  "name": "@mcp-client/client",
+  "version": "0.1.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@mcp-client/core": "*",
+    "@mcp-client/ops": "*",
+    "@mcp-client/transport-http": "*",
+    "@mcp-client/transport-stdio": "*"
+  },
+  "devDependencies": {
+    "@mcp-client/testing": "*"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "test": "vitest run test"
+  }
+}
