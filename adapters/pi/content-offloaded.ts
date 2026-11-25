@@ -1,6 +1,6 @@
 /** Async content conversion with built-in MCP's 20 KB middle-out truncation. */
 
-import type { ContentBlock } from "../../dist/ops/index.js";
+import type { ContentBlock } from "@jangmanj/mcp/ops";
 import type { PiContent } from "./pi-api.ts";
 import { offloadBinary, offloadText } from "./result-files.ts";
 

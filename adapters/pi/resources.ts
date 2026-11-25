@@ -1,8 +1,8 @@
 /** Built-in MCP resource tools: list_mcp_resources, list_mcp_resource_templates, read_mcp_resource. */
 
-import type { Outcome } from "../../dist/index.js";
-import type { McpClient } from "../../dist/index.js";
-import type { Ops } from "../../dist/ops/index.js";
+import type { Outcome } from "@jangmanj/mcp/core";
+import type { McpClient } from "@jangmanj/mcp/core";
+import type { Ops } from "@jangmanj/mcp/ops";
 import type { Exposure } from "./config.ts";
 import { offloadBinary, offloadText } from "./result-files.ts";
 import type { ExtensionAPI, ToolResult } from "./pi-api.ts";

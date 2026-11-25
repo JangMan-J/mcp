@@ -5,18 +5,18 @@
  */
 
 import { createHash } from "node:crypto";
-import { McpClient } from "../../dist/index.js";
+import { McpClient } from "@jangmanj/mcp/core";
 import {
 	createOps,
 	normalizeContent,
 	type Ops,
 	type ToolCallResult,
 	type ToolEntry,
-} from "../../dist/ops/index.js";
-import { HttpTransport } from "../../dist/transport-http/index.js";
-import { StdioTransport } from "../../dist/transport-stdio/index.js";
-import { createTasksExtension } from "../../dist/mrtr-cache/index.js";
-import type { Outcome } from "../../dist/index.js";
+} from "@jangmanj/mcp/ops";
+import { HttpTransport } from "@jangmanj/mcp/transport-http";
+import { StdioTransport } from "@jangmanj/mcp/transport-stdio";
+import { createTasksExtension } from "@jangmanj/mcp/mrtr-cache";
+import type { Outcome } from "@jangmanj/mcp/core";
 import type { Exposure, ResolvedServerConfig } from "./config.ts";
 import { convertBlocksOffloaded } from "./content-offloaded.ts";
 import { DiagnosticsLog } from "./diagnostics.ts";

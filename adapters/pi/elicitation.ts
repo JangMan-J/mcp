@@ -1,10 +1,10 @@
 /** MRTR + elicitation support using the host's Pi UI. */
 
-import { openSystemBrowser } from "../../dist/auth/index.js";
-import type { Outcome } from "../../dist/index.js";
-import type { ConsentPort } from "../../dist/index.js";
-import { elicit, type FormRequest } from "../../dist/mrtr-cache/index.js";
-import { normalizeContent, type ToolCallResult } from "../../dist/ops/index.js";
+import { openSystemBrowser } from "@jangmanj/mcp/auth";
+import type { Outcome } from "@jangmanj/mcp/core";
+import type { ConsentPort } from "@jangmanj/mcp/core";
+import { elicit, type FormRequest } from "@jangmanj/mcp/mrtr-cache";
+import { normalizeContent, type ToolCallResult } from "@jangmanj/mcp/ops";
 import type { ResourceServer } from "./resources.ts";
 import type { Ui } from "./pi-api.ts";
 

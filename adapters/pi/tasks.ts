@@ -1,9 +1,9 @@
 /** Task-based tool-call results and /mcp task helpers. */
 
-import type { Outcome } from "../../dist/index.js";
-import type { McpClient } from "../../dist/index.js";
-import { TasksRuntime, type TaskState } from "../../dist/mrtr-cache/index.js";
-import type { ToolCallResult } from "../../dist/ops/index.js";
+import type { Outcome } from "@jangmanj/mcp/core";
+import type { McpClient } from "@jangmanj/mcp/core";
+import { TasksRuntime, type TaskState } from "@jangmanj/mcp/mrtr-cache";
+import type { ToolCallResult } from "@jangmanj/mcp/ops";
 import type { ResourceServer } from "./resources.ts";
 import type { ToolResult } from "./pi-api.ts";
 
