@@ -9,6 +9,7 @@ import {
 } from "@mcp-client/server-events";
 import { complete, DEFAULT_CACHE_HINTS, paginate, PROTOCOL_VERSION, validateRequestMeta, type CacheHints } from "./protocol.js";
 import { matchUriTemplate } from "./uri.js";
+import { SkillsRegistry, type SkillInput } from "./skills.js";
 
 export interface ToolDefinition {
 	readonly name: string;
@@ -58,6 +59,7 @@ export interface McpServerOptions {
 	readonly subscriptions?: SubscriptionsServer;
 	readonly events?: EventsServer;
 	readonly tasks?: TaskCenter;
+	readonly skills?: SkillsRegistry;
 	readonly onComplete?: CompletionHandler;
 }
 
@@ -130,11 +132,22 @@ export class McpServer {
 		return this.#options.tasks;
 	}
 
+	get skills(): SkillsRegistry | undefined {
+		return this.#options.skills;
+	}
+
+	registerSkill(input: SkillInput): this {
+		const registry = this.#options.skills ?? new SkillsRegistry();
+		registry.register(input);
+		(this.#options as { skills?: SkillsRegistry }).skills = registry;
+		return this;
+	}
+
 	capabilities(): Obj {
 		const caps: Obj = {};
 		const listChanged = this.#options.subscriptions !== undefined;
 		if (this.#tools.size > 0) caps.tools = listChanged ? { listChanged: true } : {};
-		if (this.#resources.size > 0 || this.#templates.size > 0) {
+		if (this.#resources.size > 0 || this.#templates.size > 0 || this.#options.skills !== undefined) {
 			caps.resources = listChanged ? { listChanged: true, subscribe: true } : {};
 		}
 		if (this.#prompts.size > 0) caps.prompts = listChanged ? { listChanged: true } : {};
@@ -142,6 +155,7 @@ export class McpServer {
 		const extensions = {
 			...(this.#options.events?.capabilities().extensions as Obj | undefined),
 			...(this.#options.tasks?.capabilities().extensions as Obj | undefined),
+			...(this.#options.skills?.capabilities().extensions as Obj | undefined),
 		};
 		if (Object.keys(extensions).length > 0) caps.extensions = extensions;
 		return caps;
@@ -249,6 +263,12 @@ export class McpServer {
 				return this.#tasks().cancel(params);
 			case "tasks/update":
 				return this.#tasks().update(params);
+			case "skills/list":
+				return this.#skills().list(params.cursor, this.#options.cache ?? DEFAULT_CACHE_HINTS);
+			case "skills/get": {
+				if (typeof params.uri !== "string") throw new ServerError(-32602, "skill uri required");
+				return this.#skills().get(params.uri, this.#options.cache ?? DEFAULT_CACHE_HINTS);
+			}
 			case "subscriptions/listen":
 			case "events/stream":
 				throw new ServerError(-32601, `${msg.method} requires a PushChannel from the host transport`);
@@ -264,6 +284,11 @@ export class McpServer {
 	#tasks(): TaskCenter {
 		if (!this.#options.tasks) throw new ServerError(-32601, "tasks extension unavailable");
 		return this.#options.tasks;
+	}
+
+	#skills(): SkillsRegistry {
+		if (!this.#options.skills) throw new ServerError(-32601, "skills extension unavailable");
+		return this.#options.skills;
 	}
 
 	#toolSchema(tool: ToolDefinition): Obj {
@@ -340,6 +365,8 @@ export class McpServer {
 				return complete({ contents: await resourceContents(uri, template.mimeType, await template.handler(uri, vars)) }, this.#options.cache ?? DEFAULT_CACHE_HINTS);
 			}
 		}
+		const skillFile = this.#options.skills?.read(uri);
+		if (skillFile) return complete({ contents: [skillFile] }, this.#options.cache ?? DEFAULT_CACHE_HINTS);
 		throw new ServerError(-32602, `resource not found: ${uri}`);
 	}
 

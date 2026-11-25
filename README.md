@@ -117,9 +117,9 @@ const result = await server.handleRequest(msg); // throws ServerError(code) for 
 Included: deterministic pagination with opaque cursors, required `resultType`
 and cache hints, input/output schema validation (Ajv 2020-12), resource
 templates, prompt arguments, completion capping, MRTR `input_required` and
-HMAC-protected `requestState` helpers with single-use retry correlation, and
-task-handle results with TTL expiry. Deprecated Logging/Roots/Sampling are
-intentionally absent.
+HMAC-protected `requestState` helpers with single-use retry correlation,
+task-handle results with TTL expiry, and skills publishing with verified
+manifests. Deprecated Logging/Roots/Sampling are intentionally absent.
 
 ## Server transports
 
@@ -178,8 +178,10 @@ tasks.complete(task.taskId, { ok: true });
 
 Scope: `events/list`, `events/poll`, `events/stream`, `subscriptions/listen`,
 `notifications/*` fanout, and `tasks/get`/`tasks/cancel`/`tasks/update` state.
-Webhook delivery and skills are intentionally out of scope; deprecated MCP
-Logging is not used — notices travel as ordinary events.
+Webhook delivery is intentionally out of scope; deprecated MCP Logging is not
+used — notices travel as ordinary events. Skills publishing lives in
+`@jangmanj/mcp-client/server` (`registerSkill`): manifests with computed
+SHA-256/size, `skills/list`/`skills/get`, and file bytes via `resources/read`.
 
 For discovery metadata, `@jangmanj/mcp-client/ext-server-cards` also includes a
 card builder for servers you operate:
