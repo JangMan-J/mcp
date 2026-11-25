@@ -17,7 +17,7 @@ try {
 
   execFileSync("npm", ["init", "-y"], { cwd: tmp, stdio: "ignore" });
   writeFileSync(join(tmp, "package.json"), JSON.stringify({ name: "smoke", private: true, type: "module" }));
-  execFileSync("npm", ["install", "--no-save", "--silent", tarball], { cwd: tmp, stdio: "inherit" });
+  execFileSync("npm", ["install", "--no-save", "--silent", tarball, "@types/node"], { cwd: tmp, stdio: "inherit" });
 
   const subpaths = [
     "@jangmanj/mcp-client",
@@ -26,6 +26,7 @@ try {
     "@jangmanj/mcp-client/testing",
     "@jangmanj/mcp-client/server-events",
     "@jangmanj/mcp-client/server",
+    "@jangmanj/mcp-client/server-transport",
     "@jangmanj/mcp-client/auth",
     "@jangmanj/mcp-client/ops",
     "@jangmanj/mcp-client/mrtr-cache",
@@ -78,7 +79,7 @@ try {
           moduleResolution: "NodeNext",
           strict: true,
           skipLibCheck: false,
-          types: [],
+          types: ["node"],
           noEmit: true,
         },
         include: ["consumer.ts"],

@@ -38,6 +38,15 @@ describe("SubscriptionsServer", () => {
 });
 
 describe("TaskCenter", () => {
+	it("expires tasks past their TTL", () => {
+		let now = 1000;
+		const tasks = new TaskCenter({ clock: { now: () => now, setTimeout: () => () => {} } });
+		const created = tasks.create({ ttlMs: 50 });
+		now += 100;
+		expect(tasks.get({ taskId: created.taskId }).status).toBe("failed");
+		expect(tasks.get({ taskId: created.taskId }).error).toEqual({ code: "task-expired" });
+	});
+
 	it("runs the working -> input_required -> working -> completed flow with push notices", () => {
 		const bus = new EventBus();
 		const tasks = new TaskCenter({ bus });

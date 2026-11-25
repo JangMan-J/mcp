@@ -117,8 +117,31 @@ const result = await server.handleRequest(msg); // throws ServerError(code) for 
 Included: deterministic pagination with opaque cursors, required `resultType`
 and cache hints, input/output schema validation (Ajv 2020-12), resource
 templates, prompt arguments, completion capping, MRTR `input_required` and
-HMAC-protected `requestState` helpers, and task-handle results. Deprecated
-Logging/Roots/Sampling are intentionally absent.
+HMAC-protected `requestState` helpers with single-use retry correlation, and
+task-handle results with TTL expiry. Deprecated Logging/Roots/Sampling are
+intentionally absent.
+
+## Server transports
+
+`@jangmanj/mcp-client/server-transport` hosts an `McpServer` over real stdio or
+streamable HTTP, including SSE push channels, `notifications/cancelled`, and
+resource-side bearer auth:
+
+```ts
+import { StdioServerHost, HttpServerHost, StaticBearerAuth, buildProtectedResourceMetadata } from "@jangmanj/mcp-client/server-transport";
+
+// stdio: newline-delimited JSON-RPC on stdin/stdout
+await new StdioServerHost({ server }).listen();
+
+// HTTP: POST-only /mcp, header enforcement, SSE streams, optional bearer auth
+const host = new HttpServerHost({ server, auth: new StaticBearerAuth(process.env.MCP_TOKEN!) });
+host.createServer().listen(7477, "127.0.0.1");
+```
+
+The HTTP host validates `MCP-Protocol-Version`, `Mcp-Method`, `Mcp-Name`, and
+`Mcp-Param-*` against the request body, returns `-32020` on mismatch, enforces
+Origin/Accept rules, and serves `/healthz`. `buildProtectedResourceMetadata()`
+helps you publish RFC 9728 metadata for OAuth clients.
 
 ## Push on the server side
 
@@ -241,6 +264,7 @@ const ops = createOps(client);
 - `@jangmanj/mcp-client/testing` (in-memory transport / fake tool server)
 - `@jangmanj/mcp-client/server-events` (push-first server building blocks)
 - `@jangmanj/mcp-client/server` (tools/resources/prompts/discover/completion server)
+- `@jangmanj/mcp-client/server-transport` (stdio + streamable HTTP server hosts)
 - `@jangmanj/mcp-client/auth`
 - `@jangmanj/mcp-client/ops`
 - `@jangmanj/mcp-client/mrtr-cache`

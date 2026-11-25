@@ -1,4 +1,4 @@
-import type { JsonRpcRequest } from "@mcp-client/core";
+import type { JsonRpcNotification, JsonRpcRequest, RequestId } from "@mcp-client/core";
 import { createBuiltinValidator, type SchemaValidator, type ValidationResult } from "@mcp-client/ops";
 import {
 	EventsServer,
@@ -16,7 +16,7 @@ export interface ToolDefinition {
 	readonly inputSchema?: Obj;
 	readonly outputSchema?: Obj;
 	readonly annotations?: Obj;
-	readonly handler: (args: unknown) => unknown | Promise<unknown>;
+	readonly handler: (args: unknown, ctx: { readonly signal: AbortSignal; readonly requestId: RequestId }) => unknown | Promise<unknown>;
 }
 
 export interface ResourceDefinition {
@@ -81,6 +81,8 @@ export class McpServer {
 	readonly #prompts = new Map<string, PromptDefinition>();
 	readonly #compiled = new Map<string, ReturnType<SchemaValidator["compile"]>>();
 	readonly #versions: readonly string[];
+	readonly #inFlight = new Map<RequestId, AbortController>();
+	readonly #cancelled = new Set<RequestId>();
 
 	constructor(options: McpServerOptions) {
 		this.#options = options;
@@ -154,8 +156,35 @@ export class McpServer {
 		}, this.#options.cache ?? DEFAULT_CACHE_HINTS);
 	}
 
+	/** Handle notifications/cancelled: aborts the in-flight request, if any. */
+	handleNotification(msg: JsonRpcNotification): void {
+		if (msg.method !== "notifications/cancelled") return;
+		const requestId = (msg.params as Obj | undefined)?.requestId;
+		if (typeof requestId === "string" || typeof requestId === "number") this.cancel(requestId);
+	}
+
+	/** Abort an in-flight request. The host should suppress its response. */
+	cancel(requestId: RequestId): void {
+		this.#cancelled.add(requestId);
+		this.#inFlight.get(requestId)?.abort();
+	}
+
+	wasCancelled(requestId: RequestId): boolean {
+		return this.#cancelled.has(requestId);
+	}
 	/** Handle one ordinary JSON-RPC request; throws ServerError for the host to map. */
 	async handleRequest(msg: JsonRpcRequest): Promise<Obj> {
+		const ac = new AbortController();
+		this.#inFlight.set(msg.id, ac);
+		if (this.#cancelled.has(msg.id)) ac.abort();
+		try {
+			return await this.#handleRequest(msg, ac.signal);
+		} finally {
+			this.#inFlight.delete(msg.id);
+		}
+	}
+
+	async #handleRequest(msg: JsonRpcRequest, signal: AbortSignal): Promise<Obj> {
 		const params = (msg.params ?? {}) as Obj;
 		validateRequestMeta(params, this.#versions);
 		switch (msg.method) {
@@ -170,7 +199,7 @@ export class McpServer {
 				}, this.#options.cache ?? DEFAULT_CACHE_HINTS);
 			}
 			case "tools/call":
-				return this.#callTool(params);
+				return this.#callTool(params, msg.id, signal);
 			case "resources/list": {
 				const resources = [...this.#resources.values()].sort((a, b) => a.uri.localeCompare(b.uri));
 				const page = paginate(resources, params.cursor, this.#options.pageSize);
@@ -247,6 +276,12 @@ export class McpServer {
 		};
 	}
 
+	/** Public schema view for transports validating Mcp-Param-* headers. */
+	toolSchema(name: string): Obj | undefined {
+		const tool = this.#tools.get(name);
+		return tool ? this.#toolSchema(tool) : undefined;
+	}
+
 	#resourceSchema(resource: ResourceDefinition): Obj {
 		return {
 			uri: resource.uri,
@@ -256,7 +291,7 @@ export class McpServer {
 		};
 	}
 
-	async #callTool(params: Obj): Promise<Obj> {
+	async #callTool(params: Obj, requestId: RequestId, signal: AbortSignal): Promise<Obj> {
 		const name = params.name;
 		if (typeof name !== "string") throw new ServerError(-32602, "tool name required");
 		const tool = this.#tools.get(name);
@@ -270,8 +305,12 @@ export class McpServer {
 		}
 		let returned: unknown;
 		try {
-			returned = await tool.handler(args);
+			if (signal.aborted) throw new ServerError(-32800, "request cancelled");
+			returned = await tool.handler(args, { signal, requestId });
+			if (signal.aborted) throw new ServerError(-32800, "request cancelled");
 		} catch (error) {
+			if (error instanceof ServerError) throw error;
+			if (signal.aborted) throw new ServerError(-32800, "request cancelled");
 			return complete({
 				content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }],
 				isError: true,

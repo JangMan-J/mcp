@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { McpServer } from "../src/server.js";
-import { inputRequired, issueRequestState, verifyRequestState } from "../src/mrtr.js";
+import { inputRequired, issueRequestState, MrtrRegistry, verifyRequestState } from "../src/mrtr.js";
 import { ServerError } from "@mcp-client/server-events";
 
 function server(): McpServer {
@@ -105,6 +105,22 @@ describe("McpServer", () => {
 		}));
 		expect((completion.completion as { values: string[] }).values).toHaveLength(100);
 		expect((completion.completion as { hasMore?: boolean }).hasMore).toBe(true);
+	});
+
+	it("correlates MRTR retries and consumes single-use state", () => {
+		const registry = new MrtrRegistry("secret");
+		const interim = registry.begin("tools/call", {
+			inputRequests: { q: { method: "elicitation/create", params: { message: "?" } } },
+			payload: { attempt: 1 },
+		});
+		expect(interim.resultType).toBe("input_required");
+		const requestState = interim.requestState as string;
+		const retry = registry.resume("tools/call", { requestState });
+		expect(retry.retry?.resultType).toBe("input_required");
+		const resumed = registry.resume("tools/call", { requestState, inputResponses: { q: { answer: 1 } } });
+		expect(resumed.payload).toEqual({ attempt: 1 });
+		expect(resumed.inputResponses).toEqual({ q: { answer: 1 } });
+		expect(() => registry.resume("tools/call", { requestState, inputResponses: { q: { answer: 1 } } })).toThrow(ServerError);
 	});
 
 	it("provides MRTR interim results and integrity-protected requestState", () => {

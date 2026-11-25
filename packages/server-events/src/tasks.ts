@@ -58,11 +58,11 @@ export class TaskCenter {
 	}
 
 	get(params: Obj): TaskState {
-		return this.#state(requireTaskId(params));
+		return this.#expireIfNeeded(this.#state(requireTaskId(params)));
 	}
 
 	cancel(params: Obj): TaskState {
-		const state = this.#state(requireTaskId(params));
+		const state = this.#expireIfNeeded(this.#state(requireTaskId(params)));
 		if (TERMINAL.has(state.status)) return state;
 		return this.#set(state.taskId, { status: "cancelled" });
 	}
@@ -96,6 +96,15 @@ export class TaskCenter {
 	#state(taskId: string): TaskState {
 		const state = this.#tasks.get(taskId);
 		if (!state) throw new ServerError(-32602, `unknown task: ${taskId}`);
+		return state;
+	}
+
+	#expireIfNeeded(state: TaskState): TaskState {
+		if (TERMINAL.has(state.status) || state.ttlMs === undefined) return state;
+		const createdAt = typeof state.createdAt === "string" ? Date.parse(state.createdAt) : Number.NaN;
+		if (Number.isFinite(createdAt) && createdAt + state.ttlMs <= this.#clock.now()) {
+			return this.#set(state.taskId, { status: "failed", error: { code: "task-expired" } });
+		}
 		return state;
 	}
 

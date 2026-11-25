@@ -54,3 +54,54 @@ export function readInputResponses(params: Obj): Obj | undefined {
 	}
 	return responses as Obj;
 }
+
+interface PendingMrtr {
+	readonly method: string;
+	readonly inputRequests?: Record<string, { readonly method: string; readonly params: Obj }>;
+}
+
+/**
+ * Server-side MRTR correlation: issue an interim result, then validate the
+ * retry's requestState and inputResponses. States are single-use to prevent
+ * replay of one-time inputs.
+ */
+export class MrtrRegistry {
+	readonly #pending = new Map<string, PendingMrtr>();
+
+	constructor(private readonly secret: string) {}
+
+	begin(method: string, input: {
+		readonly inputRequests?: Record<string, { readonly method: string; readonly params: Obj }>;
+		readonly payload?: Obj;
+	}): Obj {
+		const requestState = issueRequestState(this.secret, method, input.payload ?? {});
+		this.#pending.set(requestState, { method, ...(input.inputRequests !== undefined ? { inputRequests: input.inputRequests } : {}) });
+		return inputRequired({
+			...(input.inputRequests !== undefined ? { inputRequests: input.inputRequests } : {}),
+			requestState,
+		});
+	}
+
+	/** Validate a retry and consume its state. Missing inputs are re-requested. */
+	resume(method: string, params: Obj): { readonly inputResponses?: Obj; readonly payload: Obj; readonly retry?: Obj } {
+		const state = params.requestState;
+		if (state === undefined) {
+			if (params.inputResponses !== undefined) throw new ServerError(-32602, "inputResponses without requestState");
+			return { payload: {} };
+		}
+		const pending = this.#pending.get(state as string);
+		if (!pending || pending.method !== method) throw new ServerError(-32602, "unknown or mismatched requestState");
+		const payload = verifyRequestState(this.secret, state, method);
+		if (pending.inputRequests) {
+			const responses = readInputResponses(params);
+			const missing = Object.keys(pending.inputRequests).filter((key) => responses?.[key] === undefined);
+			if (!responses || missing.length > 0) {
+				return { payload, retry: inputRequired({ inputRequests: pending.inputRequests, requestState: state as string }) };
+			}
+			this.#pending.delete(state as string);
+			return { inputResponses: responses, payload };
+		}
+		this.#pending.delete(state as string);
+		return { payload };
+	}
+}
