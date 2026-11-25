@@ -7,7 +7,7 @@
  * text description so the model always sees something.
  */
 
-import type { ContentBlock } from "../dist/ops/index.js";
+import type { ContentBlock } from "../../dist/ops/index.js";
 import type { PiContent } from "./pi-api.ts";
 
 /** Per-text-block cap, matching Pi's generic tool-output limit of ~50 KB. */

@@ -5,25 +5,31 @@
  */
 
 import { createHash } from "node:crypto";
-import { McpClient } from "../dist/index.js";
+import { McpClient } from "../../dist/index.js";
 import {
 	createOps,
 	normalizeContent,
 	type Ops,
 	type ToolCallResult,
 	type ToolEntry,
-} from "../dist/ops/index.js";
-import { HttpTransport } from "../dist/transport-http/index.js";
-import { StdioTransport } from "../dist/transport-stdio/index.js";
-import type { Outcome } from "../dist/index.js";
+} from "../../dist/ops/index.js";
+import { HttpTransport } from "../../dist/transport-http/index.js";
+import { StdioTransport } from "../../dist/transport-stdio/index.js";
+import { createTasksExtension } from "../../dist/mrtr-cache/index.js";
+import type { Outcome } from "../../dist/index.js";
 import type { Exposure, ResolvedServerConfig } from "./config.ts";
-import { convertBlocks } from "./content.ts";
+import { convertBlocksOffloaded } from "./content-offloaded.ts";
+import { DiagnosticsLog } from "./diagnostics.ts";
+import { callWithElicitation } from "./elicitation.ts";
+import { consentPort } from "./elicitation.ts";
 import {
 	canonicalResource,
 	createOAuthProvider,
 	FileCredentialStore,
 } from "./oauth.ts";
-import type { ExtensionAPI, ToolAnnotations, ToolResult } from "./pi-api.ts";
+import { ResourceTools } from "./resources.ts";
+import { getTask, cancelTask, taskHandleResult } from "./tasks.ts";
+import type { ExtensionAPI, ToolAnnotations, ToolDefinition, ToolResult, Ui } from "./pi-api.ts";
 
 export type ServerStatus = "connecting" | "connected" | "error" | "disabled";
 
@@ -42,6 +48,14 @@ export interface ServerState {
 	authRequired?: boolean | undefined;
 	/** Closes the loopback redirect listener of an OAuth provider, if any. */
 	closeRedirect?: (() => void) | undefined;
+	/** Capabilities from server/discover, when available. */
+	capabilities?: Record<string, unknown> | undefined;
+	/** Closes the subscriptions/listen stream, if any. */
+	listenClose?: (() => void) | undefined;
+	/** Registered definitions by Pi tool name (for updates/withdrawal). */
+	readonly definitions: Map<string, ToolDefinition>;
+	/** Pi tool name -> server tool name. */
+	readonly toolNames: Map<string, string>;
 	/** Pi tool names registered for this server (persist across reconnects). */
 	readonly registeredTools: Set<string>;
 	/** Exposures this server's tools were registered with. */
@@ -168,6 +182,10 @@ export interface BridgeOptions {
 	readonly browserOpen?: (url: string, signal: AbortSignal) => Promise<void>;
 	/** Allow OAuth against insecure loopback HTTP (local dev servers, tests). */
 	readonly allowInsecureAuth?: boolean;
+	/** Host UI for elicitation prompts; without it elicitations decline. */
+	readonly ui?: Ui;
+	/** Diagnostics log path (mcp-client.log). */
+	readonly diagnosticsLogPath?: string;
 }
 
 export class McpBridge {
@@ -180,6 +198,10 @@ export class McpBridge {
 	private readonly confirm: BridgeOptions["confirm"];
 	private readonly browserOpen: BridgeOptions["browserOpen"];
 	private readonly allowInsecureAuth: boolean;
+	private readonly resourceTools: ResourceTools;
+	private readonly exposureByServer = new Map<string, Exposure>();
+	private readonly ui: Ui;
+	private readonly log: DiagnosticsLog | undefined;
 	/** Server name for which an interactive login (/mcp login) is armed. */
 	private loginArmed: string | undefined;
 
@@ -193,6 +215,9 @@ export class McpBridge {
 		this.confirm = opts.confirm;
 		this.browserOpen = opts.browserOpen;
 		this.allowInsecureAuth = opts.allowInsecureAuth ?? false;
+		this.ui = opts.ui ?? { notify: () => {} };
+		this.log = opts.diagnosticsLogPath !== undefined ? new DiagnosticsLog(opts.diagnosticsLogPath) : undefined;
+		this.resourceTools = new ResourceTools(this.pi, () => this.list(), this.exposureByServer);
 	}
 
 	get(name: string): ServerState | undefined {
@@ -226,6 +251,8 @@ export class McpBridge {
 				toolCount: 0,
 				registeredTools: new Set(),
 				exposures: new Set(),
+				definitions: new Map(),
+				toolNames: new Map(),
 			};
 			this.states.set(name, state);
 			if (cfg.enabled) this.connectInBackground(state);
@@ -317,6 +344,8 @@ export class McpBridge {
 		const client = state.client;
 		state.client = undefined;
 		state.ops = undefined;
+		state.listenClose?.();
+		state.listenClose = undefined;
 		state.closeRedirect?.();
 		state.closeRedirect = undefined;
 		if (client) {
@@ -362,12 +391,19 @@ export class McpBridge {
 				...(authProvider !== undefined ? { authProvider } : {}),
 			});
 		}
-		return new McpClient({
+		const client = new McpClient({
 			transport,
 			server: { key: config.name, label: config.name },
 			clientInfo: { name: "pi", version: "mcp-client-bridge" },
 			defaults: { timeoutMs: config.timeoutMs },
+			ports: { consent: consentPort(this.ui, config.name) },
 		});
+		client.use(createTasksExtension({
+			serverKey: config.name,
+			request: (method, params, opts) => client.request(method, params, opts),
+			peerCapabilities: () => (state.capabilities ?? {}) as Record<string, unknown>,
+		}));
+		return client;
 	}
 
 	private async connect(state: ServerState): Promise<void> {
@@ -382,6 +418,7 @@ export class McpBridge {
 			try {
 				const discovered = await client.discover({ timeoutMs: 10_000 });
 				if (discovered.kind === "ok") {
+					state.capabilities = discovered.value.capabilities as Record<string, unknown>;
 					const instructions = discovered.value.instructions;
 					if (typeof instructions === "string" && instructions.trim() !== "") {
 						state.description = config.description ?? instructions.split("\n")[0];
@@ -415,9 +452,14 @@ export class McpBridge {
 			state.status = "connected";
 			state.error = undefined;
 			state.authRequired = undefined;
+			this.exposureByServer.set(state.name, config.exposure);
+			this.resourceTools.ensure();
+			this.startListen(state);
+			this.log?.line(state.name, `connected (${state.toolCount} tools)`);
 		} catch (err) {
 			state.status = "error";
 			state.error = err instanceof Error ? err.message : String(err);
+			this.log?.line(state.name, `error: ${state.error}`);
 			await this.teardown(state);
 			this.notify(`mcp "${state.name}": ${state.error}`, "error");
 		}
@@ -426,14 +468,15 @@ export class McpBridge {
 	private registerTools(state: ServerState, entries: readonly ToolEntry[]): void {
 		const usable = entries.filter((e) => typeof e.name === "string" && e.name !== "");
 		const names = assignToolNames(state.name, usable.map((e) => e.name));
+		const seen = new Set<string>();
 		for (const entry of usable) {
 			const piName = names.get(entry.name) as string;
-			if (state.registeredTools.has(piName)) continue;
+			seen.add(piName);
 			const exposure = toolExposureFor(state.config, entry.name);
 			const toolDescription =
 				typeof entry.tool.description === "string" ? entry.tool.description : "";
 			const annotations = annotationsOf(entry);
-			this.pi.registerTool({
+			const definition: ToolDefinition = {
 				name: piName,
 				label: `${state.name}: ${entry.name}`,
 				description: toolDescription || `MCP tool ${entry.name} on ${state.name}`,
@@ -449,11 +492,54 @@ export class McpBridge {
 				promptSnippet: toolDescription.split("\n")[0] ?? "",
 				execute: (_id, params, signal, onUpdate) =>
 					this.callTool(state.name, entry.name, params, signal, onUpdate),
-			});
+			};
+			const previous = state.definitions.get(piName);
+			if (!previous || JSON.stringify(previous.parameters) !== JSON.stringify(definition.parameters) || previous.exposure !== exposure) {
+				this.pi.registerTool(definition);
+			}
+			state.definitions.set(piName, definition);
+			state.toolNames.set(piName, entry.name);
 			state.registeredTools.add(piName);
 			state.exposures.add(exposure);
 		}
-		state.toolCount = state.registeredTools.size;
+		// Withdrawn tools become unreachable but stay registered (Pi has no unregister).
+		for (const [piName, definition] of state.definitions) {
+			if (!seen.has(piName) && definition.exposure !== "hidden") {
+				this.pi.registerTool({ ...definition, exposure: "hidden" });
+				state.definitions.set(piName, { ...definition, exposure: "hidden" });
+			}
+		}
+		state.toolCount = seen.size;
+	}
+
+	private startListen(state: ServerState): void {
+		if (state.listenClose || !state.client) return;
+		const toolsCap = state.capabilities?.tools as { listChanged?: boolean } | undefined;
+		if (toolsCap?.listChanged !== true) return;
+		const stream = state.client.openStream("subscriptions/listen", {
+			notifications: { toolsListChanged: true, promptsListChanged: true, resourcesListChanged: true },
+		});
+		state.listenClose = () => stream.close();
+		void (async () => {
+			try {
+				for await (const notification of stream) {
+					if (notification.method === "notifications/tools/list_changed") {
+						await this.refreshTools(state);
+					}
+				}
+			} catch {
+				// listen stream ended; reconnect re-establishes it
+			}
+		})();
+	}
+
+	private async refreshTools(state: ServerState): Promise<void> {
+		if (!state.ops) return;
+		const listed = await state.ops.tools.listAll({ maxItems: 10_000 });
+		if (listed.kind !== "ok") return;
+		this.registerTools(state, listed.value.items);
+		this.ensureReachTools();
+		this.log?.line(state.name, `tools/list_changed (${state.toolCount} tools)`);
 	}
 
 	private async callTool(
@@ -480,12 +566,10 @@ export class McpBridge {
 				});
 			}
 		};
-		let outcome = await state.ops.tools.call(toolName, params, {
-			validateInput: false, // Pi already validated against the same schema
-			allowUnvalidated: true,
+		let outcome = await callWithElicitation(state, toolName, params, {
 			...(signal !== undefined ? { signal } : {}),
 			onProgress: progress,
-		});
+		}, this.ui);
 		if (
 			outcome.kind === "transport-failure" &&
 			RETRY_KINDS.has(outcome.failure.kind) &&
@@ -498,26 +582,25 @@ export class McpBridge {
 				// fall through to reporting the original outcome
 			}
 			if (state.ops && state.status === "connected") {
-				outcome = await state.ops.tools.call(toolName, params, {
-					validateInput: false,
-					allowUnvalidated: true,
+				outcome = await callWithElicitation(state, toolName, params, {
 					...(signal !== undefined ? { signal } : {}),
-				});
+				}, this.ui);
 			}
 		}
+		if (outcome.kind === "task-handle") return taskHandleResult(state, toolName, outcome);
 		return this.outcomeToResult(serverName, toolName, outcome);
 	}
 
-	private outcomeToResult(
+	private async outcomeToResult(
 		serverName: string,
 		toolName: string,
 		outcome: Outcome<ToolCallResult>,
-	): ToolResult {
+	): Promise<ToolResult> {
 		const details = { server: serverName, tool: toolName };
 		if (outcome.kind === "ok") {
 			const { value } = outcome;
 			return {
-				content: convertBlocks(value.content),
+				content: await convertBlocksOffloaded(value.content),
 				details: { ...details, validation: value.validation.status },
 				...(value.structuredContent !== undefined ? { structuredContent: value.structuredContent } : {}),
 			};
@@ -525,13 +608,77 @@ export class McpBridge {
 		if (outcome.kind === "tool-isError") {
 			const raw = outcome.result;
 			return {
-				content: convertBlocks(normalizeContent(raw.content)),
+				content: await convertBlocksOffloaded(normalizeContent(raw.content)),
 				details,
 				isError: true,
 				...(raw.structuredContent !== undefined ? { structuredContent: raw.structuredContent } : {}),
 			};
 		}
 		throw new Error(`mcp ${serverName}/${toolName}: ${describeOutcome(outcome)}`);
+	}
+
+	/** Prompt list for /mcp prompts. */
+	async promptsList(name: string): Promise<unknown[]> {
+		const state = this.states.get(name);
+		if (!state?.ops) throw new Error(`MCP server "${name}" is not connected`);
+		const outcome = await state.ops.prompts.listAll();
+		if (outcome.kind !== "ok") throw new Error(`prompts/list failed: ${outcome.kind}`);
+		return outcome.value.items;
+	}
+
+	/** Prompt get for /mcp prompt. */
+	async promptGet(name: string, prompt: string, args: Record<string, string>): Promise<unknown> {
+		const state = this.states.get(name);
+		if (!state?.ops) throw new Error(`MCP server "${name}" is not connected`);
+		const outcome = await state.ops.prompts.get(prompt, args);
+		if (outcome.kind !== "ok") throw new Error(`prompts/get failed: ${outcome.kind}`);
+		return outcome.value;
+	}
+
+	async resourcesList(name: string): Promise<unknown[]> {
+		const state = this.states.get(name);
+		if (!state?.ops) throw new Error(`MCP server "${name}" is not connected`);
+		const outcome = await state.ops.resources.listAll();
+		if (outcome.kind !== "ok") throw new Error(`resources/list failed: ${outcome.kind}`);
+		return outcome.value.items.map((item: { raw: Record<string, unknown> }) => item.raw);
+	}
+
+	async taskState(name: string, taskId: string, cancel = false): Promise<unknown> {
+		const state = this.states.get(name);
+		if (!state?.ops) throw new Error(`MCP server "${name}" is not connected`);
+		return cancel ? cancelTask(state, taskId) : getTask(state, taskId);
+	}
+
+	/** Session-only enable/disable; persistence is handled by the command layer. */
+	setEnabled(name: string, enabled: boolean): void {
+		const state = this.states.get(name);
+		if (!state) throw new Error(`unknown server: ${name}`);
+		state.config = { ...state.config, enabled };
+		if (!enabled) {
+			void this.teardown(state);
+			state.status = "disabled";
+		} else {
+			this.connectInBackground(state);
+		}
+	}
+
+	/** Session-only exposure change; re-registers affected tools. */
+	setExposure(name: string, exposure: Exposure, toolPattern?: string): void {
+		const state = this.states.get(name);
+		if (!state) throw new Error(`unknown server: ${name}`);
+		state.config = toolPattern
+			? { ...state.config, toolExposure: { ...state.config.toolExposure, [toolPattern]: exposure } }
+			: { ...state.config, exposure };
+		this.exposureByServer.set(name, state.config.exposure);
+		for (const [piName, definition] of state.definitions) {
+			const serverTool = state.toolNames.get(piName) as string;
+			const next = toolExposureFor(state.config, serverTool);
+			if (definition.exposure !== next) {
+				this.pi.registerTool({ ...definition, exposure: next });
+				state.definitions.set(piName, { ...definition, exposure: next });
+			}
+		}
+		this.ensureReachTools();
 	}
 
 	/**

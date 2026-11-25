@@ -18,7 +18,7 @@ import {
 	startLoopbackRedirect,
 	type AuthorizationConsent,
 	type ClientRegistration,
-} from "../dist/auth/index.js";
+} from "../../dist/auth/index.js";
 import type { ResolvedServerConfig } from "./config.ts";
 
 export {

@@ -304,9 +304,13 @@ patterns). `/mcp` lists server states; `/mcp reconnect <name>` restarts one.
 Servers registered by other extensions via `pi.registerMcpServer()` are connected
 too, with file configuration taking precedence.
 
-Not supported yet: MCP prompts/resources exposure to Pi (servers offering only prompts or
-resources connect but register nothing), elicitation UI (consent prompts decline by
-default), and task-based tool calls.
+The extension lives in `adapters/pi/` (isolated from the protocol packages).
+Beyond tools, it covers built-in MCP parity: `list_mcp_resources`,
+`list_mcp_resource_templates`, `read_mcp_resource`, dynamic `list_changed`
+tool updates, `/mcp prompts|prompt|resources|task|enable|disable|exposure`
+subcommands, MRTR elicitation through Pi's UI, task handles with `tasks/get`
+and `tasks/cancel`, 20 KB middle-out text truncation with temp-file offload,
+and a rotating `$PI_CODING_AGENT_DIR/mcp-client.log`.
 
 OAuth works out of the box for HTTP servers without a static `Authorization` header: the
 first 401 marks the server "needs sign-in" in `/mcp`, and `/mcp login <name>` runs the

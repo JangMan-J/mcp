@@ -8,7 +8,7 @@
  */
 
 import { execSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { McpServerEntry } from "./pi-api.ts";
 
@@ -121,6 +121,27 @@ export function expandTilde(path: string, homeDir: string): string {
 	if (path === "~") return homeDir;
 	if (path.startsWith("~/")) return join(homeDir, path.slice(2));
 	return path;
+}
+
+/** Persist enabled/exposure changes to the server's mcp.json file. */
+export function persistServerUpdate(
+	name: string,
+	source: "user" | "project" | "extension",
+	updates: { enabled?: boolean; exposure?: string },
+	opts: { homeDir: string; cwd: string },
+): void {
+	const path = source === "project"
+		? join(opts.cwd, ".pi", "mcp.json")
+		: join(agentDir(process.env as Record<string, string | undefined>, opts.homeDir), "mcp.json");
+	let doc: { mcpServers?: Record<string, unknown> } = { mcpServers: {} };
+	if (existsSync(path)) doc = JSON.parse(readFileSync(path, "utf8")) as typeof doc;
+	doc.mcpServers ??= {};
+	const existing = doc.mcpServers[name];
+	doc.mcpServers[name] = {
+		...(typeof existing === "object" && existing !== null ? existing : {}),
+		...updates,
+	};
+	writeFileSync(path, `${JSON.stringify(doc, null, 2)}\n`);
 }
 
 function interpolateRecord(

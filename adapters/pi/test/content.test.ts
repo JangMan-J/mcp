@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizeContent } from "../../dist/ops/index.js";
+import { normalizeContent } from "../../../dist/ops/index.js";
 import { convertBlocks, MAX_TEXT_CHARS, truncateText } from "../content.ts";
 
 describe("truncateText", () => {

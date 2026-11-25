@@ -10,7 +10,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { McpBridge } from "./bridge.ts";
-import { agentDir, loadServerConfigs, type ResolvedServerConfig } from "./config.ts";
+import { agentDir, loadServerConfigs, persistServerUpdate, type ResolvedServerConfig } from "./config.ts";
 import type { ExtensionAPI, McpServerEntry, SessionContext, Ui } from "./pi-api.ts";
 
 /** Tolerantly unwrap pi.getMcpServers() / mcp_servers_change event shapes. */
@@ -45,38 +45,86 @@ export default function (pi: ExtensionAPI) {
 		pi,
 		notify: (message, level) => currentUi?.notify(message, level),
 		credentialStorePath: join(agentDir(process.env, homedir()), "mcp-client-oauth.json"),
+		diagnosticsLogPath: join(agentDir(process.env, homedir()), "mcp-client.log"),
 		confirm: (title, message) => currentUi?.confirm?.(title, message) ?? Promise.resolve(false),
+		ui: {
+			notify: (message, level) => currentUi?.notify(message, level),
+			confirm: (title, message) => currentUi?.confirm?.(title, message) ?? Promise.resolve(false),
+			input: (title, placeholder) => currentUi?.input?.(title, placeholder) ?? Promise.resolve(undefined),
+			select: (title, options) => currentUi?.select?.(title, options) ?? Promise.resolve(undefined),
+		},
 	});
 
 	// Registering /mcp replaces built-in MCP support for sessions.
 	pi.registerCommand("mcp", {
-		description: "MCP (mcp-client bridge): /mcp [list] | /mcp reconnect|login|logout <name>",
+		description: "MCP (mcp-client bridge): list, reconnect, login, logout, tools, prompts, resources, task, enable/disable, exposure",
 		handler: async (args, ctx) => {
 			const [sub, ...rest] = args.trim().split(/\s+/).filter(Boolean);
-			if (sub === undefined || sub === "list") {
-				ctx.ui.notify(bridge.statusLines().join("\n"), "info");
-				return;
-			}
-			if ((sub === "reconnect" || sub === "login" || sub === "logout") && rest[0] !== undefined) {
-				try {
-					const state =
-						sub === "login"
-							? await bridge.login(rest[0])
-							: sub === "logout"
-								? await bridge.logout(rest[0])
-								: await bridge.reconnect(rest[0]);
-					ctx.ui.notify(
-						state.status === "connected"
-							? `mcp "${state.name}": connected, ${state.toolCount} tools`
-							: `mcp "${state.name}": ${state.error ?? "failed"}`,
-						state.status === "connected" ? "info" : "error",
-					);
-				} catch (err) {
-					ctx.ui.notify(err instanceof Error ? err.message : String(err), "error");
+			const name = rest[0];
+			const json = (value: unknown) => ctx.ui.notify(JSON.stringify(value, null, 2), "info");
+			const fail = (err: unknown) => ctx.ui.notify(err instanceof Error ? err.message : String(err), "error");
+			try {
+				switch (sub) {
+					case undefined:
+					case "list":
+						ctx.ui.notify(bridge.statusLines().join("\n"), "info");
+						return;
+					case "reconnect":
+					case "login":
+					case "logout": {
+						if (!name) return fail(`usage: /mcp ${sub} <name>`);
+						const state = sub === "login" ? await bridge.login(name) : sub === "logout" ? await bridge.logout(name) : await bridge.reconnect(name);
+						ctx.ui.notify(
+							state.status === "connected" ? `mcp "${state.name}": connected, ${state.toolCount} tools` : `mcp "${state.name}": ${state.error ?? "failed"}`,
+							state.status === "connected" ? "info" : "error",
+						);
+						return;
+					}
+					case "tools": {
+						if (!name) return fail("usage: /mcp tools <name>");
+						const state = bridge.get(name);
+						if (!state) return fail(`unknown server: ${name}`);
+						return json([...state.registeredTools]);
+					}
+					case "prompts":
+						if (!name) return fail("usage: /mcp prompts <name>");
+						return json(await bridge.promptsList(name));
+					case "prompt": {
+						if (!name || !rest[1]) return fail("usage: /mcp prompt <name> <prompt> [jsonArgs]");
+						const promptArgs = rest[2] ? (JSON.parse(rest[2]) as Record<string, string>) : {};
+						return json(await bridge.promptGet(name, rest[1], promptArgs));
+					}
+					case "resources":
+						if (!name) return fail("usage: /mcp resources <name>");
+						return json(await bridge.resourcesList(name));
+					case "task": {
+						if (!name || !rest[1]) return fail("usage: /mcp task <name> <taskId> [cancel]");
+						return json(await bridge.taskState(name, rest[1], rest[2] === "cancel"));
+					}
+					case "enable":
+					case "disable": {
+						if (!name) return fail(`usage: /mcp ${sub} <name>`);
+						bridge.setEnabled(name, sub === "enable");
+						const state = bridge.get(name);
+						if (state) persistServerUpdate(name, state.config.source, { enabled: sub === "enable" }, { homeDir: homedir(), cwd: ctx.cwd ?? "" });
+						ctx.ui.notify(`mcp "${name}": ${sub}d`, "info");
+						return;
+					}
+					case "exposure": {
+						if (!name || !rest[1]) return fail("usage: /mcp exposure <name> <direct|codemode|deferred|hidden> [toolPattern]");
+						const value = rest[1] as "direct" | "codemode" | "deferred" | "hidden";
+						bridge.setExposure(name, value, rest[2]);
+						const state = bridge.get(name);
+						if (state && !rest[2]) persistServerUpdate(name, state.config.source, { exposure: value }, { homeDir: homedir(), cwd: ctx.cwd ?? "" });
+						ctx.ui.notify(`mcp "${name}": exposure ${value}${rest[2] ? ` for ${rest[2]}` : ""}${rest[2] ? " (session only)" : ""}`, "info");
+						return;
+					}
+					default:
+						ctx.ui.notify("Usage: /mcp [list] | reconnect|login|logout <name> | tools|prompts|resources <name> | prompt <name> <prompt> [jsonArgs] | task <name> <taskId> [cancel] | enable|disable <name> | exposure <name> <value> [toolPattern]", "info");
 				}
-				return;
+			} catch (err) {
+				fail(err);
 			}
-			ctx.ui.notify("Usage: /mcp [list] | /mcp reconnect|login|logout <name>", "info");
 		},
 	});
 

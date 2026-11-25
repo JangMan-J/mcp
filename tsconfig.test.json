@@ -11,5 +11,5 @@
     "lib": ["ES2024", "DOM", "DOM.Iterable"],
     "types": ["node"]
   },
-  "include": ["packages/*/test/**/*.ts", "extensions/test/**/*.ts"]
+  "include": ["packages/*/test/**/*.ts", "adapters/pi/test/**/*.ts"]
 }

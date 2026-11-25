@@ -75,6 +75,8 @@ export interface McpServerEntry {
 export interface Ui {
 	notify(message: string, level?: "info" | "warning" | "error"): void;
 	confirm?(title: string, message: string): Promise<boolean>;
+	input?(title: string, placeholder?: string): Promise<string | undefined>;
+	select?(title: string, options: string[]): Promise<string | undefined>;
 }
 
 export interface SessionContext {
@@ -85,6 +87,7 @@ export interface SessionContext {
 }
 
 export interface CommandContext {
+	readonly cwd?: string;
 	ui: Ui;
 }
 
