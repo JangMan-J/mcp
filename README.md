@@ -298,16 +298,23 @@ pi install git:github.com/JangMan-J/mcp@v0.14.0
 
 The extension reads the same `mcp.json` files as built-in MCP
 (`$PI_CODING_AGENT_DIR/mcp.json` or `~/.pi/agent/mcp.json`, plus `.pi/mcp.json` in
-trusted projects) with the same merge, interpolation (`${VAR}`, `!command`), and
-exposure rules (`codemode` default, `direct`/`deferred`/`hidden`, `toolExposure`
-patterns). `/mcp` lists server states; `/mcp reconnect <name>` restarts one.
+trusted projects) with the same merge, interpolation (`${VAR}`, `${VAR:-fallback}`, `!command`),
+`autoEnableCodemode`, `auth: { "provider": "<name>" }`, and exposure rules (`codemode` default —
+registered as `deferred` on Pi so MCP tools do not bloat `codemode`'s prompt declaration — plus
+`direct`/`deferred`/`hidden` and `toolExposure` patterns). `/mcp` lists server states; `/mcp reconnect <name>` restarts one.
 Servers registered by other extensions via `pi.registerMcpServer()` are connected
 too, with file configuration taking precedence.
 
+Push events (`io.modelcontextprotocol/events`) wake idle Pi sessions or queue follow-ups automatically
+via `pi.sendMessage(..., { triggerTurn: true })` when `"subscribe"` is set on a server entry
+(`true`, or an allowlist of event names/patterns/specs such as `["roger.mail"]`, plus optional
+`"eventDelivery": "followUp" | "steer" | "nextTurn"`). Inspect active event subscriptions with `/mcp events <name>`.
+
 The extension lives in `adapters/pi/` (isolated from the protocol packages).
-Beyond tools, it covers built-in MCP parity: `list_mcp_resources`,
-`list_mcp_resource_templates`, `read_mcp_resource`, dynamic `list_changed`
-tool updates, `/mcp prompts|prompt|resources|task|enable|disable|exposure`
+Beyond tools and push events, it covers built-in MCP parity: `list_mcp_resources`,
+`list_mcp_resource_templates`, `read_mcp_resource` (omitting `ui://` MCP App resources),
+`CallToolResult` `outputSchema`/`structuredContent` for `codemode` scripts, dynamic `list_changed`
+tool updates, `/mcp events|prompts|prompt|resources|task|enable|disable|exposure`
 subcommands, MRTR elicitation through Pi's UI, task handles with `tasks/get`
 and `tasks/cancel`, 20 KB middle-out text truncation with temp-file offload,
 and a rotating `$PI_CODING_AGENT_DIR/mcp.log`.

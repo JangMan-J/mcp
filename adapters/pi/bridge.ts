@@ -1,35 +1,34 @@
 /**
  * Connection bridge: owns McpClient instances built from this library and
- * registers their tools with Pi, mirroring the built-in MCP exposure model
- * (codemode default; direct/deferred/hidden; per-tool toolExposure overrides).
+ * registers their tools and SEP-3415 push-event subscriptions with Pi,
+ * mirroring Pi's built-in MCP exposure, schema, and lifecycle rules.
  */
 
 import { createHash } from "node:crypto";
-import { McpClient } from "@jangmanj/mcp/core";
+import { statSync } from "node:fs";
+import { McpClient, type Outcome } from "@jangmanj/mcp/core";
+import { createEventsExtension } from "@jangmanj/mcp/ext-events";
+import { createTasksExtension } from "@jangmanj/mcp/mrtr-cache";
 import {
 	createOps,
 	normalizeContent,
+	type ContentBlock,
 	type Ops,
 	type ToolCallResult,
 	type ToolEntry,
 } from "@jangmanj/mcp/ops";
 import { HttpTransport } from "@jangmanj/mcp/transport-http";
 import { StdioTransport } from "@jangmanj/mcp/transport-stdio";
-import { createTasksExtension } from "@jangmanj/mcp/mrtr-cache";
-import type { Outcome } from "@jangmanj/mcp/core";
-import type { Exposure, ResolvedServerConfig } from "./config.ts";
+import { normalizeExposure, type Exposure, type ResolvedServerConfig } from "./config.ts";
 import { convertBlocksOffloaded } from "./content-offloaded.ts";
 import { DiagnosticsLog } from "./diagnostics.ts";
-import { callWithElicitation } from "./elicitation.ts";
-import { consentPort } from "./elicitation.ts";
-import {
-	canonicalResource,
-	createOAuthProvider,
-	FileCredentialStore,
-} from "./oauth.ts";
+import { callWithElicitation, consentPort } from "./elicitation.ts";
+import { startPiMcpEvents, type McpEvent, type PiMcpEventsHandle } from "./events.ts";
+import { canonicalResource, createOAuthProvider, FileCredentialStore } from "./oauth.ts";
+import type { ExtensionAPI, ToolAnnotations, ToolDefinition, ToolExposure, ToolResult, Ui } from "./pi-api.ts";
 import { ResourceTools } from "./resources.ts";
-import { getTask, cancelTask, taskHandleResult } from "./tasks.ts";
-import type { ExtensionAPI, ToolAnnotations, ToolDefinition, ToolResult, Ui } from "./pi-api.ts";
+import { createMcpResultSchema, normalizeMcpInputSchema } from "./schema.ts";
+import { cancelTask, getTask, taskHandleResult } from "./tasks.ts";
 
 export type ServerStatus = "connecting" | "connected" | "error" | "disabled";
 
@@ -52,13 +51,15 @@ export interface ServerState {
 	capabilities?: Record<string, unknown> | undefined;
 	/** Closes the subscriptions/listen stream, if any. */
 	listenClose?: (() => void) | undefined;
+	/** Active SEP-3415 push-events handle, if subscribed. */
+	eventsHandle?: PiMcpEventsHandle | undefined;
 	/** Registered definitions by Pi tool name (for updates/withdrawal). */
 	readonly definitions: Map<string, ToolDefinition>;
 	/** Pi tool name -> server tool name. */
 	readonly toolNames: Map<string, string>;
 	/** Pi tool names registered for this server (persist across reconnects). */
 	readonly registeredTools: Set<string>;
-	/** Exposures this server's tools were registered with. */
+	/** Configured MCP exposures this server's tools use. */
 	readonly exposures: Set<Exposure>;
 }
 
@@ -68,6 +69,16 @@ export function sanitizeNamePart(s: string): string {
 
 function shortHash(s: string): string {
 	return createHash("sha1").update(s).digest("hex").slice(0, 8);
+}
+
+/**
+ * Map MCP exposure to Pi's ToolDefinition.exposure (mirrors Pi's tools.ts):
+ * `codemode` registers as `deferred` so tools stay out of `codemode`'s prompt
+ * description (preserving prompt caches when servers connect in the background),
+ * while `ensureReachTools()` activates `codemode`.
+ */
+export function toPiToolExposure(exposure: Exposure): ToolExposure {
+	return exposure === "codemode" ? "deferred" : exposure;
 }
 
 /**
@@ -99,18 +110,23 @@ export function toolExposureFor(config: ResolvedServerConfig, toolName: string):
 	const overrides = config.toolExposure;
 	if (overrides) {
 		const exact = overrides[toolName];
-		if (exact !== undefined) return normalizeOverride(exact);
+		if (exact !== undefined) return normalizeExposure(exact);
 		for (const [pattern, value] of Object.entries(overrides)) {
 			if (!pattern.includes("*")) continue;
 			const re = new RegExp(`^${pattern.split("*").map(escapeRe).join(".*")}$`);
-			if (re.test(toolName)) return normalizeOverride(value);
+			if (re.test(toolName)) return normalizeExposure(value);
 		}
 	}
 	return config.exposure;
 }
 
-function normalizeOverride(value: string): Exposure {
-	return value === "direct" || value === "deferred" || value === "hidden" ? value : "codemode";
+/** Configured exposures known statically from mcp.json before the server connects. */
+export function configuredExposuresOf(config: ResolvedServerConfig): Set<Exposure> {
+	const set = new Set<Exposure>([config.exposure]);
+	for (const val of Object.values(config.toolExposure ?? {})) {
+		set.add(normalizeExposure(val));
+	}
+	return set;
 }
 
 function escapeRe(s: string): string {
@@ -129,12 +145,13 @@ function annotationsOf(entry: ToolEntry): ToolAnnotations | undefined {
 	return Object.keys(out).length > 0 ? out : undefined;
 }
 
-function inputSchemaOf(entry: ToolEntry): Record<string, unknown> {
-	const schema = entry.tool.inputSchema;
-	if (typeof schema === "object" && schema !== null && !Array.isArray(schema)) {
-		return schema as Record<string, unknown>;
-	}
-	return { type: "object", properties: {} };
+function stripWireBlockMeta(block: ContentBlock): Record<string, unknown> {
+	const raw =
+		typeof block.raw === "object" && block.raw !== null && !Array.isArray(block.raw)
+			? (block.raw as Record<string, unknown>)
+			: { type: block.type };
+	const { _meta: _ignored, ...rest } = raw;
+	return rest;
 }
 
 /** Transport-failure kinds worth one reconnect + retry. */
@@ -186,6 +203,10 @@ export interface BridgeOptions {
 	readonly ui?: Ui;
 	/** Diagnostics log path (mcp.log). */
 	readonly diagnosticsLogPath?: string;
+	/** Resolve provider token for `auth: { provider }` HTTP entries. */
+	readonly providerToken?: (provider: string) => Promise<string | undefined> | string | undefined;
+	/** Custom push-event delivery hook; defaults to `pi.sendMessage`. */
+	readonly onPushEvent?: (text: string, event: McpEvent, config: ResolvedServerConfig) => Promise<void> | void;
 }
 
 export class McpBridge {
@@ -195,13 +216,22 @@ export class McpBridge {
 	private readonly states = new Map<string, ServerState>();
 	private readonly pending = new Map<string, Promise<void>>();
 	private readonly credentials: FileCredentialStore | undefined;
+	private readonly credentialStorePath: string | undefined;
 	private readonly confirm: BridgeOptions["confirm"];
 	private readonly browserOpen: BridgeOptions["browserOpen"];
 	private readonly allowInsecureAuth: boolean;
 	private readonly resourceTools: ResourceTools;
 	private readonly exposureByServer = new Map<string, Exposure>();
+	private readonly toolOwner = new Map<string, string>(); // piToolName -> serverName
+	private readonly eventCursors = new Map<string, string>();
+	private readonly seenEventIds = new Set<string>();
 	private readonly ui: Ui;
 	private readonly log: DiagnosticsLog | undefined;
+	private readonly providerToken: BridgeOptions["providerToken"];
+	private readonly onPushEvent: BridgeOptions["onPushEvent"];
+	private autoEnableCodemodeOverride: boolean | undefined;
+	private warnedUnreachable = false;
+	private lastAuthFileMtimeMs: number | undefined;
 	/** Server name for which an interactive login (/mcp login) is armed. */
 	private loginArmed: string | undefined;
 
@@ -209,15 +239,21 @@ export class McpBridge {
 		this.pi = opts.pi;
 		this.notify = opts.notify;
 		this.waitMs = opts.waitMs ?? 10_000;
-		this.credentials = opts.credentialStorePath !== undefined
-			? new FileCredentialStore(opts.credentialStorePath)
-			: undefined;
+		this.credentialStorePath = opts.credentialStorePath;
+		this.credentials =
+			opts.credentialStorePath !== undefined ? new FileCredentialStore(opts.credentialStorePath) : undefined;
 		this.confirm = opts.confirm;
 		this.browserOpen = opts.browserOpen;
 		this.allowInsecureAuth = opts.allowInsecureAuth ?? false;
 		this.ui = opts.ui ?? { notify: () => {} };
 		this.log = opts.diagnosticsLogPath !== undefined ? new DiagnosticsLog(opts.diagnosticsLogPath) : undefined;
-		this.resourceTools = new ResourceTools(this.pi, () => this.list(), this.exposureByServer);
+		this.providerToken = opts.providerToken;
+		this.onPushEvent = opts.onPushEvent;
+		this.resourceTools = new ResourceTools(
+			this.pi,
+			() => this.list().map((s) => ({ ...s, enabled: s.config.enabled })),
+			this.exposureByServer,
+		);
 	}
 
 	get(name: string): ServerState | undefined {
@@ -228,14 +264,30 @@ export class McpBridge {
 		return [...this.states.values()];
 	}
 
+	ownerOfTool(piToolName: string): string | undefined {
+		return this.toolOwner.get(piToolName);
+	}
+
+	setAutoEnableCodemode(value: boolean | undefined): void {
+		this.autoEnableCodemodeOverride = value;
+	}
+
+	resetSessionState(): void {
+		this.warnedUnreachable = false;
+		this.eventCursors.clear();
+		this.seenEventIds.clear();
+	}
+
 	/** Start connecting every enabled server in the background; mark the rest. */
 	sync(configs: ReadonlyMap<string, ResolvedServerConfig>): void {
 		for (const [name, cfg] of configs) {
+			this.exposureByServer.set(name, cfg.exposure);
 			const existing = this.states.get(name);
 			if (existing) {
 				const changed = JSON.stringify(existing.config) !== JSON.stringify(cfg);
 				existing.config = cfg;
 				if (!cfg.enabled) {
+					this.hideServerTools(existing);
 					void this.teardown(existing);
 					existing.status = "disabled";
 					existing.error = undefined;
@@ -257,53 +309,97 @@ export class McpBridge {
 			this.states.set(name, state);
 			if (cfg.enabled) this.connectInBackground(state);
 		}
-		// Servers removed from configuration: tear down, keep registrations inert.
+		// Servers removed from configuration: hide tools and tear down.
 		for (const [name, state] of this.states) {
 			if (!configs.has(name) && state.status !== "disabled") {
+				this.hideServerTools(state);
 				void this.teardown(state);
 				state.status = "disabled";
+				state.config = { ...state.config, enabled: false };
 				state.error = "removed from configuration";
 			}
 		}
+		this.resourceTools.ensure();
+		this.ensureReachTools();
 	}
 
 	private connectInBackground(state: ServerState): void {
 		state.status = "connecting";
 		state.error = undefined;
-		const p = this.connect(state)
-			.then(() => this.ensureReachTools())
-			.catch(() => {});
+		const p = (async () => {
+			await this.teardown(state);
+			await this.connect(state);
+			this.ensureReachTools();
+		})().catch(() => {});
 		this.pending.set(state.name, p);
 		void p.finally(() => {
 			if (this.pending.get(state.name) === p) this.pending.delete(state.name);
 		});
 	}
 
-	/** Wait for pending connections, bounded by waitMs. */
-	async waitForPending(predicate?: (state: ServerState) => boolean): Promise<void> {
+	/** Wait for pending connections matching `predicate`, bounded by waitMs (or signal abort). */
+	async waitForPending(predicate?: (state: ServerState) => boolean, signal?: AbortSignal): Promise<boolean> {
 		const names = [...this.states.values()]
-			.filter((s) => (predicate ? predicate(s) : true))
+			.filter((s) => s.config.enabled && (predicate ? predicate(s) : true))
 			.map((s) => s.name);
 		const pending = names
 			.map((n) => this.pending.get(n))
 			.filter((p): p is Promise<void> => p !== undefined);
-		if (pending.length === 0) return;
-		await Promise.race([
-			Promise.allSettled(pending),
-			new Promise((resolve) => setTimeout(resolve, this.waitMs)),
-		]);
+		if (pending.length === 0) return true;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		let onAbort: (() => void) | undefined;
+		try {
+			return await Promise.race([
+				Promise.allSettled(pending).then(() => true),
+				new Promise<boolean>((resolve) => {
+					timer = setTimeout(() => resolve(false), this.waitMs);
+					if (signal) {
+						onAbort = () => resolve(false);
+						signal.addEventListener("abort", onAbort, { once: true });
+					}
+				}),
+			]);
+		} finally {
+			if (timer !== undefined) clearTimeout(timer);
+			if (signal && onAbort) signal.removeEventListener("abort", onAbort);
+		}
 	}
 
 	async reconnect(name: string): Promise<ServerState> {
 		const state = this.states.get(name);
 		if (!state) throw new Error(`unknown server: ${name}`);
-		await this.teardown(state);
-		state.status = "connecting";
-		state.error = undefined;
-		state.toolCount = 0;
-		await this.connect(state);
-		this.ensureReachTools();
+		const p = (async () => {
+			await this.teardown(state);
+			state.status = "connecting";
+			state.error = undefined;
+			state.toolCount = 0;
+			await this.connect(state);
+			this.ensureReachTools();
+		})();
+		const tracked = p.then(() => undefined, () => undefined);
+		this.pending.set(name, tracked);
+		try {
+			await p;
+		} finally {
+			if (this.pending.get(name) === tracked) this.pending.delete(name);
+		}
 		return state;
+	}
+
+	/** Reconnect auth-required servers if mcp-oauth.json changed outside this session (e.g. CLI login). */
+	async reconnectIfSignedInExternally(): Promise<void> {
+		if (!this.credentialStorePath) return;
+		const authNeeded = [...this.states.values()].filter((s) => s.config.enabled && s.authRequired);
+		if (authNeeded.length === 0) return;
+		let mtime: number | undefined;
+		try {
+			mtime = statSync(this.credentialStorePath).mtimeMs;
+		} catch {
+			mtime = undefined;
+		}
+		if (mtime === undefined || mtime === this.lastAuthFileMtimeMs) return;
+		this.lastAuthFileMtimeMs = mtime;
+		await Promise.allSettled(authNeeded.map((s) => this.reconnect(s.name)));
 	}
 
 	/** Interactive OAuth sign-in: arms the consent gate and reconnects. */
@@ -338,16 +434,50 @@ export class McpBridge {
 		await Promise.allSettled([...this.pending.values()]);
 		await Promise.allSettled([...this.states.values()].map((s) => this.teardown(s)));
 		this.states.clear();
+		this.pending.clear();
+		this.exposureByServer.clear();
+		this.toolOwner.clear();
+		this.resetSessionState();
+	}
+
+	private hideServerTools(state: ServerState): void {
+		const hiddenNames = new Set<string>();
+		for (const [piName, definition] of state.definitions) {
+			hiddenNames.add(piName);
+			if (definition.exposure !== "hidden") {
+				const next = { ...definition, exposure: "hidden" as const };
+				this.pi.registerTool(next);
+				state.definitions.set(piName, next);
+			}
+		}
+		state.exposures.clear();
+		state.toolCount = 0;
+		if (hiddenNames.size > 0) {
+			const active = this.pi.getActiveTools();
+			if (active.some((n) => hiddenNames.has(n))) {
+				this.pi.setActiveTools(active.filter((n) => !hiddenNames.has(n)));
+			}
+		}
+		this.resourceTools.ensure();
 	}
 
 	private async teardown(state: ServerState): Promise<void> {
 		const client = state.client;
+		const eventsHandle = state.eventsHandle;
 		state.client = undefined;
 		state.ops = undefined;
+		state.eventsHandle = undefined;
 		state.listenClose?.();
 		state.listenClose = undefined;
 		state.closeRedirect?.();
 		state.closeRedirect = undefined;
+		if (eventsHandle) {
+			try {
+				await eventsHandle.close();
+			} catch {
+				// best-effort
+			}
+		}
 		if (client) {
 			try {
 				await client.close({ graceMs: 500 });
@@ -357,7 +487,10 @@ export class McpBridge {
 		}
 	}
 
-	private async buildClient(config: ResolvedServerConfig, state: ServerState): Promise<McpClient> {
+	private async buildClient(
+		config: ResolvedServerConfig,
+		state: ServerState,
+	): Promise<{ client: McpClient; eventsExtension?: ReturnType<typeof createEventsExtension> }> {
 		let transport: StdioTransport | HttpTransport;
 		if (config.kind === "stdio") {
 			transport = new StdioTransport({
@@ -367,11 +500,14 @@ export class McpBridge {
 				...(config.env !== undefined ? { env: config.env } : {}),
 			});
 		} else {
-			// OAuth attaches when no static Authorization header is configured
-			// (mirrors Pi's rule); the flow itself runs on the first 401.
-			const hasStaticAuth = Object.keys(config.headers ?? {}).some(
-				(k) => k.toLowerCase() === "authorization",
-			);
+			const headers: Record<string, string> = { ...(config.headers ?? {}) };
+			if (config.authProvider && this.providerToken) {
+				const token = await this.providerToken(config.authProvider);
+				if (token && !Object.keys(headers).some((k) => k.toLowerCase() === "authorization")) {
+					headers.Authorization = `Bearer ${token}`;
+				}
+			}
+			const hasStaticAuth = Object.keys(headers).some((k) => k.toLowerCase() === "authorization");
 			let authProvider;
 			if (!hasStaticAuth && this.credentials) {
 				const handle = await createOAuthProvider({
@@ -387,7 +523,7 @@ export class McpBridge {
 			}
 			transport = new HttpTransport({
 				url: config.url as string,
-				...(config.headers !== undefined ? { extraHeaders: config.headers } : {}),
+				...(Object.keys(headers).length > 0 ? { extraHeaders: headers } : {}),
 				...(authProvider !== undefined ? { authProvider } : {}),
 			});
 		}
@@ -398,23 +534,30 @@ export class McpBridge {
 			defaults: { timeoutMs: config.timeoutMs },
 			ports: { consent: consentPort(this.ui, config.name) },
 		});
-		client.use(createTasksExtension({
-			serverKey: config.name,
-			request: (method, params, opts) => client.request(method, params, opts),
-			peerCapabilities: () => (state.capabilities ?? {}) as Record<string, unknown>,
-		}));
-		return client;
+		client.use(
+			createTasksExtension({
+				serverKey: config.name,
+				request: (method, params, opts) => client.request(method, params, opts),
+				peerCapabilities: () => (state.capabilities ?? {}) as Record<string, unknown>,
+			}),
+		);
+		let eventsExtension: ReturnType<typeof createEventsExtension> | undefined;
+		if (config.subscribe !== undefined && config.subscribe !== false) {
+			eventsExtension = createEventsExtension({ enabled: true, healthy: true });
+			client.use(eventsExtension);
+		}
+		return { client, ...(eventsExtension ? { eventsExtension } : {}) };
 	}
 
 	private async connect(state: ServerState): Promise<void> {
 		const { config } = state;
 		try {
-			const client = await this.buildClient(config, state);
+			const { client, eventsExtension } = await this.buildClient(config, state);
 			const ops = createOps(client);
 			state.client = client;
 			state.ops = ops;
 
-			// Best-effort server/discover for instructions used as namespace text.
+			// Best-effort server/discover for capabilities & instructions used as namespace text.
 			try {
 				const discovered = await client.discover({ timeoutMs: 10_000 });
 				if (discovered.kind === "ok") {
@@ -432,6 +575,19 @@ export class McpBridge {
 				state.description = config.description;
 			}
 
+			if (eventsExtension && config.subscribe !== undefined && config.subscribe !== false) {
+				state.eventsHandle = await startPiMcpEvents({
+					serverName: state.name,
+					subscribe: config.subscribe,
+					client,
+					extension: eventsExtension,
+					peerCapabilities: () => state.capabilities,
+					cursors: this.eventCursors,
+					seenEventIds: this.seenEventIds,
+					deliver: (text, event) => this.deliverPushEvent(text, event, state.config),
+				});
+			}
+
 			const listed = await ops.tools.listAll({ maxItems: 10_000 });
 			if (listed.kind === "ok") {
 				this.registerTools(state, listed.value.items);
@@ -442,9 +598,16 @@ export class McpBridge {
 				listed.kind === "capability-absent" ||
 				(listed.kind === "jsonrpc-error" && listed.code === -32601)
 			) {
-				// Server without a tools capability: valid, just nothing to register.
+				// Server without a tools capability (e.g. events/resources-only): valid.
 			} else if (isAuthOutcome(listed)) {
 				state.authRequired = true;
+				if (this.credentialStorePath) {
+					try {
+						this.lastAuthFileMtimeMs = statSync(this.credentialStorePath).mtimeMs;
+					} catch {
+						this.lastAuthFileMtimeMs = undefined;
+					}
+				}
 				throw new Error(`authentication required — sign in with /mcp login ${state.name}`);
 			} else {
 				throw new Error(describeOutcome(listed));
@@ -457,34 +620,74 @@ export class McpBridge {
 			this.startListen(state);
 			this.log?.line(state.name, `connected (${state.toolCount} tools)`);
 		} catch (err) {
+			const wasAuth = state.authRequired === true;
 			state.status = "error";
 			state.error = err instanceof Error ? err.message : String(err);
+			state.authRequired = wasAuth ? true : undefined;
 			this.log?.line(state.name, `error: ${state.error}`);
 			await this.teardown(state);
 			this.notify(`mcp "${state.name}": ${state.error}`, "error");
 		}
 	}
 
+	private async deliverPushEvent(
+		text: string,
+		event: McpEvent,
+		config: ResolvedServerConfig,
+	): Promise<void> {
+		if (this.onPushEvent) {
+			await this.onPushEvent(text, event, config);
+			return;
+		}
+		this.pi.sendMessage?.(
+			{
+				customType: "mcp-event",
+				content: text,
+				display: true,
+				details: {
+					server: event.server,
+					name: event.name,
+					eventId: event.eventId,
+					timestamp: event.timestamp,
+				},
+			},
+			{
+				triggerTurn: true,
+				deliverAs: config.eventDelivery ?? "followUp",
+			},
+		);
+	}
+
 	private registerTools(state: ServerState, entries: readonly ToolEntry[]): void {
 		const usable = entries.filter((e) => typeof e.name === "string" && e.name !== "");
 		const names = assignToolNames(state.name, usable.map((e) => e.name));
 		const seen = new Set<string>();
+		const demotedFromDirect = new Set<string>();
+		state.exposures.clear();
+
 		for (const entry of usable) {
 			const piName = names.get(entry.name) as string;
 			seen.add(piName);
-			const exposure = toolExposureFor(state.config, entry.name);
-			const toolDescription =
-				typeof entry.tool.description === "string" ? entry.tool.description : "";
+			this.toolOwner.set(piName, state.name);
+			const mcpExposure = toolExposureFor(state.config, entry.name);
+			const piExposure = toPiToolExposure(mcpExposure);
+			const toolDescription = typeof entry.tool.description === "string" ? entry.tool.description.trim() : "";
+			const title =
+				typeof (entry.tool as { title?: unknown }).title === "string"
+					? ((entry.tool as { title: string }).title)
+					: undefined;
 			const annotations = annotationsOf(entry);
+			const aliases = state.name.includes("-") ? [state.name, state.name.replace(/-/g, "_")] : [state.name];
 			const definition: ToolDefinition = {
 				name: piName,
-				label: `${state.name}: ${entry.name}`,
-				description: toolDescription || `MCP tool ${entry.name} on ${state.name}`,
-				parameters: inputSchemaOf(entry),
-				exposure,
+				label: `${state.name}/${entry.name}`,
+				description: toolDescription || title || `MCP tool ${entry.name} on ${state.name}`,
+				parameters: normalizeMcpInputSchema(entry.tool.inputSchema),
+				outputSchema: createMcpResultSchema((entry.tool as { outputSchema?: unknown }).outputSchema),
+				exposure: piExposure,
 				namespace: {
 					name: `mcp__${sanitizeNamePart(state.name)}`,
-					aliases: [state.name, state.name.replace(/-/g, "_")],
+					aliases,
 					...(state.description !== undefined ? { description: state.description } : {}),
 					...(state.instructions !== undefined ? { instructions: state.instructions } : {}),
 				},
@@ -494,20 +697,33 @@ export class McpBridge {
 					this.callTool(state.name, entry.name, params, signal, onUpdate),
 			};
 			const previous = state.definitions.get(piName);
-			if (!previous || JSON.stringify(previous.parameters) !== JSON.stringify(definition.parameters) || previous.exposure !== exposure) {
+			if (previous?.exposure === "direct" && piExposure !== "direct") {
+				demotedFromDirect.add(piName);
+			}
+			if (
+				!previous ||
+				JSON.stringify(previous.parameters) !== JSON.stringify(definition.parameters) ||
+				JSON.stringify(previous.outputSchema) !== JSON.stringify(definition.outputSchema) ||
+				previous.exposure !== piExposure
+			) {
 				this.pi.registerTool(definition);
 			}
 			state.definitions.set(piName, definition);
 			state.toolNames.set(piName, entry.name);
 			state.registeredTools.add(piName);
-			state.exposures.add(exposure);
+			state.exposures.add(mcpExposure);
 		}
-		// Withdrawn tools become unreachable but stay registered (Pi has no unregister).
+		// Withdrawn tools become unreachable and leave activeTools.
 		for (const [piName, definition] of state.definitions) {
 			if (!seen.has(piName) && definition.exposure !== "hidden") {
-				this.pi.registerTool({ ...definition, exposure: "hidden" });
-				state.definitions.set(piName, { ...definition, exposure: "hidden" });
+				if (definition.exposure === "direct") demotedFromDirect.add(piName);
+				const hiddenDef = { ...definition, exposure: "hidden" as const };
+				this.pi.registerTool(hiddenDef);
+				state.definitions.set(piName, hiddenDef);
 			}
+		}
+		if (demotedFromDirect.size > 0) {
+			this.pi.setActiveTools(this.pi.getActiveTools().filter((n) => !demotedFromDirect.has(n)));
 		}
 		state.toolCount = seen.size;
 	}
@@ -550,41 +766,65 @@ export class McpBridge {
 		onUpdate: ((partial: ToolResult) => void) | undefined,
 	): Promise<ToolResult> {
 		let state = this.states.get(serverName);
+		if (state && !state.config.enabled) {
+			throw new Error(`MCP server "${serverName}" is disabled.`);
+		}
 		if (!state?.ops || state.status !== "connected") {
 			throw new Error(
-				`MCP server "${serverName}" is not connected (status: ${state?.status ?? "unknown"}${
+				`MCP server "${serverName}" is not connected (status: ${state?.status ?? "closed"}${
 					state?.error ? `, ${state.error}` : ""
 				}). Run /mcp reconnect ${serverName}.`,
 			);
 		}
+		if (toolExposureFor(state.config, toolName) === "hidden") {
+			throw new Error(`MCP tool "${serverName}/${toolName}" is hidden.`);
+		}
 		const progress = (p: unknown) => {
-			const msg = (p as { message?: unknown })?.message;
-			if (typeof msg === "string" && onUpdate) {
+			const rec = p as { message?: unknown; progress?: unknown; total?: unknown } | undefined;
+			if (!onUpdate || !rec) return;
+			const msg =
+				typeof rec.message === "string"
+					? `${serverName}/${toolName}: ${rec.message}`
+					: rec.progress !== undefined
+						? `${serverName}/${toolName}: Progress ${String(rec.progress)}${rec.total !== undefined ? `/${String(rec.total)}` : ""}`
+						: undefined;
+			if (msg !== undefined) {
 				onUpdate({
-					content: [{ type: "text", text: `${serverName}/${toolName}: ${msg}` }],
+					content: [{ type: "text", text: msg }],
 					details: { server: serverName, tool: toolName },
 				});
 			}
 		};
-		let outcome = await callWithElicitation(state, toolName, params, {
-			...(signal !== undefined ? { signal } : {}),
-			onProgress: progress,
-		}, this.ui);
+		let outcome = await callWithElicitation(
+			state,
+			toolName,
+			params,
+			{
+				...(signal !== undefined ? { signal } : {}),
+				onProgress: progress,
+			},
+			this.ui,
+		);
 		if (
 			outcome.kind === "transport-failure" &&
 			RETRY_KINDS.has(outcome.failure.kind) &&
 			!(signal?.aborted ?? false)
 		) {
-			// Dropped connection: reconnect once and retry, like built-in MCP does.
 			try {
 				state = await this.reconnect(serverName);
 			} catch {
 				// fall through to reporting the original outcome
 			}
 			if (state.ops && state.status === "connected") {
-				outcome = await callWithElicitation(state, toolName, params, {
-					...(signal !== undefined ? { signal } : {}),
-				}, this.ui);
+				outcome = await callWithElicitation(
+					state,
+					toolName,
+					params,
+					{
+						...(signal !== undefined ? { signal } : {}),
+					},
+					this.ui,
+				);
 			}
 		}
 		if (outcome.kind === "task-handle") return taskHandleResult(state, toolName, outcome);
@@ -599,19 +839,38 @@ export class McpBridge {
 		const details = { server: serverName, tool: toolName };
 		if (outcome.kind === "ok") {
 			const { value } = outcome;
+			const wireContent = value.content.map(stripWireBlockMeta);
+			const scriptResult: Record<string, unknown> = {
+				content: wireContent,
+				...(value.structuredContent !== undefined ? { structuredContent: value.structuredContent } : {}),
+			};
 			return {
 				content: await convertBlocksOffloaded(value.content),
 				details: { ...details, validation: value.validation.status },
-				...(value.structuredContent !== undefined ? { structuredContent: value.structuredContent } : {}),
+				structuredContent: scriptResult,
 			};
 		}
 		if (outcome.kind === "tool-isError") {
 			const raw = outcome.result;
+			const normalized = normalizeContent(raw.content);
+			const wireContent = normalized.map(stripWireBlockMeta);
+			const converted =
+				normalized.length === 0
+					? [{ type: "text" as const, text: `MCP tool ${serverName}/${toolName} returned an error` }]
+					: await convertBlocksOffloaded(normalized);
+			const hasNonEmptyText = converted.some((b) => b.type !== "text" || b.text.trim() !== "");
+			const finalContent = hasNonEmptyText
+				? converted
+				: [{ type: "text" as const, text: `MCP tool ${serverName}/${toolName} returned an error` }];
 			return {
-				content: await convertBlocksOffloaded(normalizeContent(raw.content)),
+				content: finalContent,
 				details,
 				isError: true,
-				...(raw.structuredContent !== undefined ? { structuredContent: raw.structuredContent } : {}),
+				structuredContent: {
+					content: wireContent,
+					...(raw.structuredContent !== undefined ? { structuredContent: raw.structuredContent } : {}),
+					isError: true,
+				},
 			};
 		}
 		throw new Error(`mcp ${serverName}/${toolName}: ${describeOutcome(outcome)}`);
@@ -643,6 +902,15 @@ export class McpBridge {
 		return outcome.value.items.map((item: { raw: Record<string, unknown> }) => item.raw);
 	}
 
+	eventsStatus(name: string): { advertised: readonly string[]; subscribed: readonly string[] } {
+		const state = this.states.get(name);
+		if (!state || state.status !== "connected") throw new Error(`MCP server "${name}" is not connected`);
+		return {
+			advertised: state.eventsHandle?.advertised ?? [],
+			subscribed: state.eventsHandle?.subscribed ?? [],
+		};
+	}
+
 	async taskState(name: string, taskId: string, cancel = false): Promise<unknown> {
 		const state = this.states.get(name);
 		if (!state?.ops) throw new Error(`MCP server "${name}" is not connected`);
@@ -655,14 +923,16 @@ export class McpBridge {
 		if (!state) throw new Error(`unknown server: ${name}`);
 		state.config = { ...state.config, enabled };
 		if (!enabled) {
+			this.hideServerTools(state);
 			void this.teardown(state);
 			state.status = "disabled";
 		} else {
 			this.connectInBackground(state);
+			this.ensureReachTools();
 		}
 	}
 
-	/** Session-only exposure change; re-registers affected tools. */
+	/** Session-only exposure change; re-registers affected tools and cleans activeTools. */
 	setExposure(name: string, exposure: Exposure, toolPattern?: string): void {
 		const state = this.states.get(name);
 		if (!state) throw new Error(`unknown server: ${name}`);
@@ -670,43 +940,96 @@ export class McpBridge {
 			? { ...state.config, toolExposure: { ...state.config.toolExposure, [toolPattern]: exposure } }
 			: { ...state.config, exposure };
 		this.exposureByServer.set(name, state.config.exposure);
+		const demotedFromDirect = new Set<string>();
+		state.exposures.clear();
 		for (const [piName, definition] of state.definitions) {
 			const serverTool = state.toolNames.get(piName) as string;
-			const next = toolExposureFor(state.config, serverTool);
-			if (definition.exposure !== next) {
-				this.pi.registerTool({ ...definition, exposure: next });
-				state.definitions.set(piName, { ...definition, exposure: next });
+			const nextMcp = toolExposureFor(state.config, serverTool);
+			const nextPi = toPiToolExposure(nextMcp);
+			state.exposures.add(nextMcp);
+			if (definition.exposure !== nextPi) {
+				if (definition.exposure === "direct" && nextPi !== "direct") {
+					demotedFromDirect.add(piName);
+				}
+				const updated = { ...definition, exposure: nextPi };
+				this.pi.registerTool(updated);
+				state.definitions.set(piName, updated);
 			}
 		}
+		if (demotedFromDirect.size > 0) {
+			this.pi.setActiveTools(this.pi.getActiveTools().filter((n) => !demotedFromDirect.has(n)));
+		}
+		this.resourceTools.ensure();
 		this.ensureReachTools();
 	}
 
 	/**
-	 * Mirror of built-in behavior: once a codemode-exposure server connects,
-	 * activate codemode; for deferred, activate tool_search.
+	 * Mirror Pi's built-in ensureDiscoveryActive:
+	 * Activates `codemode` or `tool_search` from configured & connected exposures
+	 * before servers even finish connecting, honors `autoEnableCodemode` from mcp.json,
+	 * checks `reachesTools` when available, and warns once if indirect tools are unreachable.
 	 */
 	ensureReachTools(): void {
 		const exposures = new Set<Exposure>();
 		for (const s of this.states.values()) {
-			if (s.status === "connected") for (const e of s.exposures) exposures.add(e);
+			if (!s.config.enabled) continue;
+			for (const e of configuredExposuresOf(s.config)) exposures.add(e);
+			if (s.status === "connected") {
+				for (const e of s.exposures) exposures.add(e);
+			}
 		}
-		const autoEnable = this.pi.getSettings?.()?.autoEnableCodemode;
+		const needsCodemode = exposures.has("codemode");
+		const needsToolSearch = exposures.has("deferred");
+		if (!needsCodemode && !needsToolSearch) return;
+
+		const settingsAuto = this.pi.getSettings?.()?.autoEnableCodemode;
+		const autoEnable =
+			this.autoEnableCodemodeOverride !== undefined
+				? this.autoEnableCodemodeOverride
+				: settingsAuto !== false;
+
 		const all = this.pi.getAllTools();
+		const canReach = (name: string) =>
+			all.some((t) => t.name === name && (t.reachesTools === undefined || Boolean(t.reachesTools)));
+		const hasCodemode = canReach("codemode");
+		const hasToolSearch = canReach("tool_search");
+
 		const active = new Set(this.pi.getActiveTools());
-		const wanted: string[] = [];
-		if (exposures.has("codemode") && autoEnable !== false) wanted.push("codemode");
-		if (exposures.has("deferred")) wanted.push("tool_search");
-		const toAdd = wanted.filter((n) => all.some((t) => t.name === n) && !active.has(n));
+		const toAdd: string[] = [];
+		if (needsCodemode && hasCodemode && autoEnable && !active.has("codemode")) {
+			toAdd.push("codemode");
+		}
+		if (needsToolSearch && hasToolSearch && !active.has("tool_search")) {
+			toAdd.push("tool_search");
+		}
 		if (toAdd.length > 0) this.pi.setActiveTools([...active, ...toAdd]);
+
+		const reachable = new Set([...active, ...toAdd]);
+		if ((hasCodemode && reachable.has("codemode")) || (hasToolSearch && reachable.has("tool_search"))) {
+			return;
+		}
+		// Only warn when a real host declared codemode/tool_search or autoEnableCodemode disabled it.
+		if (!this.warnedUnreachable && (hasCodemode || hasToolSearch)) {
+			this.warnedUnreachable = true;
+			const reason = needsCodemode && hasCodemode && !autoEnable ? " (autoEnableCodemode is false)" : "";
+			this.notify(
+				`MCP tools are only reachable from the codemode or tool_search tool, but neither is active${reason}; they cannot be called.`,
+				"warning",
+			);
+		}
 	}
 
-	statusLines(): string[] {
-		if (this.states.size === 0) return ["No MCP servers configured."];
-		return [...this.states.values()].map((s) => {
-			const base = `${s.name} (${s.config.kind}, ${s.config.source})`;
+	statusLines(extraNotices: readonly string[] = []): string[] {
+		if (this.states.size === 0 && extraNotices.length === 0) return ["No MCP servers configured."];
+		const lines = [...this.states.values()].map((s) => {
+			const base = `${s.name} (${s.config.kind}, ${s.config.source}, ${s.config.exposure})`;
+			const subs =
+				s.eventsHandle && s.eventsHandle.subscribed.length > 0
+					? `, events: ${s.eventsHandle.subscribed.join(",")}`
+					: "";
 			switch (s.status) {
 				case "connected":
-					return `${base}: connected, ${s.toolCount} tool${s.toolCount === 1 ? "" : "s"}`;
+					return `${base}: connected, ${s.toolCount} tool${s.toolCount === 1 ? "" : "s"}${subs}`;
 				case "connecting":
 					return `${base}: connecting…`;
 				case "disabled":
@@ -717,5 +1040,7 @@ export class McpBridge {
 						: `${base}: error: ${s.error ?? "unknown"}`;
 			}
 		});
+		for (const notice of extraNotices) lines.push(notice);
+		return lines;
 	}
 }

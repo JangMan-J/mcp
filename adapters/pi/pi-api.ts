@@ -2,10 +2,8 @@
  * Minimal structural types for the Pi extension API surface this bridge uses.
  *
  * This package deliberately does not depend on @earendil-works/pi-coding-agent
- * (see scripts/check-forbidden.mjs): Pi injects its own copies of host packages
+ * (see scripts/check-deps.mjs): Pi injects its own copies of host packages
  * at runtime, and the factory receives everything through the `pi` argument.
- * The declarations below cover only what the bridge touches. If Pi widens its
- * API, these stay valid; if Pi narrows it, jiti will fail loudly at load.
  */
 
 export type PiContent =
@@ -30,7 +28,7 @@ export interface ToolAnnotations {
 
 export interface ToolNamespace {
 	name: string;
-	aliases?: string[];
+	aliases?: readonly string[];
 	description?: string;
 	instructions?: string;
 }
@@ -42,6 +40,7 @@ export interface ToolDefinition {
 	label: string;
 	description: string;
 	parameters: Record<string, unknown>;
+	outputSchema?: Record<string, unknown>;
 	exposure?: ToolExposure;
 	namespace?: ToolNamespace;
 	annotations?: ToolAnnotations;
@@ -55,6 +54,16 @@ export interface ToolDefinition {
 	): Promise<ToolResult>;
 }
 
+export interface McpSubscriptionSpecEntry {
+	readonly name: string;
+	readonly arguments?: Record<string, unknown>;
+	readonly holdSettle?: boolean;
+	readonly maxAgeMs?: number;
+	readonly heartbeatMs?: number;
+}
+
+export type EventDeliveryMode = "followUp" | "steer" | "nextTurn";
+
 /** Shape of one `mcpServers` entry in mcp.json / pi.registerMcpServer(). */
 export interface McpServerEntry {
 	type?: string;
@@ -64,10 +73,13 @@ export interface McpServerEntry {
 	cwd?: string;
 	url?: string;
 	headers?: Record<string, string>;
+	auth?: { provider?: string };
 	oauth?: Record<string, unknown>;
 	enabled?: boolean;
 	exposure?: string;
 	toolExposure?: Record<string, string>;
+	subscribe?: boolean | readonly (string | McpSubscriptionSpecEntry)[];
+	eventDelivery?: EventDeliveryMode;
 	description?: string;
 	timeout?: number;
 }
@@ -79,10 +91,15 @@ export interface Ui {
 	select?(title: string, options: string[]): Promise<string | undefined>;
 }
 
+export interface ModelRegistryLike {
+	getApiKeyForProvider?(provider: string): Promise<string | undefined> | string | undefined;
+}
+
 export interface SessionContext {
 	cwd: string;
 	hasUI: boolean;
 	isProjectTrusted(): boolean;
+	modelRegistry?: ModelRegistryLike;
 	ui: Ui;
 }
 
@@ -94,6 +111,7 @@ export interface CommandContext {
 export interface ToolInfo {
 	name: string;
 	exposure?: string;
+	reachesTools?: (input: unknown) => "all" | readonly string[];
 }
 
 export interface SystemPromptOptions {
@@ -106,6 +124,7 @@ export interface BeforeAgentStartEvent {
 
 export interface ToolCallEvent {
 	toolName: string;
+	input?: unknown;
 }
 
 export interface McpServersChangeEvent {
@@ -117,14 +136,29 @@ export interface CommandDefinition {
 	handler(args: string, ctx: CommandContext): Promise<void> | void;
 }
 
+export interface CustomMessagePayload<T = unknown> {
+	customType: string;
+	content: string | PiContent[];
+	display?: boolean;
+	details?: T;
+}
+
+export interface SendMessageOptions {
+	triggerTurn?: boolean;
+	deliverAs?: EventDeliveryMode;
+}
+
 export interface ExtensionAPI {
 	on(event: "session_start", handler: (event: { reason?: string }, ctx: SessionContext) => unknown): void;
 	on(event: "session_shutdown", handler: (event: { reason?: string }, ctx: SessionContext) => unknown): void;
 	on(event: "before_agent_start", handler: (event: BeforeAgentStartEvent, ctx: SessionContext) => unknown): void;
+	on(event: "turn_start", handler: (event: unknown, ctx: SessionContext) => unknown): void;
 	on(event: "tool_call", handler: (event: ToolCallEvent, ctx: SessionContext) => unknown): void;
 	on(event: "mcp_servers_change", handler: (event: McpServersChangeEvent, ctx: SessionContext) => unknown): void;
 	registerTool(definition: ToolDefinition): void;
 	registerCommand(name: string, definition: CommandDefinition): void;
+	sendMessage?<T = unknown>(message: CustomMessagePayload<T>, options?: SendMessageOptions): void;
+	appendEntry?<T = unknown>(customType: string, data?: T): void;
 	getActiveTools(): string[];
 	setActiveTools(names: string[]): void;
 	getAllTools(): ToolInfo[];

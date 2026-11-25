@@ -1,17 +1,29 @@
 /**
  * Pi extension entry: replaces Pi's built-in MCP session support with a
- * bridge implemented on this library (@jangmanj/mcp).
+ * bridge implemented on this library (@jangmanj/mcp), adding MCP 2026-07-28
+ * and SEP-3415 push-event delivery via pi.sendMessage().
  *
- * Registering the /mcp command is what makes Pi stand down its built-in MCP
- * extension for sessions (docs/mcp.md#replace-the-built-in-mcp-support), so
- * this extension reads mcp.json itself and owns all connections.
+ * Registering the /mcp command makes Pi stand down its built-in MCP
+ * extension for sessions (docs/mcp.md#replace-the-built-in-mcp-support).
  */
 
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { McpBridge } from "./bridge.ts";
-import { agentDir, loadServerConfigs, persistServerUpdate, type ResolvedServerConfig } from "./config.ts";
-import type { ExtensionAPI, McpServerEntry, SessionContext, Ui } from "./pi-api.ts";
+import { configuredExposuresOf, McpBridge, sanitizeNamePart, type ServerState } from "./bridge.ts";
+import {
+	agentDir,
+	loadServerConfigs,
+	persistServerUpdate,
+	serverKey,
+	type ResolvedServerConfig,
+} from "./config.ts";
+import type { ExtensionAPI, McpServerEntry, ModelRegistryLike, SessionContext, Ui } from "./pi-api.ts";
+import { RESOURCE_TOOL_NAMES } from "./resources.ts";
+
+const MCP_SERVERS_SECTION = "mcp_servers";
+const MAX_SERVER_DESCRIPTION_CHARS = 250;
+const MAX_SERVERS_SECTION_CHARS = 4096;
+const RESOURCE_TOOL_SET = new Set<string>(RESOURCE_TOOL_NAMES);
 
 /** Tolerantly unwrap pi.getMcpServers() / mcp_servers_change event shapes. */
 export function registeredServersOf(x: unknown): Map<string, McpServerEntry> {
@@ -38,15 +50,78 @@ export function registeredServersOf(x: unknown): Map<string, McpServerEntry> {
 	return out;
 }
 
+function hasDirectTools(state: ServerState): boolean {
+	return configuredExposuresOf(state.config).has("direct");
+}
+
+function hasIndirectTools(state: ServerState): boolean {
+	const ex = configuredExposuresOf(state.config);
+	return ex.has("codemode") || ex.has("deferred");
+}
+
+function truncateSummary(text: string, max: number): string {
+	if (text.length <= max) return text;
+	return max <= 1 ? "" : `${text.slice(0, max - 1).trimEnd()}…`;
+}
+
+/** Render Pi's `mcp_servers` system prompt section (mirrors built-in renderServersSection). */
+export function renderServersSection(states: readonly ServerState[]): string | undefined {
+	const listed = states
+		.filter((s) => s.config.enabled && hasIndirectTools(s))
+		.sort((a, b) => a.name.localeCompare(b.name));
+	if (listed.length === 0) return undefined;
+
+	const reaches = listed.map((s) =>
+		configuredExposuresOf(s.config).has("codemode") ? "codemode" : "tool_search",
+	);
+	const reachSet = new Set(reaches);
+	let intro = "MCP servers whose tools are not declared to you.";
+	if (reachSet.has("codemode")) intro += " Call the tools of `codemode` servers from codemode scripts.";
+	if (reachSet.has("tool_search")) intro += " Load the tools of `tool_search` servers with `tool_search`.";
+
+	const heads = listed.map((s, idx) => `- mcp__${sanitizeNamePart(s.name)} (${reaches[idx]})`);
+	const omitted = (count: number) =>
+		count > 0 ? [`- … ${count} more server${count === 1 ? "" : "s"}; find their tools with searchTools()`] : [];
+	const size = (kept: number) =>
+		[intro, ...heads.slice(0, kept), ...omitted(listed.length - kept)].join("\n").length;
+
+	let kept = listed.length;
+	while (kept > 0 && size(kept) > MAX_SERVERS_SECTION_CHARS) kept--;
+	const perServer =
+		kept === 0
+			? 0
+			: Math.min(MAX_SERVER_DESCRIPTION_CHARS, Math.floor((MAX_SERVERS_SECTION_CHARS - size(kept)) / kept) - 2);
+
+	const lines = listed.slice(0, kept).map((s, idx) => {
+		const rawSummary = (s.config.description ?? s.description ?? "").split("\n")[0]?.trim() ?? "";
+		const summary = perServer > 0 && rawSummary ? truncateSummary(rawSummary, perServer) : "";
+		return summary ? `${heads[idx]}: ${summary}` : heads[idx];
+	});
+	return [intro, ...lines, ...omitted(listed.length - kept)].join("\n");
+}
+
+function reachesServer(reach: "all" | readonly string[], serverName: string): boolean {
+	if (reach === "all") return true;
+	const ns = `mcp__${sanitizeNamePart(serverName)}`;
+	return reach.some((word) => word.includes(ns) || word === serverName || word === serverKey(serverName));
+}
+
 export default function (pi: ExtensionAPI) {
-	// Bridge notifications go to the most recent session context's UI.
 	let currentUi: Ui | undefined;
+	let currentModelRegistry: ModelRegistryLike | undefined;
+	let fileOnlyConfigs = new Map<string, ResolvedServerConfig>();
+	let overriddenNotices: string[] = [];
+	let waitedForStartup = false;
+
+	const currentAgentDir = () => agentDir(process.env as Record<string, string | undefined>, homedir());
+
 	const bridge = new McpBridge({
 		pi,
 		notify: (message, level) => currentUi?.notify(message, level),
-		credentialStorePath: join(agentDir(process.env, homedir()), "mcp-oauth.json"),
-		diagnosticsLogPath: join(agentDir(process.env, homedir()), "mcp.log"),
+		credentialStorePath: join(currentAgentDir(), "mcp-oauth.json"),
+		diagnosticsLogPath: join(currentAgentDir(), "mcp.log"),
 		confirm: (title, message) => currentUi?.confirm?.(title, message) ?? Promise.resolve(false),
+		providerToken: (provider) => currentModelRegistry?.getApiKeyForProvider?.(provider),
 		ui: {
 			notify: (message, level) => currentUi?.notify(message, level),
 			confirm: (title, message) => currentUi?.confirm?.(title, message) ?? Promise.resolve(false),
@@ -55,9 +130,9 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	// Registering /mcp replaces built-in MCP support for sessions.
 	pi.registerCommand("mcp", {
-		description: "MCP (mcp bridge): list, reconnect, login, logout, tools, prompts, resources, task, enable/disable, exposure",
+		description:
+			"MCP (mcp bridge): list, reconnect, login, logout, tools, prompts, resources, events, task, enable/disable, exposure",
 		handler: async (args, ctx) => {
 			const [sub, ...rest] = args.trim().split(/\s+/).filter(Boolean);
 			const name = rest[0];
@@ -67,15 +142,22 @@ export default function (pi: ExtensionAPI) {
 				switch (sub) {
 					case undefined:
 					case "list":
-						ctx.ui.notify(bridge.statusLines().join("\n"), "info");
+						ctx.ui.notify(bridge.statusLines(overriddenNotices).join("\n"), "info");
 						return;
 					case "reconnect":
 					case "login":
 					case "logout": {
 						if (!name) return fail(`usage: /mcp ${sub} <name>`);
-						const state = sub === "login" ? await bridge.login(name) : sub === "logout" ? await bridge.logout(name) : await bridge.reconnect(name);
+						const state =
+							sub === "login"
+								? await bridge.login(name)
+								: sub === "logout"
+									? await bridge.logout(name)
+									: await bridge.reconnect(name);
 						ctx.ui.notify(
-							state.status === "connected" ? `mcp "${state.name}": connected, ${state.toolCount} tools` : `mcp "${state.name}": ${state.error ?? "failed"}`,
+							state.status === "connected"
+								? `mcp "${state.name}": connected, ${state.toolCount} tools`
+								: `mcp "${state.name}": ${state.error ?? "failed"}`,
 							state.status === "connected" ? "info" : "error",
 						);
 						return;
@@ -85,6 +167,10 @@ export default function (pi: ExtensionAPI) {
 						const state = bridge.get(name);
 						if (!state) return fail(`unknown server: ${name}`);
 						return json([...state.registeredTools]);
+					}
+					case "events": {
+						if (!name) return fail("usage: /mcp events <name>");
+						return json(bridge.eventsStatus(name));
 					}
 					case "prompts":
 						if (!name) return fail("usage: /mcp prompts <name>");
@@ -104,23 +190,53 @@ export default function (pi: ExtensionAPI) {
 					case "enable":
 					case "disable": {
 						if (!name) return fail(`usage: /mcp ${sub} <name>`);
-						bridge.setEnabled(name, sub === "enable");
 						const state = bridge.get(name);
-						if (state) persistServerUpdate(name, state.config.source, { enabled: sub === "enable" }, { homeDir: homedir(), cwd: ctx.cwd ?? "" });
+						bridge.setEnabled(name, sub === "enable");
+						if (state) {
+							persistServerUpdate(
+								name,
+								state.config.source,
+								{ enabled: sub === "enable" },
+								{
+									homeDir: homedir(),
+									cwd: ctx.cwd ?? "",
+									...(state.config.hasProjectOverride ? { hasProjectOverride: true } : {}),
+								},
+							);
+						}
 						ctx.ui.notify(`mcp "${name}": ${sub}d`, "info");
 						return;
 					}
 					case "exposure": {
-						if (!name || !rest[1]) return fail("usage: /mcp exposure <name> <direct|codemode|deferred|hidden> [toolPattern]");
+						if (!name || !rest[1]) {
+							return fail("usage: /mcp exposure <name> <direct|codemode|deferred|hidden> [toolPattern]");
+						}
 						const value = rest[1] as "direct" | "codemode" | "deferred" | "hidden";
-						bridge.setExposure(name, value, rest[2]);
 						const state = bridge.get(name);
-						if (state && !rest[2]) persistServerUpdate(name, state.config.source, { exposure: value }, { homeDir: homedir(), cwd: ctx.cwd ?? "" });
-						ctx.ui.notify(`mcp "${name}": exposure ${value}${rest[2] ? ` for ${rest[2]}` : ""}${rest[2] ? " (session only)" : ""}`, "info");
+						bridge.setExposure(name, value, rest[2]);
+						if (state && !rest[2]) {
+							persistServerUpdate(
+								name,
+								state.config.source,
+								{ exposure: value },
+								{
+									homeDir: homedir(),
+									cwd: ctx.cwd ?? "",
+									...(state.config.hasProjectOverride ? { hasProjectOverride: true } : {}),
+								},
+							);
+						}
+						ctx.ui.notify(
+							`mcp "${name}": exposure ${value}${rest[2] ? ` for ${rest[2]} (session only)` : ""}`,
+							"info",
+						);
 						return;
 					}
 					default:
-						ctx.ui.notify("Usage: /mcp [list] | reconnect|login|logout <name> | tools|prompts|resources <name> | prompt <name> <prompt> [jsonArgs] | task <name> <taskId> [cancel] | enable|disable <name> | exposure <name> <value> [toolPattern]", "info");
+						ctx.ui.notify(
+							"Usage: /mcp [list] | reconnect|login|logout <name> | tools|events|prompts|resources <name> | prompt <name> <prompt> [jsonArgs] | task <name> <taskId> [cancel] | enable|disable <name> | exposure <name> <value> [toolPattern]",
+							"info",
+						);
 				}
 			} catch (err) {
 				fail(err);
@@ -128,75 +244,103 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	let fileConfigs = new Map<string, ResolvedServerConfig>();
+	pi.on("session_start", async (_event, ctx) => {
+		currentUi = ctx.ui;
+		currentModelRegistry = ctx.modelRegistry;
+		waitedForStartup = false;
+		await bridge.closeAll();
 
-	const loadAndSync = (ctx: SessionContext) => {
-		const { servers, warnings } = loadServerConfigs({
+		const loaded = loadServerConfigs({
 			homeDir: homedir(),
 			cwd: ctx.cwd,
 			projectTrusted: safeTrusted(ctx),
 			registered: registeredServersOf(pi.getMcpServers()),
 		});
-		fileConfigs = servers;
-		for (const warning of warnings) ctx.ui.notify(`mcp: ${warning}`, "warning");
-		bridge.sync(servers);
-	};
-
-	pi.on("session_start", async (_event, ctx) => {
-		currentUi = ctx.ui;
-		loadAndSync(ctx);
+		fileOnlyConfigs = loaded.fileServers;
+		overriddenNotices = loaded.overriddenExtensions.map((line) => `overridden: ${line}`);
+		bridge.setAutoEnableCodemode(loaded.autoEnableCodemode);
+		for (const warning of loaded.warnings) ctx.ui.notify(`mcp: ${warning}`, "warning");
+		bridge.sync(loaded.servers);
 	});
 
 	pi.on("mcp_servers_change", async (event, ctx) => {
-		currentUi = ctx.ui;		const merged = new Map(fileConfigs);
+		currentUi = ctx.ui;
+		currentModelRegistry = ctx.modelRegistry;
+		const merged = new Map<string, ResolvedServerConfig>(fileOnlyConfigs);
+		const seenFileKeys = new Set([...fileOnlyConfigs.keys()].map(serverKey));
+		const nextOverridden: string[] = [];
+
 		for (const [name, raw] of registeredServersOf(event.servers)) {
-			if (!merged.has(name)) {
-				const { servers } = loadServerConfigs({
-					homeDir: homedir(),
-					cwd: ctx.cwd,
-					projectTrusted: false,
-					registered: new Map([[name, raw]]),
-				});
-				const cfg = servers.get(name);
-				if (cfg) merged.set(name, cfg);
+			if (seenFileKeys.has(serverKey(name))) {
+				nextOverridden.push(`overridden: "${name}" registered by extension is overridden by mcp.json`);
+				continue;
 			}
+			const { servers, warnings } = loadServerConfigs({
+				homeDir: homedir(),
+				cwd: ctx.cwd,
+				projectTrusted: false,
+				registered: new Map([[name, raw]]),
+				// Prevent reading user mcp.json again during isolated single-entry parse
+				env: { ...(process.env as Record<string, string | undefined>), PI_CODING_AGENT_DIR: join(ctx.cwd, ".__pi_mcp_empty__") },
+			});
+			for (const warning of warnings) ctx.ui.notify(`mcp: ${warning}`, "warning");
+			const cfg = servers.get(name);
+			if (cfg) merged.set(name, cfg);
 		}
+		overriddenNotices = nextOverridden;
 		bridge.sync(merged);
+	});
+
+	pi.on("turn_start", async (_event, _ctx) => {
+		await bridge.reconnectIfSignedInExternally();
 	});
 
 	pi.on("session_shutdown", async (_event, ctx) => {
 		currentUi = ctx.ui;
 		await bridge.closeAll();
-		fileConfigs = new Map();
+		fileOnlyConfigs = new Map();
+		overriddenNotices = [];
+		waitedForStartup = false;
 	});
 
-	pi.on("before_agent_start", async (event, _ctx) => {
-		// Direct-exposure tools must be declared in the first request: wait for
-		// those servers, bounded, like built-in MCP does.
-		await bridge.waitForPending((s) => s.config.exposure === "direct");
+	pi.on("before_agent_start", async (event, ctx) => {
+		if (!waitedForStartup) {
+			waitedForStartup = true;
+			const finished = await bridge.waitForPending((s) => hasDirectTools(s));
+			if (!finished) {
+				ctx.ui.notify(
+					"MCP servers are still connecting; their tools become available once connected.",
+					"info",
+				);
+			}
+		}
 
 		const sections = event.systemPromptOptions?.sections;
 		if (!sections) return;
-		const lines = bridge
-			.list()
-			.filter((s) => s.config.enabled && s.config.exposure !== "direct" && s.config.exposure !== "hidden")
-			.map((s) => {
-				const reach = s.config.exposure === "deferred" ? "tool_search" : "codemode";
-				const desc = s.description ?? "MCP server";
-				return `- mcp__${s.name.replace(/-/g, "_")}: ${desc} (tools reachable via ${reach})`;
-			});
-		if (lines.length > 0) sections.mcp_servers = lines.join("\n");
+		const rendered = renderServersSection(bridge.list());
+		if (rendered !== undefined) sections[MCP_SERVERS_SECTION] = rendered;
+		else delete sections[MCP_SERVERS_SECTION];
 	});
 
 	pi.on("tool_call", async (event, _ctx) => {
-		// Late registration: finish connecting servers before codemode /
-		// tool_search / direct mcp__* calls run.
-		if (
-			event.toolName === "codemode" ||
-			event.toolName === "tool_search" ||
-			event.toolName.startsWith("mcp__")
-		) {
+		const tool = pi.getAllTools().find((t) => t.name === event.toolName);
+		if (tool?.reachesTools) {
+			const reach = tool.reachesTools(event.input);
+			await bridge.waitForPending((s) => reachesServer(reach, s.name));
+			return;
+		}
+		if (event.toolName === "codemode" || event.toolName === "tool_search" || RESOURCE_TOOL_SET.has(event.toolName)) {
 			await bridge.waitForPending();
+			return;
+		}
+		if (event.toolName.startsWith("mcp__")) {
+			const owner = bridge.ownerOfTool(event.toolName);
+			if (owner !== undefined) {
+				await bridge.waitForPending((s) => s.name === owner);
+			} else {
+				// Tool called before its server finished initial registration: match prefix mcp__<srv>__
+				await bridge.waitForPending((s) => event.toolName.startsWith(`mcp__${sanitizeNamePart(s.name)}__`));
+			}
 		}
 	});
 }

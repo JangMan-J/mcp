@@ -115,7 +115,10 @@ describe("McpBridge against a real stdio server", () => {
 
 			const result = await echo?.execute("call-1", { message: "hi" }, undefined, undefined, {});
 			expect(result?.content).toEqual([{ type: "text", text: "hi" }]);
-			expect(result?.structuredContent).toEqual({ echo: "hi" });
+			expect(result?.structuredContent).toEqual({
+				content: [{ type: "text", text: "hi" }],
+				structuredContent: { echo: "hi" },
+			});
 
 			const fail = tools.get("mcp__fake__fail");
 			const failed = await fail?.execute("call-2", {}, undefined, undefined, {});
