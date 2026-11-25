@@ -1,5 +1,5 @@
 import { ExtensionRegistry, type Disposable, type Extension } from "./extension.js";
-import { SUPPORTED_PROTOCOL_VERSION, type IdGenerator } from "./jsonrpc.js";
+import { SUPPORTED_PROTOCOL_VERSION, type IdGenerator, type JsonRpcNotification, type RequestId } from "./jsonrpc.js";
 import {
   defaultLifecycleHooks,
   DISCOVER_PROBE_TIMEOUT_MS,
@@ -19,6 +19,7 @@ import {
   type RequestOptions,
   type StreamHandle,
 } from "./request.js";
+import { NotificationQueue } from "./progress.js";
 import type { DiscoverResult } from "./schema/index.js";
 
 export * as McpSchema from "./schema/index.js";
@@ -58,6 +59,7 @@ export interface McpClientOptions {
 
 export class McpClient {
   readonly server: ServerRef;
+  private readonly transport: Transport;
   private readonly extensions = new ExtensionRegistry();
   private readonly manager: RequestManager;
   private readonly eraCache: EraCache;
@@ -66,6 +68,7 @@ export class McpClient {
 
   constructor(opts: McpClientOptions) {
     this.server = opts.server;
+    this.transport = opts.transport;
     const lc = opts.lifecycle ?? {};
     this.hooks = { ...defaultLifecycleHooks, ...lc.hooks };
     this.eraCache = lc.eraCache ?? new EraCache();
@@ -130,11 +133,30 @@ export class McpClient {
       stream: true,
       idempotent: opts.idempotent ?? true,
     });
+    // Stdio routes subscription notifications to subscriptions/listen by default;
+    // events/stream and other long-lived streams need an explicit listener.
+    const transport = this.transport as Transport & {
+      registerSubscription?: (id: RequestId, fn: (n: JsonRpcNotification) => void) => () => void;
+    };
+    const routed = typeof transport.registerSubscription === "function"
+      ? new NotificationQueue<JsonRpcNotification>()
+      : undefined;
+    const detach = routed
+      ? transport.registerSubscription!(req.id, (n) => routed.push(n))
+      : undefined;
+    const notifications = routed ?? req.notifications;
+    const cleanup = () => {
+      detach?.();
+      routed?.close();
+    };
     return {
       id: req.id,
-      close: () => req.cancel(),
-      done: Promise.resolve(req),
-      [Symbol.asyncIterator]: () => req.notifications[Symbol.asyncIterator](),
+      close: () => {
+        cleanup();
+        req.cancel();
+      },
+      done: Promise.resolve(req).finally(cleanup),
+      [Symbol.asyncIterator]: () => notifications[Symbol.asyncIterator](),
     };
   }
 

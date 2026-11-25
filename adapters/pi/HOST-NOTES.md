@@ -32,3 +32,34 @@ no drop-in move into durable; it needs the thin wrapper described above.
 Cellar also provides its own command registerer, so the `/mcp` command surface
 (`index.ts`) is portable there directly; the remaining durable-specific work is
 tool execution signatures, UI prompts, and session/event delivery.
+
+## Cellar equivalents (graph: home-jangmanj-Projects-cellar, 2026-11-25)
+
+Mapped against `src/daemon/pi-extensions.ts` (indexed, no recorded coverage
+issue). Most of this adapter's pi-coding-agent surface has a direct durable
+equivalent:
+
+| Adapter touchpoint | Cellar equivalent |
+|---|---|
+| `pi.registerTool` | `PiExtensionApi.registerTool` / `PiTool` (same execute shape) |
+| `pi.registerCommand` | `pi-extensions.registerCommand` (UI doc commands) |
+| `exposure` | `PiTool.exposure` (string) |
+| `annotations` | `PiTool.annotations` |
+| `namespace` | **No equivalent** — `PiTool` has no namespace field; codemode grouping must be rethought or added. |
+| `getActiveTools` / `setActiveTools` / `getAllTools` | `pi-extensions.getActiveTools` / `setActiveTools` / `getAllTools` |
+| `before_agent_start` | `pi-extensions.beforeAgentStart` (systemPrompt override supported) |
+| `systemPromptOptions.sections` | **No equivalent** — `systemPromptOptions: {}` is passed empty; use `systemPrompt` override instead of an `mcp_servers` section. |
+| `tool_call` | `pi-extensions.beforeTool` (mutable input, block, gate prompts) |
+| `session_start` / `session_shutdown` | `pi-extensions.start` / `close` |
+| `mcp_servers_change` | **No event found** — `registerMcpServer` / `unregisterMcpServer` / `getMcpServers` exist, but no change event; re-read on demand. |
+| `ctx.ui.notify/confirm/input/select` | `pi-extensions.notify` / `confirm` / `input` / `select` |
+| `ctx.cwd` / `hasUI` / `isProjectTrusted` | `ExtensionContext.cwd` / `hasUI` / `isProjectTrusted` |
+| `pi.getSettings()` | `pi-extensions.getSettings` (merged settings; no `autoEnableCodemode` reference found) |
+| `pi.registerMcpServer` | `PiExtensionApi.registerMcpServer` |
+
+Net: a durable adapter can reuse nearly all of `bridge.ts` unchanged. The
+adapter-specific deltas are (1) no `namespace`, (2) system-prompt override
+instead of sections, (3) no `mcp_servers_change` event, and (4) no
+`autoEnableCodemode` setting lookup. `mcp-host.ts` / `mcp-events.ts` were not
+present in this moderate index generation; earlier full-index evidence had
+`startMcpHost` called by `src.cli.mcp` and `src.daemon.main.globalMcp` / `mcp`.
