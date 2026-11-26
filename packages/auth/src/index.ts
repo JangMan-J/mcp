@@ -6,4 +6,5 @@ export { ConfiguredBearer, OAuthAuthorization, MemoryCredentialStore } from './p
 export type { ConfiguredBearerOptions, OAuthOptions, AuthorizationConsent, AuthorizationPrompt, RedirectPort, ClientRegistration } from './provider.js';
 export { ClientCredentialsAuth, createPemAssertionSigner, createWebCryptoAssertionSigner, isConfigured } from './client-credentials.js';
 export type { AssertionSigner, AssertionSigningAlgorithm, ClientCredentialsConfig, ClientCredentialsDiagnostic } from './client-credentials.js';
-export { openSystemBrowser, startLoopbackRedirect } from './node-ports.js';
+export { openSystemBrowser, startHostedRedirect, startLoopbackRedirect } from './node-ports.js';
+export type { HostedRedirect, HostedRedirectOptions } from './node-ports.js';

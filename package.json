@@ -24,6 +24,9 @@
     "url": "https://github.com/JangMan-J/mcp/issues"
   },
   "type": "module",
+  "bin": {
+    "mcp-callback": "./dist/callback/index.js"
+  },
   "sideEffects": false,
   "workspaces": [
     "packages/*"
@@ -67,6 +70,10 @@
     "./auth": {
       "types": "./dist/auth/index.d.ts",
       "default": "./dist/auth/index.js"
+    },
+    "./callback": {
+      "types": "./dist/callback/index.d.ts",
+      "default": "./dist/callback/index.js"
     },
     "./ops": {
       "types": "./dist/ops/index.d.ts",

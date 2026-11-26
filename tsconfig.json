@@ -1,20 +1,53 @@
 {
   "files": [],
   "references": [
-    { "path": "./packages/core" },
-    { "path": "./packages/client" },
-    { "path": "./packages/testing" },
-    { "path": "./packages/server-events" },
-    { "path": "./packages/server" },
-    { "path": "./packages/server-transport" },
-    { "path": "./packages/transport-stdio" },
-    { "path": "./packages/transport-http" },
-    { "path": "./packages/auth" },
-    { "path": "./packages/mrtr-cache" },
-    { "path": "./packages/ops" },
-    { "path": "./packages/telemetry-otel" },
-    { "path": "./packages/ext-events" },
-    { "path": "./packages/ext-skills" },
-    { "path": "./packages/ext-server-cards" }
+    {
+      "path": "./packages/core"
+    },
+    {
+      "path": "./packages/client"
+    },
+    {
+      "path": "./packages/testing"
+    },
+    {
+      "path": "./packages/server-events"
+    },
+    {
+      "path": "./packages/server"
+    },
+    {
+      "path": "./packages/server-transport"
+    },
+    {
+      "path": "./packages/transport-stdio"
+    },
+    {
+      "path": "./packages/transport-http"
+    },
+    {
+      "path": "./packages/auth"
+    },
+    {
+      "path": "./packages/callback"
+    },
+    {
+      "path": "./packages/mrtr-cache"
+    },
+    {
+      "path": "./packages/ops"
+    },
+    {
+      "path": "./packages/telemetry-otel"
+    },
+    {
+      "path": "./packages/ext-events"
+    },
+    {
+      "path": "./packages/ext-skills"
+    },
+    {
+      "path": "./packages/ext-server-cards"
+    }
   ]
 }

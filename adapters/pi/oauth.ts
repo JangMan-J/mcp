@@ -15,6 +15,7 @@ import {
 	OAuthAuthorization,
 	openSystemBrowser,
 	SafeFetch,
+	startHostedRedirect,
 	startLoopbackRedirect,
 	type AuthorizationConsent,
 	type ClientRegistration,
@@ -25,6 +26,7 @@ export {
 	canonicalResource,
 	OAuthAuthorization,
 	openSystemBrowser,
+	startHostedRedirect,
 	startLoopbackRedirect,
 };
 export type { AuthorizationConsent, ClientRegistration };
@@ -105,9 +107,14 @@ export interface OAuthProviderHandle {
 	readonly closeRedirect: () => void;
 }
 
-/** Loopback redirect listener bound to a fixed URI (callbackPort/callbackUrl). */
-async function startFixedRedirect(redirectUri: string): Promise<{ close: () => void; waitForCallback: (opts: { redirectUri: string; state: string; signal: AbortSignal }) => Promise<URLSearchParams> }> {
-	const url = new URL(redirectUri);
+/** True for a loopback HTTP redirect URI, which binds a fixed local port directly. */
+function isLoopbackHttp(redirectUri: string): boolean {
+	let url: URL;
+	try { url = new URL(redirectUri); } catch { return false; }
+	return url.protocol === "http:" && ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname);
+}
+
+async function startFixedRedirect(redirectUri: string): Promise<{ close: () => void; waitForCallback: (opts: { redirectUri: string; state: string; signal: AbortSignal }) => Promise<URLSearchParams> }> {	const url = new URL(redirectUri);
 	if (url.protocol !== "http:" || !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname)) {
 		throw new Error(`oauth callback must be loopback HTTP: ${redirectUri}`);
 	}
@@ -153,15 +160,28 @@ async function startFixedRedirect(redirectUri: string): Promise<{ close: () => v
 export async function createOAuthProvider(opts: OAuthProviderOptions): Promise<OAuthProviderHandle> {
 	const { config } = opts;
 	// callbackUrl wins; callbackPort fixes the port of /callback; otherwise an
-	// ephemeral loopback listener from the library.
+	// ephemeral loopback listener from the library. A public https callbackUrl is
+	// served by the library's hosted redirect listener (bind loopback, publish the
+	// configured URI) instead of a loopback-only one.
 	const redirectUri =
 		config.oauth?.callbackUrl ??
 		(config.oauth?.callbackPort !== undefined
 			? `http://127.0.0.1:${config.oauth.callbackPort}/callback`
 			: undefined);
-	const redirect = redirectUri !== undefined
-		? await startFixedRedirect(redirectUri)
-		: await startLoopbackRedirect("/callback");
+	const redirect = redirectUri === undefined
+		? await startLoopbackRedirect("/callback")
+		: isLoopbackHttp(redirectUri)
+			? await startFixedRedirect(redirectUri)
+			: await startHostedRedirect({
+				redirectUri,
+				// A public URL may name the local bind port; otherwise the listener takes an ephemeral one.
+				...(() => {
+					const port = new URL(redirectUri).port;
+					return port === "" ? {} : { port: Number(port) };
+				})(),
+				// The listener binds loopback, so only a local proxy can reach it: trust its forwarded host.
+				trustProxy: true,
+			});
 	const effectiveRedirectUri = redirectUri ?? ("redirectUri" in redirect ? redirect.redirectUri : undefined);
 	if (typeof effectiveRedirectUri !== "string") throw new Error("oauth redirect URI unavailable");
 

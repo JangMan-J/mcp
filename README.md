@@ -75,6 +75,56 @@ const connection = await connect({
 For interactive OAuth (discovery, PKCE, CIMD/DCR), construct `OAuthAuthorization` from
 `/auth` with your consent/browser/redirect ports and pass it as `authProvider`.
 
+### Authorization callbacks
+
+`startLoopbackRedirect()` binds an ephemeral `127.0.0.1` port for desktop sign-in.
+To receive the browser at a real address — a public hostname, or a port forwarded by
+a proxy — use `startHostedRedirect()`. It validates the configured URI the same way
+(the authorization server always gets your configured `redirect_uri`), checks the
+callback's `Host` and path, matches each callback to its pending request by `state`,
+and never resolves a callback nobody asked for:
+
+```ts
+import { OAuthAuthorization, startHostedRedirect } from "@jangmanj/mcp/auth";
+
+const redirect = await startHostedRedirect({
+  redirectUri: "https://hooks.example.com/oauth/mcp/callback",
+  port: 8710,            // local bind port a proxy forwards to; omit for ephemeral
+  trustProxy: true,      // accept the public host from X-Forwarded-Host
+  // tls: { key, cert }, // terminate TLS in-process instead of at the proxy
+});
+
+const authProvider = new OAuthAuthorization({
+  resource: "https://mcp.example.com/mcp",
+  redirectUri: redirect.redirectUri,
+  redirect,
+  consent: { async request() { return { decision: "accept" }; } },
+  browser: { open: (url) => openSystemBrowser(url, AbortSignal.timeout(300_000)) },
+});
+```
+
+Each pending authorization resolves with the callback's query parameters; a lapsed
+callback resolves to `error=timeout` instead of hanging, and `close()` cancels the rest.
+
+### Standalone callback server
+
+When the sign-in client lives in another process, run the bundled server instead of
+hosting the listener inside your app. It owns no client, binds the callback, and prints
+one JSON line per event on stdout:
+
+```sh
+mcp-callback --redirect-uri https://hooks.example.com/oauth/mcp/callback \
+  --port 8710 --trust-proxy
+# {"event":"listening","redirectUri":"https://hooks.example.com/oauth/mcp/callback","address":"http://127.0.0.1:8710/oauth/mcp/callback","pid":8123}
+# {"event":"callback","at":"...","state":"<state>","params":{"code":"<code>","state":"<state>","iss":"..."}}
+```
+
+`--once` exits after the first callback (or after `--state <value>` matches), which is
+what a script wants; `--tls-key`/`--tls-cert` terminate TLS in-process; `--host`,
+`--allowed-host`, `--max-pending`, and `--timeout-ms` tune the rest. `SIGINT` closes it
+with a final `{"event":"closed","callbacks":n}`. The same process is available in
+code as `runRedirectServer` from `@jangmanj/mcp/callback`.
+
 ## Building a server
 
 `@jangmanj/mcp/server` covers the ordinary MCP 2026-07-28 request

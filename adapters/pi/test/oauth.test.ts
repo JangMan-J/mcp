@@ -1,4 +1,5 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -169,6 +170,49 @@ describe("McpBridge OAuth flow", () => {
 			expect(state.status).toBe("connected");
 			expect(authorizeScope).toContain("read");
 			expect(authorizeScope).toContain("write");
+		},
+		30_000,
+	);
+
+	it(
+		"serves a public callbackUrl through the hosted redirect listener",
+		async () => {
+			server = await startOAuthMcpServer();
+			dir = mkdtempSync(join(tmpdir(), "mcp-ext-oauth-"));
+			const { pi } = fakePi();
+			const callbackUrl = "https://callbacks.test:18766/oauth/callback";
+			let redirected: string | null = null;
+			const browserOpen = async (url: string) => {
+				const authorize = new URL(url);
+				expect(authorize.searchParams.get("redirect_uri")).toBe(callbackUrl);
+				const res = await fetch(url, { redirect: "manual" });
+				redirected = res.headers.get("location");
+				if (!redirected) throw new Error("authorize did not redirect");
+				// A proxy hop: plain HTTP to the local bind port, public Host preserved.
+				const callback = new URL(redirected);
+				await new Promise<void>((resolve, reject) => {
+					const req = httpRequest({ port: 18766, host: "127.0.0.1",
+						path: `${callback.pathname}${callback.search}`, headers: { host: "callbacks.test:18766" } }, response => {
+						response.resume();
+						response.on("end", () => resolve());
+					});
+					req.on("error", reject);
+					req.end();
+				});
+			};
+			bridge = new McpBridge({
+				pi,
+				notify: () => {},
+				credentialStorePath: join(dir, "auth.json"),
+				confirm: async () => true,
+				browserOpen,
+				allowInsecureAuth: true,
+			});
+			bridge.sync(new Map([["secure", { ...httpConfig(server!.url), oauth: { clientId: "test-client", callbackUrl } }]]));
+			await bridge.waitForPending();
+			const state = await bridge.login("secure");
+			expect(state.status).toBe("connected");
+			expect(redirected).toContain("https://callbacks.test:18766/oauth/callback?");
 		},
 		30_000,
 	);

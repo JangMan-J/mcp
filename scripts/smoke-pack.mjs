@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
+import { request } from "node:http";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -28,6 +29,7 @@ try {
     "@jangmanj/mcp/server",
     "@jangmanj/mcp/server-transport",
     "@jangmanj/mcp/auth",
+    "@jangmanj/mcp/callback",
     "@jangmanj/mcp/ops",
     "@jangmanj/mcp/mrtr-cache",
     "@jangmanj/mcp/telemetry-otel",
@@ -101,7 +103,56 @@ try {
     });
   }
 
-  console.log(`smoke-pack: ok (${subpaths.length} entrypoints: ESM, CJS, tsc --noEmit)`);
+  // 4. The published bin binds a callback and relays it, with no host process.
+  const cli = join(tmp, "node_modules", "@jangmanj", "mcp", "dist", "callback", "index.js");
+  const child = spawn(process.execPath, [cli, "--redirect-uri", "https://callbacks.invalid/cb", "--once"], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const events = [];
+  let output = "";
+  let asked = false;
+  const relayed = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`mcp-callback stalled: ${output}`)), 10_000);
+    const onLine = (line) => {
+      if (!line.trim()) return;
+      let event;
+      try { event = JSON.parse(line); } catch { return; }
+      events.push(event);
+      if (event.event === "listening" && !asked) {
+        asked = true;
+        const address = new URL(event.address);
+        const req = request({
+          port: Number(address.port), host: "127.0.0.1",
+          path: `${address.pathname}?code=smoke&state=s`, headers: { host: "callbacks.invalid" },
+        }, response => { response.resume(); response.on("end", () => {}); });
+        req.on("error", reject);
+        req.end();
+      }
+      if (event.event === "closed") { clearTimeout(timer); resolve(events.find((item) => item.event === "callback")); }
+    };
+    let pending = "";
+    const feed = (chunk) => {
+      output += chunk;
+      pending += chunk;
+      for (let index = pending.indexOf("\n"); index !== -1; index = pending.indexOf("\n")) {
+        onLine(pending.slice(0, index));
+        pending = pending.slice(index + 1);
+      }
+    };
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", feed);
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", feed);
+    child.on("error", reject);
+  });
+  const code = await new Promise((resolve) => child.on("exit", resolve));
+  if (code !== 0) throw new Error(`mcp-callback exited ${code}: ${output}`);
+  if (relayed?.params?.code !== "smoke") throw new Error(`mcp-callback did not relay: ${output}`);
+  if (!execFileSync(process.execPath, [cli, "--help"], { encoding: "utf8" }).includes("--redirect-uri")) {
+    throw new Error("mcp-callback --help did not print usage");
+  }
+
+  console.log(`smoke-pack: ok (${subpaths.length} entrypoints: ESM, CJS, tsc --noEmit, bin)`);
 } finally {
   rmSync(tmp, { recursive: true, force: true });
 }

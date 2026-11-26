@@ -21,7 +21,7 @@ export interface OAuthConfig {
 	readonly clientName?: string;
 	/** Fixed loopback callback port (http://127.0.0.1:<port>/callback). */
 	readonly callbackPort?: number;
-	/** Full loopback redirect URI; takes precedence over callbackPort. */
+	/** Full redirect URI; loopback HTTP binds a fixed port, an https URL is hosted by the callback server. */
 	readonly callbackUrl?: string;
 	/** Space-separated scopes requested when the server does not advertise them. */
 	readonly scope?: string;
